@@ -1,0 +1,12 @@
+# Build output
+/rocket
+/rocket.exe
+/dist/
+*.exe
+
+# Local run artifacts
+*.log
+
+# OS cruft
+.DS_Store
+Thumbs.db

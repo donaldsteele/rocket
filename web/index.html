@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>rocket - LAN file transfer</title>
+<script src="theme.js"></script>
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
+<script src="vendor/alpine.min.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div x-data="app()" x-init="init()">
+  <header class="bar" role="banner">
+    <h1 class="mono">rocket</h1>
+    <span class="muted" x-show="self.name">this host: <strong x-text="self.name"></strong>
+      <span class="fp mono" x-text="self.fingerprint"></span></span>
+    <div class="hdrtools">
+      <button type="button" class="themebtn ghost" :aria-pressed="theme==='light'" @click="toggleTheme()"
+        :title="theme==='dark' ? 'Switch to light theme' : 'Switch to dark theme'">
+        <svg class="ico" aria-hidden="true"><use :href="theme==='dark' ? 'icons.svg#i-moon' : 'icons.svg#i-sun'"></use></svg>
+        <span class="sr">Toggle theme</span>
+      </button>
+      <button type="button" class="ghost" @click="quit()" title="Quit rocket">
+        <svg class="ico" aria-hidden="true"><use href="icons.svg#i-power"></use></svg> Quit
+      </button>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- Incoming offers (trust-on-first-use prompts) -->
+    <section aria-label="Incoming" x-show="offers.length">
+      <template x-for="o in offers" :key="o.id">
+        <div class="offer">
+          <div><strong x-text="o.sender_name"></strong> wants to send you
+            <strong x-text="o.name"></strong> <span class="muted" x-text="fmtSize(o.size)"></span></div>
+          <div class="meta" x-show="o.sender_fp">fingerprint <span x-text="o.sender_fp"></span></div>
+          <div class="row">
+            <label class="check" x-show="o.sender_fp"><input type="checkbox" x-model="o._trust"> Always accept from this host</label>
+            <button type="button" class="primary" @click="decide(o, true)">Accept</button>
+            <button type="button" @click="decide(o, false)">Decline</button>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <div class="grid">
+      <!-- Peers + send -->
+      <section class="card" aria-label="Peers">
+        <h2>Peers on your network</h2>
+        <ul class="plain">
+          <template x-for="p in peers" :key="p.fp">
+            <li class="peer">
+              <svg class="ico" aria-hidden="true"><use href="icons.svg#i-monitor"></use></svg>
+              <div class="who">
+                <div class="nm" x-text="p.name"></div>
+                <div class="fp" x-text="p.fp + ' · ' + p.os"></div>
+              </div>
+              <div class="act">
+                <button type="button" class="primary" @click="pickFor(p)">Send file…</button>
+              </div>
+            </li>
+          </template>
+        </ul>
+        <p class="empty" x-show="!peers.length">No peers yet. Start rocket on another computer on this network.</p>
+        <input type="file" x-ref="file" class="sr" @change="onPicked()">
+      </section>
+
+      <!-- Receive + drop -->
+      <section class="card" aria-label="Receive">
+        <h2>Receive</h2>
+        <p class="muted">Files you accept are saved to:</p>
+        <p class="mono" x-text="self.downloadDir"></p>
+        <div class="drop" :class="{over:dragOver}"
+          @dragover.prevent="dragOver=true" @dragleave="dragOver=false" @drop.prevent="onDrop($event)">
+          Drag files here to send them to <strong>this</strong> computer,<br>or from a phone open this page and use the button below.
+          <div style="margin-top:12px"><button type="button" @click="$refs.drop.click()">Choose files…</button></div>
+          <input type="file" x-ref="drop" class="sr" multiple @change="onDropPick()">
+        </div>
+      </section>
+    </div>
+
+    <!-- Transfers in flight -->
+    <section class="card" style="margin-top:16px" x-show="Object.keys(xfers).length" aria-label="Transfers">
+      <h2>Transfers</h2>
+      <template x-for="(x,name) in xfers" :key="name">
+        <div class="xfer">
+          <div class="label">
+            <span><span class="state" :class="x.dir==='in'?'ok':'warn'" x-text="x.dir==='in'?'▼ in':'▲ out'"></span>
+              <span x-text="name"></span></span>
+            <span class="mono" x-text="pct(x.sent,x.total)+'%'"></span>
+          </div>
+          <div class="track"><div class="fill" :class="x.dir" :style="`width:${pct(x.sent,x.total)}%`"></div></div>
+        </div>
+      </template>
+    </section>
+
+    <!-- Activity -->
+    <section class="card" style="margin-top:16px" aria-label="Activity">
+      <h2>Activity</h2>
+      <div class="log" aria-live="polite">
+        <template x-for="(l,i) in logLines" :key="i">
+          <div><span class="t" x-text="l.t"></span><span x-text="l.m"></span></div>
+        </template>
+        <div class="empty" x-show="!logLines.length">Nothing yet.</div>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>
