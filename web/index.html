@@ -35,7 +35,17 @@
       <template x-for="o in offers" :key="o.id">
         <div class="offer">
           <div><strong x-text="o.sender_name"></strong> wants to send you
-            <strong x-text="o.name"></strong> <span class="muted" x-text="fmtSize(o.size)"></span></div>
+            <template x-if="o.files <= 1">
+              <span><strong x-text="o.name"></strong> <span class="muted" x-text="fmtSize(o.size)"></span></span>
+            </template>
+            <template x-if="o.files > 1">
+              <span><strong x-text="o.files + ' files'"></strong> <span class="muted" x-text="fmtSize(o.size)"></span></span>
+            </template>
+          </div>
+          <ul class="plain meta" x-show="o.files > 1" aria-label="First items in this offer">
+            <template x-for="n in (o.names || [])" :key="n"><li x-text="n"></li></template>
+            <li x-show="(o.names || []).length >= 5">…</li>
+          </ul>
           <div class="meta" x-show="o.sender_fp">fingerprint <span x-text="o.sender_fp"></span></div>
           <div class="row">
             <label class="check" x-show="o.sender_fp"><input type="checkbox" x-model="o._trust"> Always accept from this host</label>
@@ -59,13 +69,15 @@
                 <div class="fp" x-text="p.fp + ' · ' + p.os"></div>
               </div>
               <div class="act">
-                <button type="button" class="primary" @click="pickFor(p)">Send file…</button>
+                <button type="button" class="primary" @click="pickFor(p, false)">Send files…</button>
+                <button type="button" @click="pickFor(p, true)">Send folder…</button>
               </div>
             </li>
           </template>
         </ul>
         <p class="empty" x-show="!peers.length">No peers yet. Start rocket on another computer on this network.</p>
-        <input type="file" x-ref="file" class="sr" @change="onPicked()">
+        <input type="file" x-ref="file" class="sr" multiple tabindex="-1" aria-hidden="true" @change="onPicked('file')">
+        <input type="file" x-ref="folder" class="sr" webkitdirectory multiple tabindex="-1" aria-hidden="true" @change="onPicked('folder')">
       </section>
 
       <!-- Receive + drop -->
@@ -92,6 +104,8 @@
               <span x-text="name"></span></span>
             <span class="mono" x-text="pct(x.sent,x.total)+'%'"></span>
           </div>
+          <div class="muted mono" x-show="x.files > 1 && x.fileIndex"
+            x-text="'file ' + x.fileIndex + ' of ' + x.files + ': ' + (x.file || '')"></div>
           <div class="track"><div class="fill" :class="x.dir" :style="`width:${pct(x.sent,x.total)}%`"></div></div>
         </div>
       </template>

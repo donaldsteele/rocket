@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strconv"
 
+	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/transfer"
 )
 
@@ -86,8 +84,10 @@ func (s *Server) resolveTarget(peer string) (transfer.Target, error) {
 	return transfer.Target{}, fmt.Errorf("peer %q not found on the network", peer)
 }
 
-// handleSend sends a local file (path on this computer) to a peer, in the
-// background. Body: {peer, paths[]}; this version sends exactly one file.
+// handleSend sends local files and folders (paths on this computer) to a
+// peer in one transfer, in the background. Body: {peer, paths[]}. The
+// manifest is built before answering, so a missing path or a send over the
+// limits fails here with 400.
 func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Peer  string   `json:"peer"`
@@ -97,13 +97,9 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "need peer and paths", http.StatusBadRequest)
 		return
 	}
-	if len(body.Paths) != 1 {
-		http.Error(w, "this version sends one file at a time", http.StatusBadRequest)
-		return
-	}
-	path := body.Paths[0]
-	if st, err := os.Stat(path); err != nil || !st.Mode().IsRegular() {
-		http.Error(w, "not a readable file: "+path, http.StatusBadRequest)
+	plan, err := transfer.PlanPaths(body.Paths)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	target, err := s.resolveTarget(body.Peer)
@@ -112,30 +108,40 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tid := randToken()
-	name := filepath.Base(path)
+	name := transfer.Label(plan.Manifest)
 	go func() {
-		err := transfer.Send(context.Background(), s.id, target, path, s.progressFn(tid, name, "out"))
-		if err != nil {
-			s.publishError(tid, name, err)
-			return
-		}
-		s.hub.publish(Event{Type: "sent", Data: map[string]any{"transfer_id": tid, "name": name, "to": target.Addr}})
+		err := transfer.SendPlan(context.Background(), s.id, target, plan, s.progressFn(tid, name, "out"))
+		s.publishSent(tid, name, target, plan.Manifest, err)
 	}()
-	writeJSON(w, map[string]any{"ok": true, "transfer_id": tid})
+	writeJSON(w, map[string]any{"ok": true, "transfer_id": tid, "files": transfer.Files(plan.Manifest), "total": plan.Manifest.Total})
 }
 
-// handleRelay takes a file uploaded from this host's own browser UI and
-// streams it straight to a peer, so a browser (which has no local file path)
-// can drive a peer-to-peer send. ?peer= names the peer, ?size= the file size.
+// publishSent emits "sent" for a finished outgoing transfer, or "error".
+func (s *Server) publishSent(tid, name string, target transfer.Target, m protocol.Manifest, err error) {
+	if err != nil {
+		s.publishError(tid, name, err)
+		return
+	}
+	s.hub.publish(Event{Type: "sent", Data: map[string]any{
+		"transfer_id": tid, "name": name, "to": target.Addr, "files": transfer.Files(m), "bytes": m.Total,
+	}})
+}
+
+// relayManifestField is the multipart form field that must come first in a
+// POST /api/relay body: JSON {"files":[{"name","size"}]}, where name may be a
+// relative path from a folder picker ("photos/2024/a.jpg").
+const relayManifestField = "manifest"
+
+// handleRelay takes files uploaded from this host's own browser UI and
+// streams them straight to a peer, so a browser (which has no local file
+// paths) can drive a peer-to-peer send. ?peer= names the peer. The body is
+// multipart: first the "manifest" field, then one file part per listed file,
+// in order. One bare file goes out as kind:file, anything else as a tar
+// (kind:multi) built on the fly from the parts; nothing is staged.
 func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
 	target, err := s.resolveTarget(r.URL.Query().Get("peer"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	size, err := strconv.ParseInt(r.URL.Query().Get("size"), 10, 64)
-	if err != nil || size < 0 {
-		http.Error(w, "missing or bad size", http.StatusBadRequest)
 		return
 	}
 	mr, err := r.MultipartReader()
@@ -143,23 +149,47 @@ func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad upload", http.StatusBadRequest)
 		return
 	}
-	part, err := mr.NextPart()
-	if err != nil || part.FileName() == "" {
-		http.Error(w, "no file", http.StatusBadRequest)
+	first, err := mr.NextPart()
+	if err != nil || first.FormName() != relayManifestField || first.FileName() != "" {
+		http.Error(w, "the first part must be the manifest field", http.StatusBadRequest)
 		return
 	}
-	name := transfer.BaseName(part.FileName())
+	var list struct {
+		Files []transfer.BrowserFile `json:"files"`
+	}
+	if err := json.NewDecoder(io.LimitReader(first, protocol.MaxOfferBytes)).Decode(&list); err != nil {
+		http.Error(w, "bad manifest: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	m, err := transfer.BrowserManifest(list.Files, true)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	tid := randToken()
+	name := transfer.Label(m)
+	k := 0 // index into list.Files of the next file part
+	open := func(int, protocol.Entry) (io.ReadCloser, error) {
+		part, err := mr.NextPart()
+		if err != nil {
+			return nil, fmt.Errorf("expected %d files, got %d", len(list.Files), k)
+		}
+		want := transfer.BaseName(list.Files[k].Name)
+		if part.FileName() == "" || transfer.BaseName(part.FileName()) != want {
+			return nil, fmt.Errorf("file %d is not %q", k+1, want)
+		}
+		k++
+		return part, nil
+	}
 	// The send outlives neither this request nor its body: cancel it if the
 	// browser goes away.
-	err = transfer.SendReader(r.Context(), s.id, target, name, size, part, s.progressFn(tid, name, "out"))
+	err = transfer.SendManifest(r.Context(), s.id, target, m, open, s.progressFn(tid, name, "out"))
+	s.publishSent(tid, name, target, m, err)
 	if err != nil {
-		s.publishError(tid, name, err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	s.hub.publish(Event{Type: "sent", Data: map[string]any{"transfer_id": tid, "name": name, "to": target.Addr}})
-	writeJSON(w, map[string]any{"ok": true, "transfer_id": tid})
+	writeJSON(w, map[string]any{"ok": true, "transfer_id": tid, "files": transfer.Files(m)})
 }
 
 func (s *Server) handleQuit(w http.ResponseWriter, _ *http.Request) {

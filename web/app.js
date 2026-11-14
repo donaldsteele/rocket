@@ -19,10 +19,10 @@ function app() {
     theme: document.documentElement.getAttribute('data-theme') || 'dark',
     peers: [],
     offers: [],
-    xfers: {}, // name -> {sent,total,dir}
+    xfers: {}, // transfer label -> {sent,total,dir,file,fileIndex,files}
     logLines: [],
     dragOver: false,
-    target: null, // peer chosen for "Send file…"
+    target: null, // peer chosen for "Send files…" / "Send folder…"
 
     init() {
       this.loadSelf();
@@ -65,17 +65,21 @@ function app() {
           break;
         case 'offer':
           this.addOffer(d);
-          this.log(`incoming offer: ${d.name} from ${d.sender_name}`);
+          this.log(`incoming offer: ${this.offerWhat(d)} from ${d.sender_name}`);
           break;
         case 'progress':
-          this.xfers[d.name] = { sent: d.sent, total: d.total, dir: d.dir };
+          this.xfers[d.name] = {
+            sent: d.sent, total: d.total, dir: d.dir,
+            file: d.file, fileIndex: d.file_index, files: d.files,
+          };
           break;
         case 'done':
           delete this.xfers[d.name];
-          this.log(`received ${d.name} from ${d.from}`);
+          this.log(`received ${this.countWhat(d.name, d.files)} from ${d.from}`);
           break;
         case 'sent':
-          this.log(`sent ${d.name} to ${d.to}`);
+          delete this.xfers[d.name];
+          this.log(`sent ${this.countWhat(d.name, d.files)} to ${d.to}`);
           break;
         case 'error':
           delete this.xfers[d.name];
@@ -96,27 +100,38 @@ function app() {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: o.id, accept, trust: !!o._trust }),
         });
-        this.log(accept ? `accepted ${o.name}` : `declined ${o.name}`);
+        this.log(`${accept ? 'accepted' : 'declined'} ${this.offerWhat(o)}`);
       } catch (e) { this.log(`could not answer offer: ${e}`); }
     },
 
-    // Send file to a chosen peer: the browser uploads to this host, which
-    // relays it on to the peer, so no local file path is needed.
-    pickFor(p) { this.target = p; this.$refs.file.click(); },
-    async onPicked() {
-      const f = this.$refs.file.files[0];
-      if (!f || !this.target) return;
+    // Send files or a whole folder to a chosen peer: the browser uploads to
+    // this host, which relays them on to the peer as one transfer (a tar for
+    // several files), so no local file path is needed. The multipart body is
+    // the "manifest" field (names, with folder-relative paths, and sizes)
+    // followed by the files in the same order.
+    pickFor(p, folder) {
+      this.target = p;
+      (folder ? this.$refs.folder : this.$refs.file).click();
+    },
+    async onPicked(ref) {
+      const input = this.$refs[ref];
+      const files = [...input.files];
       const p = this.target;
-      this.$refs.file.value = '';
+      input.value = '';
+      if (!files.length || !p) return;
+      const named = files.map((f) => ({ f, name: f.webkitRelativePath || f.name }));
       const fd = new FormData();
-      fd.append('file', f);
-      this.xfers[f.name] = { sent: 0, total: f.size, dir: 'out' };
-      this.log(`sending ${f.name} to ${p.name}…`);
+      fd.append('manifest', JSON.stringify({ files: named.map((x) => ({ name: x.name, size: x.f.size })) }));
+      named.forEach((x) => fd.append('file', x.f, x.name));
+      const label = named[0].name.split('/')[0];
+      const total = files.reduce((n, f) => n + f.size, 0);
+      this.xfers[label] = { sent: 0, total, dir: 'out', files: files.length, fileIndex: 0 };
+      this.log(`sending ${this.countWhat(label, files.length)} to ${p.name}…`);
       try {
-        const r = await api(`api/relay?peer=${encodeURIComponent(p.fp)}&size=${f.size}`, { method: 'POST', body: fd });
+        const r = await api(`api/relay?peer=${encodeURIComponent(p.fp)}`, { method: 'POST', body: fd });
         if (!r.ok) throw new Error(await r.text());
       } catch (e) {
-        delete this.xfers[f.name];
+        delete this.xfers[label];
         this.log(`send failed: ${e.message || e}`);
       }
     },
@@ -124,30 +139,42 @@ function app() {
     // Drag/drop or choose files to send to THIS computer (drop page).
     onDrop(ev) {
       this.dragOver = false;
-      [...ev.dataTransfer.files].forEach((f) => this.dropHere(f));
+      this.dropHere([...ev.dataTransfer.files]);
     },
-    onDropPick() { [...this.$refs.drop.files].forEach((f) => this.dropHere(f)); this.$refs.drop.value = ''; },
-    // Same two-step flow as the LAN drop page; from this computer's own UI
-    // (CSRF header present) the server skips the accept prompt.
-    async dropHere(f) {
-      this.xfers[f.name] = { sent: 0, total: f.size, dir: 'in' };
-      this.log(`uploading ${f.name} to this computer…`);
+    onDropPick() { this.dropHere([...this.$refs.drop.files]); this.$refs.drop.value = ''; },
+    // Same two-step flow as the LAN drop page, all files in one offer; from
+    // this computer's own UI (CSRF header present) the server skips the
+    // accept prompt.
+    async dropHere(files) {
+      if (!files.length) return;
+      const label = files[0].name;
+      const total = files.reduce((n, f) => n + f.size, 0);
+      this.xfers[label] = { sent: 0, total, dir: 'in', files: files.length, fileIndex: 0 };
+      this.log(`uploading ${this.countWhat(label, files.length)} to this computer…`);
       try {
         const o = await api('drop/offer', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ files: [{ name: f.name, size: f.size }] }),
+          body: JSON.stringify({ files: files.map((f) => ({ name: f.name, size: f.size })) }),
         });
         if (!o.ok) throw new Error(await o.text());
         const reply = await o.json();
         if (!reply.accepted) throw new Error(reply.reason || 'declined');
         const fd = new FormData();
-        fd.append('file', f, f.name);
+        files.forEach((f) => fd.append('file', f, f.name));
         const r = await fetch(`drop/upload?token=${encodeURIComponent(reply.token)}`, { method: 'POST', body: fd });
         if (!r.ok) throw new Error(await r.text());
       } catch (e) {
-        delete this.xfers[f.name];
+        delete this.xfers[label];
         this.log(`upload failed: ${e.message || e}`);
       }
+    },
+
+    // "photos (12 files)" or just "report.pdf".
+    countWhat(name, files) {
+      return files > 1 ? `${name} (${files} files)` : name;
+    },
+    offerWhat(o) {
+      return o.files > 1 ? `${o.files} files, ${this.fmtSize(o.size) || '0 B'}` : o.name;
     },
 
     async quit() {

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
 
 	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/transfer"
@@ -35,10 +34,6 @@ func (s *Server) handleOffer(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := s.verifier.Verify(&o); err != nil {
 		http.Error(w, "offer rejected: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if o.Manifest.Kind != protocol.KindFile {
-		http.Error(w, "offer rejected: multi-file offers are not supported by this receiver yet", http.StatusBadRequest)
 		return
 	}
 
@@ -80,38 +75,83 @@ func (s *Server) handleOffer(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleRecv streams an accepted single-file upload to disk. The one-shot
-// token must come from the offering IP, and Content-Length must equal the
-// manifest total.
+// handleRecv streams an accepted upload to disk. The one-shot token must come
+// from the offering IP. For kind:file the body is the raw file and
+// Content-Length must equal the manifest total; for kind:multi it is a tar
+// whose entries must match the manifest exactly, extracted under a fresh
+// top-level name in the download folder.
 func (s *Server) handleRecv(w http.ResponseWriter, r *http.Request) {
 	up := s.takeUpload(r.URL.Query().Get("token"), false, remoteIP(r))
 	if up == nil {
 		http.Error(w, "invalid, expired or used token", http.StatusForbidden)
 		return
 	}
-	if up.manifest.Kind != protocol.KindFile || len(up.manifest.Entries) != 1 {
+	label := transfer.Label(up.manifest)
+	progress := s.progressFn(up.transferID, label, "in")
+	switch up.manifest.Kind {
+	case protocol.KindFile:
+		e := up.manifest.Entries[0]
+		if r.ContentLength != up.manifest.Total {
+			err := fmt.Errorf("content length %d does not match the offered size %d", r.ContentLength, up.manifest.Total)
+			s.publishError(up.transferID, label, err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		dest, err := transfer.ReceiveFile(s.cfg.DownloadDir, e.Path, e.Size, r.Body, progress)
+		if err != nil {
+			s.failRecv(w, up, err)
+			return
+		}
+		s.publishDone(up, label, transfer.Result{Paths: []string{dest}, Files: 1, Bytes: e.Size})
+	case protocol.KindMulti:
+		r.Body = http.MaxBytesReader(w, r.Body, tarLimit(up.manifest))
+		res, err := transfer.ReceiveTar(s.cfg.DownloadDir, up.manifest, r.Body, progress)
+		if err != nil {
+			s.failRecv(w, up, err)
+			return
+		}
+		s.publishDone(up, label, res)
+	default:
 		http.Error(w, "unsupported manifest kind", http.StatusBadRequest)
 		return
 	}
-	e := up.manifest.Entries[0]
-	if r.ContentLength != up.manifest.Total {
-		err := fmt.Errorf("content length %d does not match the offered size %d", r.ContentLength, up.manifest.Total)
-		s.publishError(up.transferID, e.Path, err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// tarLimit bounds a kind:multi body: the announced bytes plus room for tar
+// framing (a header, PAX records for long or non-ASCII names, padding) per
+// entry and the end-of-archive marker.
+func tarLimit(m protocol.Manifest) int64 {
+	return m.Total + int64(len(m.Entries))*16<<10 + 1<<20
+}
+
+// failRecv reports a failed receive as an error event and HTTP error: 400 for
+// a body that does not match the offer, 500 for a local failure.
+func (s *Server) failRecv(w http.ResponseWriter, up *upload, err error) {
+	s.publishError(up.transferID, transfer.Label(up.manifest), err)
+	http.Error(w, "transfer failed: "+err.Error(), recvCode(err))
+}
+
+// recvCode maps a receive error to an HTTP status: 400 when the body does not
+// match the offer (sizes, archive entries, body limit), 500 otherwise.
+func recvCode(err error) int {
+	var mbe *http.MaxBytesError
+	if errors.Is(err, transfer.ErrSize) || errors.Is(err, transfer.ErrArchive) || errors.As(err, &mbe) {
+		return http.StatusBadRequest
 	}
-	dest, err := transfer.ReceiveFile(s.cfg.DownloadDir, e.Path, e.Size, r.Body, s.progressFn(up.transferID, e.Path, "in"))
-	if err != nil {
-		s.publishError(up.transferID, e.Path, err)
-		code := http.StatusInternalServerError
-		if errors.Is(err, transfer.ErrSize) {
-			code = http.StatusBadRequest
-		}
-		http.Error(w, "transfer failed: "+err.Error(), code)
-		return
+	return http.StatusInternalServerError
+}
+
+// publishDone emits the "done" event for a finished receive. name is the
+// transfer label used by its progress events; path is the single top-level
+// file or folder created (or the download folder when there are several).
+func (s *Server) publishDone(up *upload, name string, res transfer.Result) {
+	path := s.cfg.DownloadDir
+	if len(res.Paths) == 1 {
+		path = res.Paths[0]
 	}
 	s.hub.publish(Event{Type: "done", Data: map[string]any{
-		"transfer_id": up.transferID, "name": filepath.Base(dest), "path": dest, "from": up.senderName,
+		"transfer_id": up.transferID, "name": name, "path": path, "paths": res.Paths,
+		"files": res.Files, "bytes": res.Bytes, "from": up.senderName,
 	}})
-	writeJSON(w, map[string]any{"ok": true})
 }

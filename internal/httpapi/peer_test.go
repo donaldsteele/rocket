@@ -195,12 +195,3 @@ func TestRecvTokenBoundToIP(t *testing.T) {
 		t.Fatalf("token from another IP: %d", rec.Code)
 	}
 }
-
-func TestMultiOfferNotYetSupported(t *testing.T) {
-	a, b := trustedPair(t)
-	m := protocol.Manifest{Kind: protocol.KindMulti, Entries: []protocol.Entry{{Path: "d/a", Size: 1}}, Total: 1}
-	o, _ := protocol.NewOffer(a.id, "alice", b.id.Fingerprint(), m, time.Now())
-	if code, body, _ := postOffer(t, b, o); code != 400 {
-		t.Fatalf("multi offer: %d %s", code, body)
-	}
-}

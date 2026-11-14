@@ -6,16 +6,16 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"time"
 
 	"github.com/donaldsteele/rocket/internal/discovery"
+	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/transfer"
 )
 
-// runSend sends a file to a peer named on the command line: a host:port, or a
-// discovered peer's name or fingerprint prefix (it briefly listens for
-// beacons to resolve those).
+// runSend sends files and folders to a peer named on the command line, all
+// in one transfer: a host:port, or a discovered peer's name or fingerprint
+// prefix (it briefly listens for beacons to resolve those).
 func runSend(args []string) int {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	cf := addCommonFlags(fs)
@@ -24,20 +24,17 @@ func runSend(args []string) int {
 		return 2
 	}
 	if fs.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "usage: rocket send [flags] <peer|host:port> <file>")
+		fmt.Fprintln(os.Stderr, "usage: rocket send [flags] <peer|host:port> <file|folder>...")
 		return 2
 	}
-	if fs.NArg() > 2 {
-		fmt.Fprintln(os.Stderr, "error: this version sends one file at a time")
-		return 2
-	}
-	target, path := fs.Arg(0), fs.Arg(1)
-	if st, err := os.Stat(path); err != nil {
+	target := fs.Arg(0)
+	plan, err := transfer.PlanPaths(fs.Args()[1:])
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
-	} else if !st.Mode().IsRegular() {
-		fmt.Fprintf(os.Stderr, "error: %s is not a regular file\n", path)
-		return 1
+	}
+	if n := len(plan.Skipped); n > 0 {
+		fmt.Printf("note: skipped %d symlink(s) or special file(s)\n", n)
 	}
 
 	rs, err := setup(cf)
@@ -63,9 +60,20 @@ func runSend(args []string) int {
 		label = fmt.Sprintf("%s (%s)", peer.Name, peer.Addr)
 	}
 
-	fmt.Printf("sending %s to %s; waiting for the receiver to accept...\n", filepath.Base(path), label)
-	err = transfer.Send(ctx, rs.id, t, path, func(sent, total int64) {
-		fmt.Printf("\r  %3d%%  %d/%d bytes", pct(sent, total), sent, total)
+	what := transfer.Label(plan.Manifest)
+	if plan.Manifest.Kind == protocol.KindMulti {
+		what = fmt.Sprintf("%s (%d files, %d bytes)", what, transfer.Files(plan.Manifest), plan.Manifest.Total)
+	}
+	fmt.Printf("sending %s to %s; waiting for the receiver to accept...\n", what, label)
+	err = transfer.SendPlan(ctx, rs.id, t, plan, func(p transfer.Progress) {
+		line := fmt.Sprintf("  %3d%%  %d/%d bytes", pct(p.Sent, p.Total), p.Sent, p.Total)
+		if p.Files > 1 {
+			line += fmt.Sprintf("  file %d/%d %s", p.FileIndex, p.Files, p.File)
+		}
+		if r := []rune(line); len(r) > 79 {
+			line = string(r[:76]) + "..."
+		}
+		fmt.Printf("\r%-79s", line)
 	})
 	fmt.Println()
 	if err != nil {

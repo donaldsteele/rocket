@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 )
 
@@ -144,11 +143,9 @@ func ReceiveFile(dir, name string, size int64, src io.Reader, progress ProgressF
 		return "", err
 	}
 
-	var w io.Writer = f
-	if progress != nil {
-		w = &progressWriter{w: f, total: size, fn: progress}
-	}
-	n, err := io.CopyN(w, src, size)
+	tr := newTracker(progress, size, 1)
+	tr.file(BaseName(name))
+	n, err := io.CopyN(trackWriter{w: f, t: tr}, src, size)
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			return fail(fmt.Errorf("%w: got %d of %d bytes", ErrSize, n, size))
@@ -170,23 +167,6 @@ func ReceiveFile(dir, name string, size int64, src io.Reader, progress ProgressF
 		os.Remove(part)
 		return "", err
 	}
+	tr.finish()
 	return final, nil
-}
-
-type progressWriter struct {
-	w     io.Writer
-	total int64
-	got   int64
-	fn    ProgressFn
-	last  time.Time
-}
-
-func (p *progressWriter) Write(b []byte) (int, error) {
-	n, err := p.w.Write(b)
-	p.got += int64(n)
-	if time.Since(p.last) > 50*time.Millisecond || p.got >= p.total {
-		p.last = time.Now()
-		p.fn(p.got, p.total)
-	}
-	return n, err
 }

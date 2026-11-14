@@ -8,7 +8,9 @@ import (
 
 // Event is a message pushed to connected browsers over SSE. Types: "offer"
 // (an IncomingOffer), "offer_gone", "progress", "done", "sent", "error"; each
-// carries a transfer_id.
+// carries a transfer_id. "name" is the transfer label (the first top-level
+// file or folder); "progress" adds file, file_index (1-based) and files, and
+// "done"/"sent" add files.
 type Event struct {
 	Type string `json:"type"`
 	Data any    `json:"data,omitempty"`

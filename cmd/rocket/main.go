@@ -12,9 +12,9 @@ import (
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rocket [ui | send <peer|host:port> <file> | recv | mcp | version] [flags]")
+	fmt.Fprintln(os.Stderr, "usage: rocket [ui | send <peer|host:port> <path>... | recv | mcp | version] [flags]")
 	fmt.Fprintln(os.Stderr, "  ui       start the web UI (default) and announce this host")
-	fmt.Fprintln(os.Stderr, "  send     send a file to a peer by name, fingerprint or host:port")
+	fmt.Fprintln(os.Stderr, "  send     send files and folders to a peer by name, fingerprint or host:port")
 	fmt.Fprintln(os.Stderr, "  recv     run headless: announce and accept, no browser")
 	fmt.Fprintln(os.Stderr, "  mcp      serve the MCP interface for an AI agent over stdio")
 	fmt.Fprintln(os.Stderr, "  version  print the version")

@@ -72,7 +72,7 @@ func TestReceiveFileExact(t *testing.T) {
 	dir := t.TempDir()
 	data := []byte("hello rocket")
 	var last int64
-	p, err := ReceiveFile(dir, "greeting.txt", int64(len(data)), bytes.NewReader(data), func(s, _ int64) { last = s })
+	p, err := ReceiveFile(dir, "greeting.txt", int64(len(data)), bytes.NewReader(data), func(p Progress) { last = p.Sent })
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"github.com/donaldsteele/rocket/internal/peers"
 	"github.com/donaldsteele/rocket/internal/protocol"
@@ -18,10 +16,8 @@ import (
 // server-issued token; only its SHA-256 is stored (drop_tokens.json).
 const DropCookie = "rocket_drop"
 
-type dropFile struct {
-	Name string `json:"name"`
-	Size int64  `json:"size"`
-}
+// dropFile is one file a browser guest offers: its name and size.
+type dropFile = transfer.BrowserFile
 
 // handleDropOffer is step one of a browser drop: POST /drop/offer
 // {files:[{name,size}]}. It long-polls for the person's decision unless the
@@ -46,7 +42,11 @@ func (s *Server) handleDropOffer(w http.ResponseWriter, r *http.Request) {
 	tid := randToken()
 	ip := remoteIP(r)
 	label := "browser guest (" + ip + ")"
-	up := &upload{transferID: tid, manifest: m, senderName: label, ip: ip, drop: true}
+	names := make([]string, len(body.Files))
+	for i, f := range body.Files {
+		names[i] = transfer.BaseName(f.Name)
+	}
+	up := &upload{transferID: tid, manifest: m, senderName: label, ip: ip, drop: true, names: names}
 
 	remembered := false
 	if c, err := r.Cookie(DropCookie); err == nil && s.drops.Valid(c.Value) {
@@ -83,30 +83,10 @@ func (s *Server) handleDropOffer(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// dropManifest checks a browser's file list and builds a manifest of safe
-// bare names (duplicates are allowed; each file gets a unique name on disk).
+// dropManifest checks a browser's file list and builds a validated manifest
+// of safe bare names (repeated names are numbered: "a (1).txt").
 func dropManifest(files []dropFile) (protocol.Manifest, error) {
-	if len(files) == 0 {
-		return protocol.Manifest{}, errors.New("no files")
-	}
-	if len(files) > protocol.MaxEntries {
-		return protocol.Manifest{}, fmt.Errorf("at most %d files per drop", protocol.MaxEntries)
-	}
-	m := protocol.Manifest{Kind: protocol.KindFile}
-	if len(files) > 1 {
-		m.Kind = protocol.KindMulti
-	}
-	for _, f := range files {
-		if f.Size < 0 {
-			return protocol.Manifest{}, errors.New("negative size")
-		}
-		m.Total += f.Size
-		if m.Total > protocol.MaxTotal {
-			return protocol.Manifest{}, errors.New("drop too large")
-		}
-		m.Entries = append(m.Entries, protocol.Entry{Path: transfer.BaseName(f.Name), Size: f.Size, Mode: 0o644})
-	}
-	return m, nil
+	return transfer.BrowserManifest(files, false)
 }
 
 // handleDropUpload is step two: POST /drop/upload?token= with a multipart
@@ -128,50 +108,37 @@ func (s *Server) handleDropUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var written []string
+	label := transfer.Label(up.manifest)
+	x := transfer.NewExtractor(s.cfg.DownloadDir, up.manifest, s.progressFn(up.transferID, label, "in"))
 	fail := func(code int, err error) {
-		for _, p := range written {
-			os.Remove(p)
-		}
-		s.publishError(up.transferID, firstName(up), err)
+		x.Abort()
+		s.publishError(up.transferID, label, err)
 		http.Error(w, "upload failed: "+err.Error(), code)
 	}
-	for i, e := range up.manifest.Entries {
+	for i := range up.manifest.Entries {
 		part, err := mr.NextPart()
 		if err != nil {
 			fail(http.StatusBadRequest, fmt.Errorf("expected %d files, got %d", len(up.manifest.Entries), i))
 			return
 		}
-		if part.FileName() == "" || transfer.BaseName(part.FileName()) != e.Path {
-			fail(http.StatusBadRequest, fmt.Errorf("file %d is not %q", i+1, e.Path))
+		if part.FileName() == "" || transfer.BaseName(part.FileName()) != up.names[i] {
+			fail(http.StatusBadRequest, fmt.Errorf("file %d is not %q", i+1, up.names[i]))
 			return
 		}
-		dest, err := transfer.ReceiveFile(s.cfg.DownloadDir, e.Path, e.Size, part, s.progressFn(up.transferID, e.Path, "in"))
-		if err != nil {
-			code := http.StatusInternalServerError
-			if errors.Is(err, transfer.ErrSize) {
-				code = http.StatusBadRequest
-			}
-			fail(code, err)
+		if err := x.Write(i, part); err != nil {
+			fail(recvCode(err), err)
 			return
 		}
-		written = append(written, dest)
 	}
 	if _, err := mr.NextPart(); err != io.EOF {
 		fail(http.StatusBadRequest, errors.New("more files than offered"))
 		return
 	}
-	for _, dest := range written {
-		s.hub.publish(Event{Type: "done", Data: map[string]any{
-			"transfer_id": up.transferID, "name": filepath.Base(dest), "path": dest, "from": up.senderName,
-		}})
+	res, err := x.Finish()
+	if err != nil {
+		fail(http.StatusBadRequest, err)
+		return
 	}
-	writeJSON(w, map[string]any{"ok": true, "files": len(written)})
-}
-
-func firstName(up *upload) string {
-	if len(up.manifest.Entries) > 0 {
-		return up.manifest.Entries[0].Path
-	}
-	return ""
+	s.publishDone(up, label, res)
+	writeJSON(w, map[string]any{"ok": true, "files": res.Files})
 }

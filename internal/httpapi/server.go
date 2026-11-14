@@ -22,6 +22,7 @@ import (
 	"github.com/donaldsteele/rocket/internal/node"
 	"github.com/donaldsteele/rocket/internal/peers"
 	"github.com/donaldsteele/rocket/internal/protocol"
+	"github.com/donaldsteele/rocket/internal/transfer"
 )
 
 // Server holds the shared state for all handlers.
@@ -52,10 +53,10 @@ type IncomingOffer struct {
 	ID          string   `json:"id"` // same as TransferID; answer with POST /api/accept {id}
 	TransferID  string   `json:"transfer_id"`
 	Kind        string   `json:"kind"`
-	Name        string   `json:"name"`  // first entry
+	Name        string   `json:"name"`  // first entry path
 	Size        int64    `json:"size"`  // total bytes
-	Files       int      `json:"files"` // entry count
-	Names       []string `json:"names"` // first few entry paths
+	Files       int      `json:"files"` // file count (folders not counted)
+	Names       []string `json:"names"` // first few entry paths (files and folders)
 	SenderName  string   `json:"sender_name"`
 	SenderFP    string   `json:"sender_fp,omitempty"`
 	FromBrowser bool     `json:"from_browser"`
@@ -82,7 +83,8 @@ type upload struct {
 	senderName string
 	senderFP   string
 	ip         string
-	drop       bool // browser drop (POST /drop/upload) vs peer (POST /api/recv)
+	drop       bool     // browser drop (POST /drop/upload) vs peer (POST /api/recv)
+	names      []string // drop only: base name the browser gave each file, in order
 	expires    time.Time
 }
 
@@ -259,7 +261,7 @@ func (s *Server) takeUpload(token string, drop bool, ip string) *upload {
 // --- helpers ---
 
 func viewOf(id string, m protocol.Manifest) IncomingOffer {
-	v := IncomingOffer{ID: id, TransferID: id, Kind: m.Kind, Size: m.Total, Files: len(m.Entries)}
+	v := IncomingOffer{ID: id, TransferID: id, Kind: m.Kind, Size: m.Total, Files: transfer.Files(m)}
 	for i, e := range m.Entries {
 		if i == 0 {
 			v.Name = e.Path
@@ -306,10 +308,13 @@ func randToken() string {
 }
 
 // progressFn returns a transfer.ProgressFn that publishes "progress" events.
-func (s *Server) progressFn(transferID, name, dir string) func(sent, total int64) {
-	return func(sent, total int64) {
+// name is the transfer label (constant for the whole transfer); file,
+// file_index (1-based) and files describe the file in flight.
+func (s *Server) progressFn(transferID, name, dir string) transfer.ProgressFn {
+	return func(p transfer.Progress) {
 		s.hub.publish(Event{Type: "progress", Data: map[string]any{
-			"transfer_id": transferID, "name": name, "sent": sent, "total": total, "dir": dir,
+			"transfer_id": transferID, "name": name, "sent": p.Sent, "total": p.Total, "dir": dir,
+			"file": p.File, "file_index": p.FileIndex, "files": p.Files,
 		}})
 	}
 }
