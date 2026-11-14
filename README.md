@@ -44,6 +44,33 @@ rocket mcp        serve the MCP interface for an AI agent over stdio
 rocket version    print the version
 ```
 
+## Tray app
+
+`rocket-tray` is an optional icon for the system tray (Windows notification
+area, Linux StatusNotifier tray). Put it next to `rocket` (the zips ship them
+together) and run it. Its menu shows:
+
+- whether rocket is running and how many peers it sees,
+- how many incoming offers are waiting (the icon gets a red badge; click the
+  line to open rocket and answer),
+- **Open rocket**, **Start rocket** (runs `rocket ui --no-browser` in the
+  background when it is not running), **Quit rocket**, and **Exit tray**
+  (closes only the icon; rocket keeps running).
+
+It checks every 2 seconds and talks only to rocket's local API on
+`http://127.0.0.1:29005`. Use `--port` (or `ROCKET_PORT`) when rocket runs on
+another port, and `rocket-tray --status` to print the status once.
+
+Release zips include the tray for Windows and Linux (amd64 and arm64). On Linux
+the desktop needs a StatusNotifier tray (KDE, or GNOME with the AppIndicator
+extension). macOS tray binaries are not shipped, because the macOS tray needs
+cgo; build it from source on a Mac:
+
+```
+cd tray
+go build -o rocket-tray .
+```
+
 ## Connect Claude (MCP)
 
 ```
@@ -69,8 +96,8 @@ transfer, trust or revoke a sender, change settings, or quit rocket.
 ## Status
 
 This is an early scaffold. The transfer wire, discovery, trust store, web UI and
-MCP server work. Not yet done: mDNS, HTTPS, folder sends, resume, history, the
-desktop tray app, and packaging/signing.
+MCP server work. Not yet done: mDNS, HTTPS, folder sends, resume, history, and
+packaging/signing.
 
 ## Security
 

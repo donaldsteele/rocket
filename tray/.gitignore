@@ -1,0 +1,5 @@
+# go build ./... output in this folder
+/tray
+/tray.exe
+/rocket-tray
+/rocket-tray.exe
