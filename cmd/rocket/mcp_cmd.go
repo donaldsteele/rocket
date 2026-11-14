@@ -27,13 +27,14 @@ func (nopWriteCloser) Close() error { return nil }
 // list peers and send files without a UI open.
 func runMCP(args []string) int {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
+	cf := addCommonFlags(fs)
 	if fs.Parse(args) != nil {
 		return 2
 	}
 	log.SetOutput(os.Stderr)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	rs, err := setup()
+	rs, err := setup(cf)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1

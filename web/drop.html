@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>rocket - send files to this computer</title>
+<script src="theme.js"></script>
+<link rel="stylesheet" href="styles.css">
+<script src="drop.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar" role="banner">
+  <h1 class="mono">rocket</h1>
+  <span class="muted">send files to this computer</span>
+</header>
+<main id="main">
+  <section class="card" aria-labelledby="drop-h">
+    <h2 id="drop-h">Send files</h2>
+    <div class="drop" id="zone">
+      <p>Drag files here, or choose them.</p>
+      <p><button type="button" class="primary" id="choose">Choose files</button></p>
+      <input type="file" id="picker" class="sr" multiple aria-label="Choose files to send">
+      <p class="muted">The person at this computer is asked to accept the first time.</p>
+    </div>
+    <p id="status" role="status" aria-live="polite"></p>
+    <ul class="plain" id="files" aria-label="Files"></ul>
+  </section>
+</main>
+</body>
+</html>

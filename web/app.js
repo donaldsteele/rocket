@@ -1,6 +1,18 @@
 // rocket web UI. Vanilla Alpine component. Talks to the local rocket server:
 // peers come from UDP-beacon discovery, transfers are pushed with an accept
 // prompt (trust-on-first-use), and progress arrives over an SSE event stream.
+
+// api calls the loopback control API. Every non-GET call carries the
+// X-Rocket-CSRF header the server requires.
+function api(path, opts) {
+  const o = Object.assign({}, opts || {});
+  const method = (o.method || 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') {
+    o.headers = Object.assign({}, o.headers || {}, { 'X-Rocket-CSRF': '1' });
+  }
+  return fetch(path, o);
+}
+
 function app() {
   return {
     self: { name: '', fingerprint: '', downloadDir: '' },
@@ -48,6 +60,9 @@ function app() {
     onEvent(m) {
       const d = m.data || {};
       switch (m.type) {
+        case 'offer_gone':
+          this.offers = this.offers.filter((x) => x.id !== d.transfer_id);
+          break;
         case 'offer':
           this.addOffer(d);
           this.log(`incoming offer: ${d.name} from ${d.sender_name}`);
@@ -77,7 +92,7 @@ function app() {
     async decide(o, accept) {
       this.offers = this.offers.filter((x) => x.id !== o.id);
       try {
-        await fetch('api/accept', {
+        await api('api/accept', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: o.id, accept, trust: !!o._trust }),
         });
@@ -98,7 +113,7 @@ function app() {
       this.xfers[f.name] = { sent: 0, total: f.size, dir: 'out' };
       this.log(`sending ${f.name} to ${p.name}…`);
       try {
-        const r = await fetch(`api/relay?peer=${encodeURIComponent(p.addr || p.Addr || '')}&size=${f.size}`, { method: 'POST', body: fd });
+        const r = await api(`api/relay?peer=${encodeURIComponent(p.fp)}&size=${f.size}`, { method: 'POST', body: fd });
         if (!r.ok) throw new Error(await r.text());
       } catch (e) {
         delete this.xfers[f.name];
@@ -112,13 +127,22 @@ function app() {
       [...ev.dataTransfer.files].forEach((f) => this.dropHere(f));
     },
     onDropPick() { [...this.$refs.drop.files].forEach((f) => this.dropHere(f)); this.$refs.drop.value = ''; },
+    // Same two-step flow as the LAN drop page; from this computer's own UI
+    // (CSRF header present) the server skips the accept prompt.
     async dropHere(f) {
-      const fd = new FormData();
-      fd.append('file', f);
       this.xfers[f.name] = { sent: 0, total: f.size, dir: 'in' };
       this.log(`uploading ${f.name} to this computer…`);
       try {
-        const r = await fetch('drop', { method: 'POST', body: fd });
+        const o = await api('drop/offer', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files: [{ name: f.name, size: f.size }] }),
+        });
+        if (!o.ok) throw new Error(await o.text());
+        const reply = await o.json();
+        if (!reply.accepted) throw new Error(reply.reason || 'declined');
+        const fd = new FormData();
+        fd.append('file', f, f.name);
+        const r = await fetch(`drop/upload?token=${encodeURIComponent(reply.token)}`, { method: 'POST', body: fd });
         if (!r.ok) throw new Error(await r.text());
       } catch (e) {
         delete this.xfers[f.name];
@@ -127,7 +151,7 @@ function app() {
     },
 
     async quit() {
-      try { await fetch('api/quit', { method: 'POST' }); } catch (e) { /* ignore */ }
+      try { await api('api/quit', { method: 'POST' }); } catch (e) { /* ignore */ }
       this.log('rocket is shutting down. You can close this tab.');
     },
 

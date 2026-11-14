@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -118,14 +117,14 @@ func (t *tools) sendFile(ctx context.Context, _ *mcp.CallToolRequest, in sendFil
 	if in.Peer == "" || in.Path == "" {
 		return nil, sendFileOut{}, fmt.Errorf("peer and path are required")
 	}
-	peer, ok := findPeer(t.svc.Reg, in.Peer)
+	peer, ok := t.svc.Reg.Find(in.Peer)
 	if !ok {
 		return nil, sendFileOut{Note: "peer not visible; call list_peers"}, nil
 	}
-	offer := transfer.Offer{SenderName: t.svc.ID.Name, SenderFP: t.svc.ID.Fingerprint()}
 	sendCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
-	if err := transfer.Send(sendCtx, peer.Addr, offer, in.Path, nil); err != nil {
+	target := transfer.Target{Addr: peer.Addr, FP: peer.Fingerprint}
+	if err := transfer.Send(sendCtx, t.svc.ID, target, in.Path, nil); err != nil {
 		return nil, sendFileOut{To: peer.Name, Note: err.Error()}, nil
 	}
 	return nil, sendFileOut{Sent: true, To: peer.Name}, nil
@@ -141,13 +140,4 @@ type statusOut struct {
 
 func (t *tools) getStatus(_ context.Context, _ *mcp.CallToolRequest, _ noInput) (*mcp.CallToolResult, statusOut, error) {
 	return nil, statusOut{Name: t.svc.ID.Name, Fingerprint: t.svc.ID.Fingerprint(), PeerCount: len(t.svc.Reg.Peers())}, nil
-}
-
-func findPeer(reg *discovery.Registry, target string) (discovery.Peer, bool) {
-	for _, p := range reg.Peers() {
-		if strings.EqualFold(p.Name, target) || strings.HasPrefix(p.Fingerprint, strings.ToLower(target)) {
-			return p, true
-		}
-	}
-	return discovery.Peer{}, false
 }

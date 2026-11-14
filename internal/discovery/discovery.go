@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -65,6 +66,21 @@ func (r *Registry) Peers() []Peer {
 		}
 	}
 	return out
+}
+
+// Find returns the live peer whose name matches target (case-insensitive) or
+// whose fingerprint starts with target.
+func (r *Registry) Find(target string) (Peer, bool) {
+	if target == "" {
+		return Peer{}, false
+	}
+	low := strings.ToLower(target)
+	for _, p := range r.Peers() {
+		if strings.EqualFold(p.Name, target) || strings.HasPrefix(p.Fingerprint, low) {
+			return p, true
+		}
+	}
+	return Peer{}, false
 }
 
 // Run advertises this host and listens for peers until ctx is cancelled.

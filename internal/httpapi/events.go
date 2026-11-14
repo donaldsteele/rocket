@@ -6,9 +6,11 @@ import (
 	"sync"
 )
 
-// Event is a message pushed to connected browsers over SSE.
+// Event is a message pushed to connected browsers over SSE. Types: "offer"
+// (an IncomingOffer), "offer_gone", "progress", "done", "sent", "error"; each
+// carries a transfer_id.
 type Event struct {
-	Type string `json:"type"` // "offer", "progress", "done", "error", "peers"
+	Type string `json:"type"`
 	Data any    `json:"data,omitempty"`
 }
 
@@ -21,7 +23,7 @@ type eventHub struct {
 func newEventHub() *eventHub { return &eventHub{clients: map[chan Event]struct{}{}} }
 
 func (h *eventHub) subscribe() chan Event {
-	ch := make(chan Event, 32)
+	ch := make(chan Event, 64)
 	h.mu.Lock()
 	h.clients[ch] = struct{}{}
 	h.mu.Unlock()
