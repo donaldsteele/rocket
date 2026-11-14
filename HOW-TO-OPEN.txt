@@ -8,9 +8,19 @@ Pick the right download
   Mac with Apple chip (M1/M2/M3+)  rocket-darwin-arm64.zip
   Mac with Intel chip              rocket-darwin-amd64.zip
   Linux PC                         rocket-linux-amd64.zip
+  Linux on ARM (Raspberry Pi 4/5)  rocket-linux-arm64.zip
 
 Not sure which Mac? Apple menu > About This Mac. "Chip: Apple M..." means
 arm64. "Processor: Intel ..." means amd64.
+
+Not sure which Linux? Run: uname -m
+"x86_64" means amd64. "aarch64" means arm64.
+
+Check the download (optional): the release page has a SHA256SUMS file.
+  Windows:  certutil -hashfile rocket-windows-amd64.zip SHA256
+  Mac:      shasum -a 256 rocket-darwin-arm64.zip
+  Linux:    sha256sum -c SHA256SUMS --ignore-missing
+The long number must match the line for your zip.
 
 Run rocket on two or more computers on the same network to send files
 between them.
@@ -29,8 +39,13 @@ WINDOWS
 
 The first time you run rocket, Windows Defender Firewall may show a
 "Windows Security Alert". rocket needs to be reachable on your local
-network so other computers can send you files. Allow it on Private
-networks.
+network so other computers can send you files. Tick "Private networks"
+and click "Allow access". Do not allow it on public networks.
+
+Tray icon (optional): double-click rocket-tray.exe. A rocket icon appears
+in the notification area (it may be under the ^ arrow). It gets a red
+badge when someone is waiting for your answer. Right-click it for Open,
+Start and Quit rocket.
 
 
 MAC
@@ -38,26 +53,55 @@ MAC
 1. Double-click the zip to unzip it. Open the new folder.
 2. Control-click rocket > Open, then Open again. macOS Gatekeeper warns
    about unsigned programs; this bypasses it once per download.
+   If macOS still refuses: System Settings > Privacy & Security, scroll
+   down and click "Open Anyway".
 3. Your browser opens to the rocket page. A Terminal window stays open
    while rocket runs. Click Quit in the page (or press Ctrl+C in
    Terminal) to stop.
+4. If macOS asks whether rocket may "find devices on your local
+   network" or accept incoming connections, click Allow.
+
+There is no tray icon for Mac in the zip (see the README to build one).
 
 
 LINUX
 -----
-1. Unzip the file. In a terminal: chmod +x rocket && ./rocket
-2. Your browser opens to the rocket page, or open the address printed in
-   the terminal.
+1. Unzip the file:  unzip rocket-linux-amd64.zip -d rocket
+2. In a terminal:   cd rocket && ./rocket
+   (If it says "permission denied", run: chmod +x rocket rocket-tray)
+3. Your browser opens to the rocket page, or open the address printed in
+   the terminal. Press Ctrl+C in the terminal to stop.
+4. If your firewall is on, open the ports rocket uses, for example with
+   ufw:
+     sudo ufw allow 29005/tcp
+     sudo ufw allow 29006/udp
+     sudo ufw allow 5353/udp
+
+Tray icon (optional): run ./rocket-tray & . It needs a desktop with a
+system tray (KDE, or GNOME with the AppIndicator extension).
+
+To run without a browser (for example on a Raspberry Pi), use:
+  ./rocket recv
 
 
 WHERE DO FILES GO?
 ------------------
 Files other people send you, and files you accept, are saved to your
-Downloads/rocket folder.
+Downloads/rocket folder. You can pick another folder in Settings.
+
+
+SENDING FROM A PHONE
+--------------------
+rocket prints a "drop page" address such as http://192.168.1.20:29005/ .
+Open it in the phone's browser (same Wi-Fi), tap "Choose files", and
+accept the offer on the computer.
 
 
 IS IT SAFE?
 -----------
 rocket listens on your local network so other computers can send to it.
 The first transfer from a new computer asks you to approve it. Only
-approve senders you recognise. See the README for the full security note.
+approve senders you recognise. Transfers are not encrypted, so use rocket
+on networks you trust (home, office), not public Wi-Fi. See the README
+and the security notes at
+github.com/donaldsteele/rocket (docs/security.md).

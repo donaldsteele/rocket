@@ -1,0 +1,106 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            tray/go.sum
+
+      - name: gofmt
+        shell: bash
+        run: |
+          out="$(gofmt -l cmd internal tools web tray)"
+          [ -z "$out" ] || { echo "needs gofmt:"; echo "$out"; exit 1; }
+
+      - name: build
+        run: go build ./...
+
+      - name: vet
+        run: go vet ./...
+
+      - name: vet for the other release OSes
+        shell: bash
+        run: |
+          for os in windows darwin linux; do
+            [ "$os" = "$(go env GOOS)" ] && continue
+            echo "GOOS=$os go vet ./..."
+            GOOS=$os go vet ./...
+          done
+
+      - name: third-party license file is up to date
+        run: go run ./tools/licenses -check
+
+      - name: test
+        run: go test ./...
+
+      - name: race test
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -race ./...
+
+      # The tray is its own module (tray/go.mod); the root ./... skips it.
+      - name: tray vet and test
+        working-directory: tray
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: tray build (Windows, Linux; no cgo)
+        if: matrix.os != 'macos-latest'
+        working-directory: tray
+        shell: bash
+        run: |
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOARCH=$arch go build -o "$RUNNER_TEMP/rocket-tray-$arch" .
+          done
+
+      - name: tray build (macOS; needs cgo)
+        if: matrix.os == 'macos-latest'
+        working-directory: tray
+        run: go build -o "$RUNNER_TEMP/rocket-tray" .
+
+      - name: release build (bash, 6 zips)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: VERSION=ci-${GITHUB_SHA::7} bash scripts/build.sh
+
+      - name: release build (PowerShell, 6 zips)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/build.ps1 -Version "ci-$($env:GITHUB_SHA.Substring(0,7))"
+
+      - name: check release zips
+        shell: bash
+        run: |
+          ls -l dist
+          test "$(ls dist/rocket-*.zip | wc -l)" -eq 6
+          test "$(wc -l < dist/SHA256SUMS)" -eq 6
+          cd dist && if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi
+
+      - name: upload release zips
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: rocket-dist
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS
+          retention-days: 7

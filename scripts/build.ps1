@@ -1,0 +1,111 @@
+<#
+.SYNOPSIS
+Cross-compile rocket for Windows, macOS and Linux (amd64 + arm64) and the
+tray app for Windows and Linux (amd64 + arm64), zip each target with
+README.md, HOW-TO-OPEN.txt and the license files into dist/, and write
+dist/SHA256SUMS.
+
+.EXAMPLE
+pwsh scripts/build.ps1                  # version defaults to git describe
+pwsh scripts/build.ps1 -Version 1.2.0
+#>
+[CmdletBinding()]
+param(
+    [string]$Version = $env:VERSION
+)
+$ErrorActionPreference = 'Stop'
+Set-Location (Join-Path $PSScriptRoot '..')
+
+if (-not $Version) {
+    $Version = (git describe --tags --always --dirty 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $Version) { $Version = 'dev' }
+}
+# rocket version prints "rocket 1.2.0", not "rocket v1.2.0".
+$Version = $Version -replace '^v', ''
+$Dist = 'dist'
+$Targets = 'windows/amd64', 'windows/arm64', 'darwin/amd64', 'darwin/arm64', 'linux/amd64', 'linux/arm64'
+# The macOS tray needs cgo, so it is not cross-compiled (build it on a Mac).
+$TrayTargets = 'windows/amd64', 'windows/arm64', 'linux/amd64', 'linux/arm64'
+$LdPkg = 'github.com/donaldsteele/rocket/internal/buildinfo.Version'
+
+$Docs = 'README.md', 'HOW-TO-OPEN.txt', 'LICENSE', 'NOTICE', 'THIRD_PARTY_LICENSES.txt'
+foreach ($f in $Docs) {
+    if (-not (Test-Path $f -PathType Leaf)) { throw "missing $f" }
+}
+
+function Invoke-Native {
+    param([string]$Exe, [string[]]$Arguments)
+    & $Exe @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "$Exe $($Arguments -join ' ') failed (exit $LASTEXITCODE)" }
+}
+
+$stage = Join-Path ([IO.Path]::GetTempPath()) ("rocket-build-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $stage | Out-Null
+$saved = @{ CGO_ENABLED = $env:CGO_ENABLED; GOOS = $env:GOOS; GOARCH = $env:GOARCH }
+try {
+    New-Item -ItemType Directory -Force -Path $Dist | Out-Null
+    Get-ChildItem -Path $Dist -Filter 'rocket-*.zip' | Remove-Item -Force
+    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $Dist 'SHA256SUMS')
+
+    # The license file must list exactly the modules being shipped.
+    $env:CGO_ENABLED = $null; $env:GOOS = $null; $env:GOARCH = $null
+    Invoke-Native go @('run', './tools/licenses', '-check')
+
+    # tools/mkzip (pure Go) puts files at the zip root and keeps the binaries
+    # executable for macOS and Linux, matching scripts/build.sh exactly.
+    $mkzip = Join-Path $stage 'mkzip.exe'
+    Invoke-Native go @('build', '-o', $mkzip, './tools/mkzip')
+    Write-Host "rocket version: $Version"
+
+    # Version info, manifest and icon for rocket.exe (cmd/rocket/winres). go
+    # build links the generated rsrc_windows_*.syso into the Windows targets only.
+    Invoke-Native go @('tool', 'go-winres', 'make', '--in', 'cmd/rocket/winres/winres.json',
+        '--out', 'cmd/rocket/rsrc', '--arch', 'amd64,arm64',
+        '--product-version', $Version, '--file-version', $Version)
+
+    foreach ($target in $Targets) {
+        $goos, $goarch = $target -split '/'
+        $exe = if ($goos -eq 'windows') { '.exe' } else { '' }
+
+        $pkg = Join-Path $stage "$goos-$goarch"
+        New-Item -ItemType Directory -Path $pkg | Out-Null
+        Write-Host "building $goos/$goarch"
+        $env:CGO_ENABLED = '0'; $env:GOOS = $goos; $env:GOARCH = $goarch
+        Invoke-Native go @('build', '-trimpath', '-ldflags', "-s -w -X $LdPkg=$Version",
+            '-o', (Join-Path $pkg "rocket$exe"), './cmd/rocket')
+
+        if ($TrayTargets -contains $target) {
+            Write-Host "building tray $goos/$goarch"
+            $trayFlags = "-s -w -X main.version=$Version"
+            if ($goos -eq 'windows') { $trayFlags += ' -H=windowsgui' }
+            Push-Location tray
+            try {
+                Invoke-Native go @('build', '-trimpath', '-ldflags', $trayFlags,
+                    '-o', (Join-Path $pkg "rocket-tray$exe"), '.')
+            }
+            finally { Pop-Location }
+        }
+        $env:CGO_ENABLED = $null; $env:GOOS = $null; $env:GOARCH = $null
+        Copy-Item $Docs -Destination $pkg
+
+        $zip = Join-Path $Dist "rocket-$goos-$goarch.zip"
+        $files = Get-ChildItem -File $pkg | ForEach-Object FullName
+        Invoke-Native $mkzip (@('-o', $zip, '-x', 'rocket', '-x', 'rocket.exe',
+                '-x', 'rocket-tray', '-x', 'rocket-tray.exe') + $files)
+        Write-Host "wrote $zip"
+        Remove-Item -Recurse -Force $pkg
+    }
+
+    # Same format as sha256sum: "<lowercase hash>  <name>", LF line endings.
+    $sums = Get-ChildItem -Path $Dist -Filter 'rocket-*.zip' | Sort-Object Name | ForEach-Object {
+        (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant() + '  ' + $_.Name
+    }
+    $sumsPath = Join-Path (Resolve-Path $Dist) 'SHA256SUMS'
+    [IO.File]::WriteAllText($sumsPath, (($sums -join "`n") + "`n"))
+    Write-Host "wrote $Dist/SHA256SUMS"
+}
+finally {
+    foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $stage
+    Remove-Item -Force -ErrorAction SilentlyContinue cmd/rocket/rsrc_windows_*.syso
+}

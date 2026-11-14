@@ -10,3 +10,6 @@
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# go-winres output (scripts/build.* generate and delete it)
+/cmd/rocket/rsrc_windows_*.syso
