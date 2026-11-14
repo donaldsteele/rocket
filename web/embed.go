@@ -7,7 +7,7 @@ import (
 	"mime"
 )
 
-//go:embed index.html app.js styles.css theme.js icons.svg drop.html drop.js vendor/*
+//go:embed index.html app.js styles.css theme.js icons.svg favicon.png drop.html drop.js vendor/*
 var files embed.FS
 
 // Go's built-in MIME table has no WOFF2 entry, so register it for the fonts.

@@ -5,26 +5,29 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
 <title>rocket - send files to this computer</title>
+<link rel="icon" type="image/png" href="favicon.png">
 <script src="theme.js"></script>
 <link rel="stylesheet" href="styles.css">
 <script src="drop.js" defer></script>
 </head>
-<body>
+<body class="droppage">
 <a class="skip" href="#main">Skip to content</a>
 <header class="bar" role="banner">
-  <h1 class="mono">rocket</h1>
-  <span class="muted">send files to this computer</span>
+  <div class="brand mono"><img src="favicon.png" alt=""><span>rocket</span></div>
+  <p class="selfline"><span class="muted">Send files to</span> <strong id="host" class="wrapany">this computer</strong></p>
 </header>
-<main id="main">
-  <section class="card" aria-labelledby="drop-h">
-    <h2 id="drop-h">Send files</h2>
+<main id="main" tabindex="-1">
+  <section class="card dropcard" aria-labelledby="drop-h">
+    <h1 id="drop-h">Send files</h1>
+    <p class="lead">Pick files on this device and they are copied to <span id="host2">this computer</span> over your local network.</p>
     <div class="drop" id="zone">
-      <p>Drag files here, or choose them.</p>
-      <p><button type="button" class="primary" id="choose">Choose files</button></p>
-      <input type="file" id="picker" class="sr" multiple aria-label="Choose files to send">
-      <p class="muted">The person at this computer is asked to accept the first time.</p>
+      <svg class="ico hero" aria-hidden="true" focusable="false"><use href="icons.svg#i-upload"></use></svg>
+      <p><button type="button" class="primary big" id="choose" aria-describedby="drop-how">Choose files</button></p>
+      <p id="drop-how">or drag files here.</p>
+      <input type="file" id="picker" class="sr" multiple tabindex="-1" aria-hidden="true">
     </div>
-    <p id="status" role="status" aria-live="polite"></p>
+    <p class="sub">The person at that computer is asked to accept the first time. After that, this browser can send without asking for 30 days.</p>
+    <div id="status" class="alert" role="status" aria-live="polite" hidden></div>
     <ul class="plain" id="files" aria-label="Files"></ul>
   </section>
 </main>

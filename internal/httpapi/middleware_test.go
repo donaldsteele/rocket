@@ -151,7 +151,7 @@ func TestStaticSplit(t *testing.T) {
 			t.Errorf("LAN GET %s: %d, want 403", p, code)
 		}
 	}
-	for _, p := range []string{"/drop.html", "/drop.js", "/styles.css", "/theme.js", "/vendor/fonts/Inter-Variable-latin.woff2"} {
+	for _, p := range []string{"/drop.html", "/drop.js", "/styles.css", "/theme.js", "/icons.svg", "/favicon.png", "/vendor/fonts/Inter-Variable-latin.woff2"} {
 		if code, _ := request(t, h.srv, "GET", p, lan, lanHost, false); code != http.StatusOK {
 			t.Errorf("LAN GET %s: %d, want 200", p, code)
 		}

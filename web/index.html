@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
 <title>rocket - LAN file transfer</title>
+<link rel="icon" type="image/png" href="favicon.png">
 <script src="theme.js"></script>
 <link rel="stylesheet" href="styles.css">
 <script src="app.js" defer></script>
@@ -12,148 +13,232 @@
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
-<div x-data="app()" x-init="init()">
-  <header class="bar" role="banner">
-    <h1 class="mono">rocket</h1>
-    <span class="muted" x-show="self.name">this host: <strong x-text="self.name"></strong>
-      <span class="fp mono" x-text="self.fingerprint"></span></span>
-    <div class="hdrtools">
-      <button type="button" class="themebtn ghost" :aria-pressed="theme==='light'" @click="toggleTheme()"
-        :title="theme==='dark' ? 'Switch to light theme' : 'Switch to dark theme'">
-        <svg class="ico" aria-hidden="true"><use :href="theme==='dark' ? 'icons.svg#i-moon' : 'icons.svg#i-sun'"></use></svg>
-        <span class="sr">Toggle theme</span>
-      </button>
-      <button type="button" class="ghost" @click="quit()" title="Quit rocket">
-        <svg class="ico" aria-hidden="true"><use href="icons.svg#i-power"></use></svg> Quit
-      </button>
-    </div>
-  </header>
+<div class="shell" :class="{navopen: navOpen}" x-data="app()" x-init="init()" @keydown.escape.window="navOpen && closeNav()">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand mono" aria-hidden="true"><img src="favicon.png" alt=""><span>rocket</span></div>
+    <nav aria-label="Main">
+      <ul class="plain navlist">
+        <template x-for="v in navItems" :key="v.id">
+          <li><button type="button" class="navitem" :id="'nav-' + v.id" :aria-current="view === v.id ? 'page' : null" :title="v.label" @click="showView(v.id)">
+            <svg class="ico" aria-hidden="true" focusable="false"><use :href="'icons.svg#i-' + v.icon"></use></svg><span class="lbl" x-text="v.label"></span>
+            <span class="count" :class="{hot: v.id === 'transfers' && offers.length}" x-show="navCount(v.id) > 0" x-text="navCount(v.id)"></span>
+            <span class="sr" x-show="navCount(v.id) > 0" x-text="navCountText(v.id)"></span>
+          </button></li>
+        </template>
+      </ul>
+    </nav>
+  </aside>
 
-  <main id="main">
-    <!-- Incoming offers (trust-on-first-use prompts) -->
-    <section aria-label="Incoming" x-show="offers.length">
+  <div class="content">
+    <header class="topbar bar" role="banner">
+      <button type="button" class="menubtn" x-ref="menuBtn" :aria-expanded="navOpen ? 'true' : 'false'" aria-controls="sidebar" @click="navOpen = !navOpen">
+        <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-menu"></use></svg>Menu</button>
+      <h1 class="mono">rocket</h1>
+      <p class="selfline" x-show="self.name" x-cloak>
+        <span class="muted">This computer:</span> <strong class="wrapany" x-text="self.name"></strong>
+        <span class="fp mono muted" :title="'Fingerprint ' + self.fingerprint" x-text="self.fingerprint"></span>
+      </p>
+      <div class="hdrtools">
+        <button type="button" class="iconbtn themebtn" :aria-pressed="theme === 'light' ? 'true' : 'false'" @click="toggleTheme()" title="Light theme">
+          <svg class="ico" aria-hidden="true" focusable="false"><use :href="theme === 'light' ? 'icons.svg#i-sun' : 'icons.svg#i-moon'"></use></svg><span class="sr">Light theme</span></button>
+        <button type="button" class="danger" :disabled="stopped" @click="quit()" title="Stop rocket on this computer">
+          <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-power"></use></svg>Quit</button>
+      </div>
+    </header>
+
+    <!-- Incoming offers: a sticky prompt above every view. -->
+    <section class="offers" aria-label="Incoming offers" x-show="offers.length" x-cloak>
       <template x-for="o in offers" :key="o.id">
-        <div class="offer">
-          <div><strong x-text="o.sender_name"></strong> wants to send you
-            <template x-if="o.files <= 1">
-              <span><strong x-text="o.name"></strong> <span class="muted" x-text="fmtSize(o.size)"></span></span>
-            </template>
-            <template x-if="o.files > 1">
-              <span><strong x-text="o.files + ' files'"></strong> <span class="muted" x-text="fmtSize(o.size)"></span></span>
-            </template>
+        <div class="offer" role="group" :aria-label="'Offer from ' + o.sender_name">
+          <svg class="ico s-warn" aria-hidden="true" focusable="false"><use href="icons.svg#i-download"></use></svg>
+          <div class="otext">
+            <p><strong x-text="o.sender_name"></strong> wants to send you
+              <strong x-text="offerWhat(o)"></strong>
+              <span class="muted" x-show="o.size" x-text="'(' + fmtSize(o.size) + ')'"></span>
+              <span class="muted" x-show="o.from_browser">from a web browser</span></p>
+            <p class="names" x-show="o.files > 1 && (o.names || []).length" x-text="namesLine(o)"></p>
+            <p class="fp" x-show="o.sender_fp"><span class="muted">Fingerprint</span> <span x-text="o.sender_fp"></span></p>
           </div>
-          <ul class="plain meta" x-show="o.files > 1" aria-label="First items in this offer">
-            <template x-for="n in (o.names || [])" :key="n"><li x-text="n"></li></template>
-            <li x-show="(o.names || []).length >= 5">…</li>
-          </ul>
-          <div class="meta" x-show="o.sender_fp">fingerprint <span x-text="o.sender_fp"></span></div>
-          <div class="row">
-            <label class="check" x-show="o.sender_fp"><input type="checkbox" x-model="o._trust"> Always accept from this host</label>
-            <button type="button" class="primary" @click="decide(o, true)">Accept</button>
-            <button type="button" @click="decide(o, false)">Decline</button>
+          <div class="oacts">
+            <button type="button" class="primary" @click="decide(o, true, false)" :aria-label="'Accept ' + offerWhat(o) + ' from ' + o.sender_name">
+              <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-check"></use></svg>Accept</button>
+            <button type="button" x-show="o.sender_fp" @click="decide(o, true, true)">
+              <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-shield-check"></use></svg>Always accept from this host</button>
+            <button type="button" @click="decide(o, false, false)" :aria-label="'Decline ' + offerWhat(o) + ' from ' + o.sender_name">
+              <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-x"></use></svg>Decline</button>
           </div>
         </div>
       </template>
     </section>
+    <!-- Screen readers hear offers and completions here. -->
+    <div class="sr" role="status" aria-live="polite" aria-atomic="true" x-text="announce"></div>
 
-    <div class="grid">
-      <!-- Peers + send -->
-      <section class="card" aria-label="Peers">
-        <h2>Peers on your network</h2>
-        <ul class="plain">
-          <template x-for="p in peers" :key="p.fp">
-            <li class="peer">
-              <svg class="ico" aria-hidden="true"><use href="icons.svg#i-monitor"></use></svg>
-              <div class="who">
-                <div class="nm" x-text="p.name"></div>
-                <div class="fp" x-text="peerMeta(p)"></div>
+    <main id="main" tabindex="-1">
+      <div class="alert warn" role="status" x-show="stopped" x-cloak>
+        <svg class="ico s-warn" aria-hidden="true" focusable="false"><use href="icons.svg#i-triangle-alert"></use></svg>
+        <span><strong>rocket has stopped.</strong> You can close this tab. Start rocket again to send or receive.</span></div>
+      <div class="alert warn" role="status" x-show="offline && !stopped" x-cloak>
+        <svg class="ico s-warn" aria-hidden="true" focusable="false"><use href="icons.svg#i-triangle-alert"></use></svg>
+        <span><strong>Not connected.</strong> rocket is not answering. This page reconnects by itself when it is back.</span></div>
+
+      <!-- Send -->
+      <section id="view-send" aria-labelledby="h-send" x-show="view === 'send'">
+        <div class="viewhead"><h2 id="h-send" tabindex="-1">Send</h2></div>
+        <div class="grid">
+          <section class="card" aria-labelledby="h-peers">
+            <h3 id="h-peers"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-send"></use></svg>Computers on your network</h3>
+            <ul class="plain" aria-label="Computers running rocket">
+              <template x-for="p in peers" :key="p.fp">
+                <li class="peer">
+                  <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-monitor"></use></svg>
+                  <div class="who">
+                    <div class="nm" x-text="p.name"></div>
+                    <div class="meta" x-text="peerMeta(p)"></div>
+                  </div>
+                  <div class="act">
+                    <button type="button" class="primary" :disabled="stopped" @click="pickFor(p, false)" :aria-label="'Send files to ' + p.name">
+                      <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-file"></use></svg>Send files</button>
+                    <button type="button" :disabled="stopped" @click="pickFor(p, true)" :aria-label="'Send a folder to ' + p.name">
+                      <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-folder"></use></svg>Send folder</button>
+                  </div>
+                </li>
+              </template>
+            </ul>
+            <p class="empty" x-show="!peers.length">No other computers yet. Start rocket on another computer on this network; it shows up here within a few seconds.</p>
+            <input type="file" x-ref="file" class="sr" multiple tabindex="-1" aria-hidden="true" @change="onPicked('file')">
+            <input type="file" x-ref="folder" class="sr" webkitdirectory multiple tabindex="-1" aria-hidden="true" @change="onPicked('folder')">
+          </section>
+
+          <section class="card" aria-labelledby="h-here">
+            <h3 id="h-here"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-download"></use></svg>Receive on this computer</h3>
+            <p class="muted">Files you accept are saved to:</p>
+            <p class="mono wrapany" x-text="self.downloadDir"></p>
+            <div class="drop" :class="{over: dragOver}"
+                 @dragover.prevent="dragOver = true" @dragleave="dragOver = false" @drop.prevent="onDrop($event)">
+              <p>Drag files here to copy them into the download folder.</p>
+              <p><button type="button" :disabled="stopped" @click="$refs.drop.click()">
+                <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-upload"></use></svg>Choose files</button></p>
+              <input type="file" x-ref="drop" class="sr" multiple tabindex="-1" aria-hidden="true" @change="onDropPick()">
+            </div>
+            <p class="sub">Phones and computers without rocket can send to this one too: open this computer's address in a web browser, port <span class="mono" x-text="self.port || 29005"></span>.</p>
+          </section>
+        </div>
+      </section>
+
+      <!-- Transfers -->
+      <section id="view-transfers" aria-labelledby="h-transfers" x-show="view === 'transfers'" x-cloak>
+        <div class="viewhead"><h2 id="h-transfers" tabindex="-1">Transfers</h2></div>
+        <ul class="plain" aria-label="Transfers in progress">
+          <template x-for="x in xferList()" :key="x.id">
+            <li class="xfer">
+              <div class="xhead">
+                <span class="state" :class="x.state === 'waiting' ? 'warn' : 'info'">
+                  <svg class="ico" aria-hidden="true" focusable="false"><use :href="'icons.svg#i-' + xferIcon(x)"></use></svg><span x-text="xferWord(x)"></span></span>
+                <span class="xname"><strong x-text="countWhat(x.name, x.files)"></strong>
+                  <span class="muted" x-show="x.peer" x-text="(x.dir === 'in' ? 'from ' : 'to ') + x.peer"></span></span>
+                <button type="button" class="small" x-show="!x.local" :disabled="stopped" @click="cancel(x)" :aria-label="'Cancel ' + countWhat(x.name, x.files)">
+                  <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-square"></use></svg>Cancel</button>
               </div>
-              <div class="act">
-                <button type="button" class="primary" @click="pickFor(p, false)">Send files…</button>
-                <button type="button" @click="pickFor(p, true)">Send folder…</button>
+              <p class="xfile" x-show="x.files > 1 && x.fileIndex" x-text="'File ' + x.fileIndex + ' of ' + x.files + ': ' + (x.file || '')"></p>
+              <div class="xbar">
+                <div class="track" role="progressbar" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="pct(x.sent, x.total)"
+                     :aria-label="countWhat(x.name, x.files)" :aria-valuetext="pct(x.sent, x.total) + '%, ' + (fmtSize(x.sent) || '0 B') + ' of ' + (fmtSize(x.total) || '0 B')">
+                  <div class="fill" :class="x.dir" :style="'width:' + pct(x.sent, x.total) + '%'"></div>
+                </div>
+                <span class="pct" aria-hidden="true" x-text="pct(x.sent, x.total) + '%'"></span>
               </div>
             </li>
           </template>
         </ul>
-        <p class="empty" x-show="!peers.length">No peers yet. Start rocket on another computer on this network.</p>
-        <input type="file" x-ref="file" class="sr" multiple tabindex="-1" aria-hidden="true" @change="onPicked('file')">
-        <input type="file" x-ref="folder" class="sr" webkitdirectory multiple tabindex="-1" aria-hidden="true" @change="onPicked('folder')">
-      </section>
+        <p class="empty" x-show="!xferList().length">Nothing is moving right now. Transfers show up here while they run; finished ones are in History.</p>
 
-      <!-- Receive + drop -->
-      <section class="card" aria-label="Receive">
-        <h2>Receive</h2>
-        <p class="muted">Files you accept are saved to:</p>
-        <p class="mono" x-text="self.downloadDir"></p>
-        <div class="drop" :class="{over:dragOver}"
-          @dragover.prevent="dragOver=true" @dragleave="dragOver=false" @drop.prevent="onDrop($event)">
-          Drag files here to send them to <strong>this</strong> computer,<br>or from a phone open this page and use the button below.
-          <div style="margin-top:12px"><button type="button" @click="$refs.drop.click()">Choose files…</button></div>
-          <input type="file" x-ref="drop" class="sr" multiple @change="onDropPick()">
-        </div>
-      </section>
-    </div>
-
-    <!-- Transfers in flight -->
-    <section class="card" style="margin-top:16px" x-show="xferList().length" aria-label="Transfers">
-      <h2>Transfers</h2>
-      <template x-for="x in xferList()" :key="x.id">
-        <div class="xfer">
-          <div class="label">
-            <span><span class="state" :class="x.dir==='in'?'ok':'warn'" x-text="x.dir==='in'?'▼ in':'▲ out'"></span>
-              <span x-text="x.name"></span>
-              <span class="muted" x-show="x.peer" x-text="(x.dir==='in' ? 'from ' : 'to ') + x.peer"></span>
-              <span class="muted" x-show="x.state==='waiting'">waiting for the receiver…</span></span>
-            <span class="row-tools">
-              <span class="mono" x-text="pct(x.sent,x.total)+'%'"></span>
-              <button type="button" class="small" x-show="!x.local" @click="cancel(x)"
-                :aria-label="'Cancel ' + x.name">Cancel</button>
-            </span>
+        <section class="card" aria-labelledby="h-activity" style="margin-top:var(--s4)">
+          <h3 id="h-activity">Recent activity</h3>
+          <div class="log">
+            <template x-for="l in logLines" :key="l.id">
+              <div><span class="t" x-text="l.t"></span><span x-text="l.m"></span></div>
+            </template>
+            <div class="muted" x-show="!logLines.length">Nothing yet.</div>
           </div>
-          <div class="muted mono" x-show="x.files > 1 && x.fileIndex"
-            x-text="'file ' + x.fileIndex + ' of ' + x.files + ': ' + (x.file || '')"></div>
-          <div class="track"><div class="fill" :class="x.dir" :style="`width:${pct(x.sent,x.total)}%`"></div></div>
+        </section>
+      </section>
+
+      <!-- History -->
+      <section id="view-history" aria-labelledby="h-history" x-show="view === 'history'" x-cloak>
+        <div class="viewhead">
+          <h2 id="h-history" tabindex="-1">History</h2>
+          <div class="tools">
+            <button type="button" class="small" @click="loadHistory()">
+              <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-refresh-cw"></use></svg>Refresh</button>
+            <button type="button" class="small danger" x-show="history.length" :disabled="stopped" @click="clearHistory()">
+              <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-trash-2"></use></svg>Clear history</button>
+          </div>
         </div>
-      </template>
-    </section>
+        <div class="alert error" role="alert" x-show="historyError" x-text="historyError"></div>
+        <div class="histbox" x-show="history.length">
+          <ul class="plain hist" aria-label="Past transfers, newest first">
+            <template x-for="h in history" :key="h.id + h.ended">
+              <li>
+                <span class="state" :class="resultClass(h.result)">
+                  <svg class="ico" aria-hidden="true" focusable="false"><use :href="'icons.svg#i-' + resultIcon(h.result)"></use></svg><span x-text="resultWord(h.result)"></span></span>
+                <span class="hwhat">
+                  <span class="hdir"><svg class="ico s-muted" aria-hidden="true" focusable="false"><use :href="h.dir === 'in' ? 'icons.svg#i-arrow-down' : 'icons.svg#i-arrow-up'"></use></svg><span class="sr" x-text="h.dir === 'in' ? 'Received' : 'Sent'"></span></span>
+                  <strong x-text="countWhat(h.name || '(nothing)', h.files)"></strong>
+                  <span class="muted" x-text="(h.dir === 'in' ? 'from ' : 'to ') + (h.peer_name || 'unknown')"></span></span>
+                <span class="hmeta" x-text="fmtSize(h.bytes) || '0 B'"></span>
+                <span class="hmeta"><time :datetime="h.ended" x-text="when(h.ended)"></time></span>
+                <span class="herr" x-show="h.error && h.result !== 'ok'" x-text="h.error"></span>
+              </li>
+            </template>
+          </ul>
+        </div>
+        <p class="empty" x-show="!history.length && !historyError">No transfers yet.</p>
+      </section>
 
-    <!-- History -->
-    <section class="card" style="margin-top:16px" aria-labelledby="hist-h">
-      <div class="hist-head">
-        <h2 id="hist-h">History</h2>
-        <span class="row-tools">
-          <button type="button" class="small" @click="loadHistory()">Refresh</button>
-          <button type="button" class="small" x-show="history.length" @click="clearHistory()">Clear history</button>
-        </span>
-      </div>
-      <ul class="plain hist">
-        <template x-for="h in history" :key="h.id + h.ended">
-          <li>
-            <span class="state" :class="resultClass(h.result)" x-text="resultWord(h.result)"></span>
-            <span x-text="h.dir==='in' ? '▼' : '▲'" aria-hidden="true"></span>
-            <span class="sr" x-text="h.dir==='in' ? 'received' : 'sent'"></span>
-            <strong x-text="countWhat(h.name || '(nothing)', h.files)"></strong>
-            <span class="muted" x-text="(h.dir==='in' ? 'from ' : 'to ') + h.peer_name"></span>
-            <span class="muted mono" x-text="fmtSize(h.bytes)"></span>
-            <span class="muted mono" x-text="when(h.ended)"></span>
-            <div class="muted" x-show="h.error && h.result !== 'ok'" x-text="h.error"></div>
-          </li>
-        </template>
-      </ul>
-      <p class="empty" x-show="!history.length">No transfers yet.</p>
-    </section>
-
-    <!-- Activity -->
-    <section class="card" style="margin-top:16px" aria-label="Activity">
-      <h2>Activity</h2>
-      <div class="log" aria-live="polite">
-        <template x-for="(l,i) in logLines" :key="i">
-          <div><span class="t" x-text="l.t"></span><span x-text="l.m"></span></div>
-        </template>
-        <div class="empty" x-show="!logLines.length">Nothing yet.</div>
-      </div>
-    </section>
-  </main>
+      <!-- Settings -->
+      <section id="view-settings" aria-labelledby="h-settings" x-show="view === 'settings'" x-cloak>
+        <div class="viewhead"><h2 id="h-settings" tabindex="-1">Settings</h2></div>
+        <form class="sform" @submit.prevent="saveSettings()" novalidate>
+          <div class="alert error" role="alert" x-show="settingsError" x-text="settingsError"></div>
+          <div class="alert ok" role="status" x-show="settingsMsg">
+            <svg class="ico s-ok" aria-hidden="true" focusable="false"><use href="icons.svg#i-circle-check"></use></svg><span x-text="settingsMsg"></span></div>
+          <fieldset>
+            <legend><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-laptop"></use></svg>This computer</legend>
+            <label for="set-name">Device name</label>
+            <input type="text" id="set-name" x-model="draft.device_name" autocomplete="off" spellcheck="false" maxlength="64" aria-describedby="set-name-hint">
+            <p class="hint" id="set-name-hint">The name other computers see. A new name is used after rocket restarts.</p>
+            <p class="alert warn" role="status" x-show="settings.restart_required">
+              <svg class="ico s-warn" aria-hidden="true" focusable="false"><use href="icons.svg#i-triangle-alert"></use></svg>
+              <span>Restart rocket to use the new name. Other computers still see <strong x-text="self.name"></strong>.</span></p>
+            <label for="set-dir">Download folder</label>
+            <input type="text" id="set-dir" class="mono" x-model="draft.download_dir" autocomplete="off" spellcheck="false" aria-describedby="set-dir-hint">
+            <p class="hint" id="set-dir-hint">Where received files are saved. Leave empty for the default (Downloads/rocket). Used from the next transfer.</p>
+          </fieldset>
+          <fieldset>
+            <legend><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-shield-check"></use></svg>Trusted senders</legend>
+            <label class="check"><input type="checkbox" x-model="draft.auto_accept_trusted" aria-describedby="set-auto-hint"> Accept files from trusted senders without asking</label>
+            <p class="hint" id="set-auto-hint">A sender becomes trusted when you press <strong>Always accept from this host</strong>. Turn this off to be asked every time.</p>
+            <ul class="plain trusted" aria-label="Trusted senders" x-show="trusted.length">
+              <template x-for="t in trusted" :key="t.fingerprint">
+                <li>
+                  <svg class="ico s-muted" aria-hidden="true" focusable="false"><use href="icons.svg#i-fingerprint"></use></svg>
+                  <div class="who"><strong x-text="t.name || 'unnamed'"></strong>
+                    <div class="meta" x-text="t.fingerprint + ' · trusted ' + when(t.approved_at)"></div></div>
+                  <button type="button" class="small danger" :disabled="stopped" @click="revoke(t)" :aria-label="'Stop trusting ' + (t.name || t.fingerprint)">
+                    <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-x"></use></svg>Revoke</button>
+                </li>
+              </template>
+            </ul>
+            <p class="empty" x-show="!trusted.length">No trusted senders. Every offer asks first.</p>
+          </fieldset>
+          <div class="actions">
+            <button type="submit" class="primary" :disabled="stopped || saving || !settingsLoaded">Save</button>
+            <button type="button" :disabled="saving" @click="loadSettings()">Undo changes</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
 </div>
 </body>
 </html>
