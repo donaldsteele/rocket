@@ -19,7 +19,9 @@ function app() {
     theme: document.documentElement.getAttribute('data-theme') || 'dark',
     peers: [],
     offers: [],
-    xfers: {}, // transfer label -> {sent,total,dir,file,fileIndex,files}
+    xfers: {}, // transfer_id -> {id,name,peer,dir,state,sent,total,file,fileIndex,files}
+    ended: {}, // transfer_id -> true once finished, so a late poll cannot revive it
+    history: [],
     logLines: [],
     dragOver: false,
     target: null, // peer chosen for "Send files…" / "Send folder…"
@@ -28,7 +30,9 @@ function app() {
       this.loadSelf();
       this.pollPeers();
       this.loadIncoming();
-      setInterval(() => this.pollPeers(), 2000);
+      this.loadTransfers();
+      this.loadHistory();
+      setInterval(() => { this.pollPeers(); this.loadTransfers(); }, 2000);
       this.connectEvents();
     },
 
@@ -48,6 +52,57 @@ function app() {
       } catch (e) { /* none */ }
     },
 
+    // The server is the source of truth for transfers in flight (both
+    // directions, keyed by transfer_id); SSE progress fills in between polls.
+    async loadTransfers() {
+      try {
+        const list = await (await fetch('api/transfers')).json();
+        const next = {};
+        (list || []).forEach((t) => {
+          if (this.ended[t.transfer_id]) return;
+          next[t.transfer_id] = Object.assign({}, this.xfers[t.transfer_id] || {}, {
+            id: t.transfer_id, name: t.name, peer: t.peer_name, dir: t.dir, state: t.state,
+            sent: t.sent, total: t.total, file: t.file, fileIndex: t.file_index, files: t.files,
+            local: false,
+          });
+        });
+        // Keep local placeholders (a browser upload about to start).
+        Object.values(this.xfers).forEach((x) => { if (x.local && !next[x.id]) next[x.id] = x; });
+        this.xfers = next;
+      } catch (e) { /* transient */ }
+    },
+    async loadHistory() {
+      try {
+        const list = await (await fetch('api/history?limit=100')).json();
+        this.history = Array.isArray(list) ? list : [];
+      } catch (e) { /* transient */ }
+    },
+    async clearHistory() {
+      try {
+        const r = await api('api/history/clear', { method: 'POST' });
+        if (!r.ok) throw new Error(await r.text());
+        this.history = [];
+        this.log('history cleared');
+      } catch (e) { this.log(`could not clear history: ${e.message || e}`); }
+    },
+    async cancel(x) {
+      try {
+        const r = await api('api/cancel', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ transfer_id: x.id }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        this.log(`cancelling ${this.countWhat(x.name, x.files)}…`);
+      } catch (e) { this.log(`could not cancel: ${e.message || e}`); }
+    },
+    // finish forgets a transfer that ended (any outcome) and refreshes the
+    // history, where its entry now is.
+    finish(id) {
+      this.ended[id] = true;
+      delete this.xfers[id];
+      this.loadHistory();
+    },
+
     connectEvents() {
       const es = new EventSource('api/events');
       es.onmessage = (ev) => {
@@ -62,28 +117,36 @@ function app() {
       switch (m.type) {
         case 'offer_gone':
           this.offers = this.offers.filter((x) => x.id !== d.transfer_id);
+          if (d.reason !== 'accepted') this.loadHistory();
           break;
         case 'offer':
           this.addOffer(d);
           this.log(`incoming offer: ${this.offerWhat(d)} from ${d.sender_name}`);
           break;
-        case 'progress':
-          this.xfers[d.name] = {
-            sent: d.sent, total: d.total, dir: d.dir,
-            file: d.file, fileIndex: d.file_index, files: d.files,
-          };
+        case 'progress': {
+          if (this.ended[d.transfer_id]) break;
+          const prev = this.xfers[d.transfer_id] || {};
+          this.xfers[d.transfer_id] = Object.assign({}, prev, {
+            id: d.transfer_id, name: d.name, dir: d.dir, state: 'active', local: false,
+            sent: d.sent, total: d.total, file: d.file, fileIndex: d.file_index, files: d.files,
+          });
           break;
+        }
         case 'done':
-          delete this.xfers[d.name];
+          this.finish(d.transfer_id);
           this.log(`received ${this.countWhat(d.name, d.files)} from ${d.from}`);
           break;
         case 'sent':
-          delete this.xfers[d.name];
+          this.finish(d.transfer_id);
           this.log(`sent ${this.countWhat(d.name, d.files)} to ${d.to}`);
           break;
+        case 'cancelled':
+          this.finish(d.transfer_id);
+          this.log(`cancelled ${d.name || 'transfer'}${d.by === 'peer' ? ' (by the other computer)' : ''}`);
+          break;
         case 'error':
-          delete this.xfers[d.name];
-          this.log(`error on ${d.name}: ${d.error}`);
+          this.finish(d.transfer_id);
+          this.log(`error on ${d.name || 'transfer'}: ${d.error}`);
           break;
       }
     },
@@ -124,14 +187,15 @@ function app() {
       fd.append('manifest', JSON.stringify({ files: named.map((x) => ({ name: x.name, size: x.f.size })) }));
       named.forEach((x) => fd.append('file', x.f, x.name));
       const label = named[0].name.split('/')[0];
-      const total = files.reduce((n, f) => n + f.size, 0);
-      this.xfers[label] = { sent: 0, total, dir: 'out', files: files.length, fileIndex: 0 };
       this.log(`sending ${this.countWhat(label, files.length)} to ${p.name}…`);
+      // The transfer (waiting for the receiver, then moving) shows up in
+      // GET /api/transfers under its server-side ID, with a Cancel button.
+      setTimeout(() => this.loadTransfers(), 300);
       try {
         const r = await api(`api/relay?peer=${encodeURIComponent(p.fp)}`, { method: 'POST', body: fd });
-        if (!r.ok) throw new Error(await r.text());
+        // 410: cancelled; the "cancelled" event already said so.
+        if (!r.ok && r.status !== 410) throw new Error(await r.text());
       } catch (e) {
-        delete this.xfers[label];
         this.log(`send failed: ${e.message || e}`);
       }
     },
@@ -149,8 +213,8 @@ function app() {
       if (!files.length) return;
       const label = files[0].name;
       const total = files.reduce((n, f) => n + f.size, 0);
-      this.xfers[label] = { sent: 0, total, dir: 'in', files: files.length, fileIndex: 0 };
       this.log(`uploading ${this.countWhat(label, files.length)} to this computer…`);
+      let id = '';
       try {
         const o = await api('drop/offer', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -159,12 +223,17 @@ function app() {
         if (!o.ok) throw new Error(await o.text());
         const reply = await o.json();
         if (!reply.accepted) throw new Error(reply.reason || 'declined');
+        id = reply.transfer_id;
+        if (!this.xfers[id] && !this.ended[id]) {
+          this.xfers[id] = { id, name: label, dir: 'in', state: 'active', local: true, sent: 0, total, files: files.length, fileIndex: 0 };
+        }
         const fd = new FormData();
         files.forEach((f) => fd.append('file', f, f.name));
         const r = await fetch(`drop/upload?token=${encodeURIComponent(reply.token)}`, { method: 'POST', body: fd });
-        if (!r.ok) throw new Error(await r.text());
+        if (!r.ok && r.status !== 410) throw new Error(await r.text());
+        if (id) delete this.xfers[id]; // the placeholder, if no event removed it
       } catch (e) {
-        delete this.xfers[label];
+        if (id) delete this.xfers[id];
         this.log(`upload failed: ${e.message || e}`);
       }
     },
@@ -172,6 +241,22 @@ function app() {
     // "photos (12 files)" or just "report.pdf".
     countWhat(name, files) {
       return files > 1 ? `${name} (${files} files)` : name;
+    },
+    xferList() {
+      return Object.values(this.xfers);
+    },
+    // History result as a word plus a shape (never colour alone).
+    resultClass(r) {
+      return r === 'ok' ? 'ok' : (r === 'error' ? 'bad' : 'warn');
+    },
+    resultWord(r) {
+      return {
+        ok: '✓ done', declined: '✕ declined', cancelled: '■ cancelled', error: '! failed', timeout: '◷ no answer',
+      }[r] || r;
+    },
+    when(ts) {
+      const d = new Date(ts);
+      return isNaN(d) ? '' : d.toLocaleString();
     },
     offerWhat(o) {
       return o.files > 1 ? `${o.files} files, ${this.fmtSize(o.size) || '0 B'}` : o.name;

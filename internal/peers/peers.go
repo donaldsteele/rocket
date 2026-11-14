@@ -92,6 +92,14 @@ func (s *Store) Revoke(fingerprint string) error {
 	return s.save()
 }
 
+// Get returns the trusted sender with this fingerprint, if any.
+func (s *Store) Get(fingerprint string) (Trusted, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	t, ok := s.set[fingerprint]
+	return t, ok
+}
+
 // List returns all trusted senders.
 func (s *Store) List() []Trusted {
 	s.mu.RLock()

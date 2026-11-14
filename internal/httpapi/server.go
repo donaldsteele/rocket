@@ -6,10 +6,13 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -19,6 +22,7 @@ import (
 
 	"github.com/donaldsteele/rocket/internal/config"
 	"github.com/donaldsteele/rocket/internal/discovery"
+	"github.com/donaldsteele/rocket/internal/history"
 	"github.com/donaldsteele/rocket/internal/node"
 	"github.com/donaldsteele/rocket/internal/peers"
 	"github.com/donaldsteele/rocket/internal/protocol"
@@ -35,12 +39,16 @@ type Server struct {
 	hub      *eventHub
 	static   fs.FS
 	verifier *protocol.Verifier
+	xfers    *transfer.Manager
+	hist     *history.Store
+	settings *config.SettingsStore
 	// Version is reported by /api/hello and /api/self.
 	Version string
 	// OS is reported by /api/hello.
 	OS string
 
 	mu       sync.Mutex
+	dlDir    string                   // live download folder (flag/env/settings at start, PUT /api/settings after)
 	pending  map[string]*pendingOffer // keyed by transfer ID
 	uploads  map[string]*upload       // keyed by one-shot upload token
 	quitOnce sync.Once
@@ -96,11 +104,22 @@ func New(cfg *config.Config, id *node.Identity, trust *peers.Store, reg *discove
 	if err != nil {
 		return nil, err
 	}
+	hist, err := history.Open(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	// A damaged settings.json falls back to the defaults; the next save
+	// replaces it.
+	settings, _ := config.OpenSettings(cfg.DataDir)
 	return &Server{
 		cfg: cfg, id: id, trust: trust, drops: drops, reg: reg,
 		hub:      newEventHub(),
 		static:   static,
 		verifier: protocol.NewVerifier(id.Fingerprint()),
+		xfers:    transfer.NewManager(),
+		hist:     hist,
+		settings: settings,
+		dlDir:    cfg.DownloadDir,
 		Version:  "dev",
 		pending:  map[string]*pendingOffer{},
 		uploads:  map[string]*upload{},
@@ -132,6 +151,14 @@ func (s *Server) routes() []route {
 		{"POST /api/accept", surfaceLocal, s.handleAccept},
 		{"POST /api/send", surfaceLocal, s.handleSend},
 		{"POST /api/relay", surfaceLocal, s.handleRelay},
+		{"GET /api/transfers", surfaceLocal, s.handleTransfers},
+		{"POST /api/cancel", surfaceLocal, s.handleCancel},
+		{"GET /api/history", surfaceLocal, s.handleHistory},
+		{"POST /api/history/clear", surfaceLocal, s.handleHistoryClear},
+		{"GET /api/settings", surfaceLocal, s.handleGetSettings},
+		{"PUT /api/settings", surfaceLocal, s.handlePutSettings},
+		{"GET /api/trusted", surfaceLocal, s.handleTrusted},
+		{"POST /api/trusted/revoke", surfaceLocal, s.handleRevoke},
 		{"POST /api/quit", surfaceLocal, s.handleQuit},
 
 		// Static files: full UI on loopback, drop page elsewhere.
@@ -208,22 +235,148 @@ func (s *Server) dropPending(id string) {
 }
 
 // waitDecision publishes po as an "offer" event and blocks until the person
-// decides, the requester goes away, or protocol.OfferWait passes. ok is false
-// when no decision arrived (timedOut tells which).
+// decides, the requester goes away (the offer is withdrawn), or
+// protocol.OfferWait passes. ok is false when no decision arrived (timedOut
+// tells which). Every way out publishes "offer_gone" {transfer_id, reason}
+// so all open windows drop the prompt; a decline, a time-out or a withdrawal
+// is written to the history (an accepted offer is recorded when its transfer
+// ends).
 func (s *Server) waitDecision(r *http.Request, po *pendingOffer) (d decision, ok, timedOut bool) {
 	s.hub.publish(Event{Type: "offer", Data: po.view})
 	t := time.NewTimer(protocol.OfferWait)
 	defer t.Stop()
+	reason := "withdrawn"
 	select {
 	case d = <-po.reply:
-		return d, true, false
+		ok = true
+		reason = "declined"
+		if d.accept {
+			reason = "accepted"
+		}
 	case <-r.Context().Done():
 	case <-t.C:
 		timedOut = true
+		reason = "timed out"
 	}
 	s.dropPending(po.view.TransferID)
-	s.hub.publish(Event{Type: "offer_gone", Data: map[string]any{"transfer_id": po.view.TransferID}})
-	return decision{}, false, timedOut
+	s.hub.publish(Event{Type: "offer_gone", Data: map[string]any{"transfer_id": po.view.TransferID, "reason": reason}})
+	switch {
+	case ok && !d.accept:
+		s.recordOffer(po.view, history.ResultDeclined, "declined on this computer")
+	case timedOut:
+		s.recordOffer(po.view, history.ResultTimeout, "no answer within "+protocol.OfferWait.String())
+	case !ok:
+		s.recordOffer(po.view, history.ResultCancelled, "the sender withdrew the offer")
+	}
+	return d, ok, timedOut
+}
+
+// recordOffer writes the history entry of an incoming offer that never
+// became a transfer.
+func (s *Server) recordOffer(v IncomingOffer, res history.Result, msg string) {
+	top, _, _ := strings.Cut(v.Name, "/")
+	now := time.Now()
+	s.addHistory(history.Entry{
+		ID: v.TransferID, Dir: history.DirIn, Name: top, PeerName: v.SenderName, PeerFP: v.SenderFP,
+		Files: v.Files, Bytes: v.Size, Started: now, Ended: now, Result: res, Error: msg,
+	})
+}
+
+func (s *Server) addHistory(e history.Entry) {
+	if err := s.hist.Add(e); err != nil {
+		s.publishError(e.ID, e.Name, fmt.Errorf("could not write the history: %w", err))
+	}
+}
+
+// downloadDir is the live download folder.
+func (s *Server) downloadDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dlDir
+}
+
+// autoAccept reports whether trusted senders and remembered browsers skip
+// the prompt (settings: auto_accept_trusted).
+func (s *Server) autoAccept() bool { return s.settings.Get().AutoAcceptTrusted }
+
+// startIncoming registers an accepted upload with the transfer manager and
+// makes r.Body cancellable: Cancel stops the body read at once (a past read
+// deadline on the connection wakes a blocked read) and every later read
+// fails, so the receive helpers abort and remove their partial files.
+func (s *Server) startIncoming(w http.ResponseWriter, r *http.Request, up *upload, label string) {
+	rc := http.NewResponseController(w)
+	ctx := s.xfers.Start(r.Context(), transfer.Info{
+		ID: up.transferID, Dir: history.DirIn, Name: label, PeerName: up.senderName, PeerFP: up.senderFP,
+		Files: transfer.Files(up.manifest), Total: up.manifest.Total,
+	}, func() { _ = rc.SetReadDeadline(time.Now()) })
+	r.Body = &ctxBody{ctx: ctx, rc: r.Body}
+}
+
+// ctxBody fails reads once its context is done.
+type ctxBody struct {
+	ctx context.Context
+	rc  io.ReadCloser
+}
+
+func (b *ctxBody) Read(p []byte) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, transfer.ErrCancelled
+	}
+	n, err := b.rc.Read(p)
+	if err != nil && b.ctx.Err() != nil {
+		return n, transfer.ErrCancelled
+	}
+	return n, err
+}
+
+func (b *ctxBody) Close() error { return b.rc.Close() }
+
+// failIncoming ends a failed receive: history, an "error" or "cancelled"
+// event, and the HTTP answer. A cancel on this computer answers 410 Gone so
+// the sender can tell a cancel from a failure.
+func (s *Server) failIncoming(w http.ResponseWriter, up *upload, err error) {
+	res, err := s.endTransfer(up.transferID, err)
+	if res == history.ResultCancelled {
+		http.Error(w, "cancelled by the receiver", http.StatusGone)
+		return
+	}
+	http.Error(w, "transfer failed: "+err.Error(), recvCode(err))
+}
+
+// endTransfer finishes transfer id: it leaves the manager, its history entry
+// is written, and for anything but success a "cancelled" or "error" event
+// goes out (the caller publishes "done" or "sent" on success). A transfer
+// cancelled here counts as cancelled whatever error the cancel caused.
+func (s *Server) endTransfer(id string, err error) (history.Result, error) {
+	info, here := s.xfers.Finish(id)
+	if err != nil && here {
+		err = fmt.Errorf("%w on this computer", transfer.ErrCancelled)
+	}
+	res := transfer.Outcome(err)
+	e := history.Entry{
+		ID: id, Dir: info.Dir, Name: info.Name, PeerName: info.PeerName, PeerFP: info.PeerFP,
+		Files: info.Files, Bytes: info.Total, Started: info.Started, Result: res,
+	}
+	if err != nil {
+		e.Error = err.Error()
+	}
+	s.addHistory(e)
+	switch res {
+	case history.ResultOK:
+	case history.ResultCancelled:
+		by := "peer"
+		if here {
+			by = "local"
+		}
+		s.hub.publish(Event{Type: "cancelled", Data: map[string]any{
+			"transfer_id": id, "name": info.Name, "dir": info.Dir, "by": by, "error": err.Error(),
+		}})
+	default:
+		s.hub.publish(Event{Type: "error", Data: map[string]any{
+			"transfer_id": id, "name": info.Name, "dir": info.Dir, "result": res, "error": err.Error(),
+		}})
+	}
+	return res, err
 }
 
 // mintUpload stores up under a fresh one-shot token and returns the token.
@@ -312,6 +465,7 @@ func randToken() string {
 // file_index (1-based) and files describe the file in flight.
 func (s *Server) progressFn(transferID, name, dir string) transfer.ProgressFn {
 	return func(p transfer.Progress) {
+		s.xfers.Progress(transferID, p)
 		s.hub.publish(Event{Type: "progress", Data: map[string]any{
 			"transfer_id": transferID, "name": name, "sent": p.Sent, "total": p.Total, "dir": dir,
 			"file": p.File, "file_index": p.FileIndex, "files": p.Files,

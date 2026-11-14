@@ -95,20 +95,52 @@
     </div>
 
     <!-- Transfers in flight -->
-    <section class="card" style="margin-top:16px" x-show="Object.keys(xfers).length" aria-label="Transfers">
+    <section class="card" style="margin-top:16px" x-show="xferList().length" aria-label="Transfers">
       <h2>Transfers</h2>
-      <template x-for="(x,name) in xfers" :key="name">
+      <template x-for="x in xferList()" :key="x.id">
         <div class="xfer">
           <div class="label">
             <span><span class="state" :class="x.dir==='in'?'ok':'warn'" x-text="x.dir==='in'?'▼ in':'▲ out'"></span>
-              <span x-text="name"></span></span>
-            <span class="mono" x-text="pct(x.sent,x.total)+'%'"></span>
+              <span x-text="x.name"></span>
+              <span class="muted" x-show="x.peer" x-text="(x.dir==='in' ? 'from ' : 'to ') + x.peer"></span>
+              <span class="muted" x-show="x.state==='waiting'">waiting for the receiver…</span></span>
+            <span class="row-tools">
+              <span class="mono" x-text="pct(x.sent,x.total)+'%'"></span>
+              <button type="button" class="small" x-show="!x.local" @click="cancel(x)"
+                :aria-label="'Cancel ' + x.name">Cancel</button>
+            </span>
           </div>
           <div class="muted mono" x-show="x.files > 1 && x.fileIndex"
             x-text="'file ' + x.fileIndex + ' of ' + x.files + ': ' + (x.file || '')"></div>
           <div class="track"><div class="fill" :class="x.dir" :style="`width:${pct(x.sent,x.total)}%`"></div></div>
         </div>
       </template>
+    </section>
+
+    <!-- History -->
+    <section class="card" style="margin-top:16px" aria-labelledby="hist-h">
+      <div class="hist-head">
+        <h2 id="hist-h">History</h2>
+        <span class="row-tools">
+          <button type="button" class="small" @click="loadHistory()">Refresh</button>
+          <button type="button" class="small" x-show="history.length" @click="clearHistory()">Clear history</button>
+        </span>
+      </div>
+      <ul class="plain hist">
+        <template x-for="h in history" :key="h.id + h.ended">
+          <li>
+            <span class="state" :class="resultClass(h.result)" x-text="resultWord(h.result)"></span>
+            <span x-text="h.dir==='in' ? '▼' : '▲'" aria-hidden="true"></span>
+            <span class="sr" x-text="h.dir==='in' ? 'received' : 'sent'"></span>
+            <strong x-text="countWhat(h.name || '(nothing)', h.files)"></strong>
+            <span class="muted" x-text="(h.dir==='in' ? 'from ' : 'to ') + h.peer_name"></span>
+            <span class="muted mono" x-text="fmtSize(h.bytes)"></span>
+            <span class="muted mono" x-text="when(h.ended)"></span>
+            <div class="muted" x-show="h.error && h.result !== 'ok'" x-text="h.error"></div>
+          </li>
+        </template>
+      </ul>
+      <p class="empty" x-show="!history.length">No transfers yet.</p>
     </section>
 
     <!-- Activity -->

@@ -14,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/donaldsteele/rocket/internal/buildinfo"
+	"github.com/donaldsteele/rocket/internal/history"
 	"github.com/donaldsteele/rocket/internal/mcpserver"
 )
 
@@ -44,7 +45,12 @@ func runMCP(args []string) int {
 	defer stop()
 	go func() { _ = rs.reg.Run(ctx) }()
 
-	svc := &mcpserver.Service{ID: rs.id, Reg: rs.reg}
+	hist, err := history.Open(rs.cfg.DataDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "history:", err) // keep serving; history tools return nothing
+		hist = nil
+	}
+	svc := &mcpserver.Service{ID: rs.id, Reg: rs.reg, History: hist}
 	srv := mcpserver.New(svc, mcpserver.Options{Version: buildinfo.Version, Logger: logger})
 
 	transport := &mcp.IOTransport{Reader: io.NopCloser(os.Stdin), Writer: nopWriteCloser{os.Stdout}}

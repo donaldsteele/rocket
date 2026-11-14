@@ -44,8 +44,8 @@ func (s *Server) handleOffer(w http.ResponseWriter, r *http.Request) {
 
 	// Trust-on-first-use with proof of key possession: a sender whose
 	// fingerprint is trusted AND whose key matches the pinned key skips the
-	// prompt.
-	if s.trust.IsTrusted(o.SenderFP, o.SenderPub) {
+	// prompt, unless auto-accept is switched off in the settings.
+	if s.autoAccept() && s.trust.IsTrusted(o.SenderFP, o.SenderPub) {
 		writeJSON(w, protocol.OfferReply{Accepted: true, Token: s.mintUpload(up), TransferID: tid})
 		return
 	}
@@ -60,11 +60,11 @@ func (s *Server) handleOffer(w http.ResponseWriter, r *http.Request) {
 	d, ok, timedOut := s.waitDecision(r, po)
 	switch {
 	case !ok && timedOut:
-		writeJSON(w, protocol.OfferReply{Accepted: false, TransferID: tid, Reason: "timed out"})
+		writeJSON(w, protocol.OfferReply{Accepted: false, TransferID: tid, Reason: protocol.ReasonTimedOut})
 	case !ok:
 		// The sender went away; nothing to answer.
 	case !d.accept:
-		writeJSON(w, protocol.OfferReply{Accepted: false, TransferID: tid, Reason: "declined"})
+		writeJSON(w, protocol.OfferReply{Accepted: false, TransferID: tid, Reason: protocol.ReasonDeclined})
 	default:
 		if d.trust {
 			if err := s.trust.Approve(o.SenderFP, name, o.SenderPub); err != nil {
@@ -79,7 +79,9 @@ func (s *Server) handleOffer(w http.ResponseWriter, r *http.Request) {
 // from the offering IP. For kind:file the body is the raw file and
 // Content-Length must equal the manifest total; for kind:multi it is a tar
 // whose entries must match the manifest exactly, extracted under a fresh
-// top-level name in the download folder.
+// top-level name in the download folder. The receive is registered with the
+// transfer manager: POST /api/cancel stops it, removes the partial files and
+// answers the sender 410 Gone.
 func (s *Server) handleRecv(w http.ResponseWriter, r *http.Request) {
 	up := s.takeUpload(r.URL.Query().Get("token"), false, remoteIP(r))
 	if up == nil {
@@ -87,34 +89,34 @@ func (s *Server) handleRecv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	label := transfer.Label(up.manifest)
+	if up.manifest.Kind == protocol.KindMulti {
+		r.Body = http.MaxBytesReader(w, r.Body, tarLimit(up.manifest))
+	}
+	s.startIncoming(w, r, up, label)
 	progress := s.progressFn(up.transferID, label, "in")
+	dir := s.downloadDir()
+	var res transfer.Result
+	var err error
 	switch up.manifest.Kind {
 	case protocol.KindFile:
 		e := up.manifest.Entries[0]
 		if r.ContentLength != up.manifest.Total {
-			err := fmt.Errorf("content length %d does not match the offered size %d", r.ContentLength, up.manifest.Total)
-			s.publishError(up.transferID, label, err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+			err = fmt.Errorf("%w: content length %d does not match the offered size %d", transfer.ErrSize, r.ContentLength, up.manifest.Total)
+			break
 		}
-		dest, err := transfer.ReceiveFile(s.cfg.DownloadDir, e.Path, e.Size, r.Body, progress)
-		if err != nil {
-			s.failRecv(w, up, err)
-			return
+		var dest string
+		if dest, err = transfer.ReceiveFile(dir, e.Path, e.Size, r.Body, progress); err == nil {
+			res = transfer.Result{Paths: []string{dest}, Files: 1, Bytes: e.Size}
 		}
-		s.publishDone(up, label, transfer.Result{Paths: []string{dest}, Files: 1, Bytes: e.Size})
-	case protocol.KindMulti:
-		r.Body = http.MaxBytesReader(w, r.Body, tarLimit(up.manifest))
-		res, err := transfer.ReceiveTar(s.cfg.DownloadDir, up.manifest, r.Body, progress)
-		if err != nil {
-			s.failRecv(w, up, err)
-			return
-		}
-		s.publishDone(up, label, res)
-	default:
-		http.Error(w, "unsupported manifest kind", http.StatusBadRequest)
+	default: // kind:multi (Verify accepts no other kind)
+		res, err = transfer.ReceiveTar(dir, up.manifest, r.Body, progress)
+	}
+	if err != nil {
+		s.failIncoming(w, up, err)
 		return
 	}
+	s.endTransfer(up.transferID, nil)
+	s.publishDone(up, label, dir, res)
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -123,13 +125,6 @@ func (s *Server) handleRecv(w http.ResponseWriter, r *http.Request) {
 // entry and the end-of-archive marker.
 func tarLimit(m protocol.Manifest) int64 {
 	return m.Total + int64(len(m.Entries))*16<<10 + 1<<20
-}
-
-// failRecv reports a failed receive as an error event and HTTP error: 400 for
-// a body that does not match the offer, 500 for a local failure.
-func (s *Server) failRecv(w http.ResponseWriter, up *upload, err error) {
-	s.publishError(up.transferID, transfer.Label(up.manifest), err)
-	http.Error(w, "transfer failed: "+err.Error(), recvCode(err))
 }
 
 // recvCode maps a receive error to an HTTP status: 400 when the body does not
@@ -144,9 +139,10 @@ func recvCode(err error) int {
 
 // publishDone emits the "done" event for a finished receive. name is the
 // transfer label used by its progress events; path is the single top-level
-// file or folder created (or the download folder when there are several).
-func (s *Server) publishDone(up *upload, name string, res transfer.Result) {
-	path := s.cfg.DownloadDir
+// file or folder created (or the download folder dir when there are
+// several).
+func (s *Server) publishDone(up *upload, name, dir string, res transfer.Result) {
+	path := dir
 	if len(res.Paths) == 1 {
 		path = res.Paths[0]
 	}

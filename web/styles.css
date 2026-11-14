@@ -71,6 +71,14 @@ label.check{display:inline-flex;flex-direction:row;align-items:center;gap:6px;fo
 .track{height:6px;background:var(--bg-elev2);border-radius:3px;overflow:hidden}
 .fill{height:100%;background:var(--accent);transition:width .1s linear}
 .fill.in{background:var(--ok)}
+.row-tools{display:inline-flex;gap:var(--s2);align-items:center}
+button.small{min-height:28px;padding:2px 8px;font-size:13px}
+
+/* History */
+.hist-head{display:flex;justify-content:space-between;align-items:center;gap:var(--s2);flex-wrap:wrap;margin-bottom:var(--s2)}
+.hist-head h2{margin:0}
+.hist li{display:flex;flex-wrap:wrap;gap:6px var(--s2);align-items:center;padding:var(--s2) 0;border-bottom:1px solid var(--line);font-size:13px}
+.hist li>div{flex-basis:100%}
 
 /* Drop zone */
 .drop{border:2px dashed var(--line-strong);border-radius:8px;padding:var(--s6);text-align:center;color:var(--muted)}

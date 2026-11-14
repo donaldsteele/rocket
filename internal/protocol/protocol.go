@@ -87,8 +87,14 @@ type OfferReply struct {
 	Accepted   bool   `json:"accepted"`
 	Token      string `json:"token,omitempty"` // one-shot token for /api/recv
 	TransferID string `json:"transfer_id,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	Reason     string `json:"reason,omitempty"` // ReasonDeclined, ReasonTimedOut, ...
 }
+
+// OfferReply reasons for a refusal.
+const (
+	ReasonDeclined = "declined"
+	ReasonTimedOut = "timed out"
+)
 
 // Verification errors. Verify wraps one of these, so callers can use
 // errors.Is; every one of them maps to HTTP 400.

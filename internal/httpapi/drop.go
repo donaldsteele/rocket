@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/donaldsteele/rocket/internal/history"
 	"github.com/donaldsteele/rocket/internal/peers"
 	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/transfer"
@@ -48,8 +49,9 @@ func (s *Server) handleDropOffer(w http.ResponseWriter, r *http.Request) {
 	}
 	up := &upload{transferID: tid, manifest: m, senderName: label, ip: ip, drop: true, names: names}
 
+	// A remembered browser skips the prompt unless auto-accept is off.
 	remembered := false
-	if c, err := r.Cookie(DropCookie); err == nil && s.drops.Valid(c.Value) {
+	if c, err := r.Cookie(DropCookie); err == nil && s.autoAccept() && s.drops.Valid(c.Value) {
 		remembered = true
 	}
 	if remembered || (s.isLocal(r) && hasCSRF(r)) {
@@ -67,10 +69,10 @@ func (s *Server) handleDropOffer(w http.ResponseWriter, r *http.Request) {
 	d, ok, timedOut := s.waitDecision(r, po)
 	switch {
 	case !ok && timedOut:
-		writeJSON(w, protocol.OfferReply{Accepted: false, TransferID: tid, Reason: "timed out"})
+		writeJSON(w, protocol.OfferReply{Accepted: false, TransferID: tid, Reason: protocol.ReasonTimedOut})
 	case !ok:
 	case !d.accept:
-		writeJSON(w, protocol.OfferReply{Accepted: false, TransferID: tid, Reason: "declined"})
+		writeJSON(w, protocol.OfferReply{Accepted: false, TransferID: tid, Reason: protocol.ReasonDeclined})
 	default:
 		if tok, err := s.drops.Issue(); err == nil {
 			http.SetCookie(w, &http.Cookie{
@@ -102,18 +104,23 @@ func (s *Server) handleDropUpload(w http.ResponseWriter, r *http.Request) {
 	// Room for the announced bytes plus multipart framing.
 	limit := up.manifest.Total + 1<<20 + int64(len(up.manifest.Entries))*4096
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
-	mr, err := r.MultipartReader()
-	if err != nil {
-		http.Error(w, "bad upload", http.StatusBadRequest)
-		return
-	}
 
 	label := transfer.Label(up.manifest)
-	x := transfer.NewExtractor(s.cfg.DownloadDir, up.manifest, s.progressFn(up.transferID, label, "in"))
+	s.startIncoming(w, r, up, label)
+	dir := s.downloadDir()
+	x := transfer.NewExtractor(dir, up.manifest, s.progressFn(up.transferID, label, "in"))
 	fail := func(code int, err error) {
 		x.Abort()
-		s.publishError(up.transferID, label, err)
+		res, err := s.endTransfer(up.transferID, err)
+		if res == history.ResultCancelled {
+			code = http.StatusGone
+		}
 		http.Error(w, "upload failed: "+err.Error(), code)
+	}
+	mr, err := r.MultipartReader()
+	if err != nil {
+		fail(http.StatusBadRequest, errors.New("bad upload: not a multipart body"))
+		return
 	}
 	for i := range up.manifest.Entries {
 		part, err := mr.NextPart()
@@ -139,6 +146,7 @@ func (s *Server) handleDropUpload(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusBadRequest, err)
 		return
 	}
-	s.publishDone(up, label, res)
+	s.endTransfer(up.transferID, nil)
+	s.publishDone(up, label, dir, res)
 	writeJSON(w, map[string]any{"ok": true, "files": res.Files})
 }

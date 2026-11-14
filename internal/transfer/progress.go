@@ -74,14 +74,3 @@ func (w trackWriter) Write(b []byte) (int, error) {
 	w.t.add(n)
 	return n, err
 }
-
-type trackReader struct {
-	r io.Reader
-	t *tracker
-}
-
-func (r trackReader) Read(b []byte) (int, error) {
-	n, err := r.r.Read(b)
-	r.t.add(n)
-	return n, err
-}

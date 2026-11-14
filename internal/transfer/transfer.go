@@ -103,44 +103,44 @@ func SendManifest(ctx context.Context, id *node.Identity, t Target, m protocol.M
 		return err
 	}
 	if !reply.Accepted {
+		if reply.Reason == protocol.ReasonTimedOut {
+			return fmt.Errorf("%w (%s)", ErrTimedOut, t.Addr)
+		}
 		if reply.Reason == "" {
 			reply.Reason = "declined"
 		}
 		return fmt.Errorf("%w: %s", ErrDeclined, reply.Reason)
 	}
 
+	// The body is produced by a goroutine into a pipe: the raw file for
+	// kind:file, a tar for kind:multi. Only that goroutine touches the
+	// sources (open, read, close); the HTTP transport only reads the pipe,
+	// which is safe even when it keeps reading after Do has returned.
 	tr := newTracker(progress, m.Total, Files(m))
-	var (
-		body    io.Reader
-		length  int64
-		ctype   = "application/octet-stream"
-		pr      *io.PipeReader
-		tarDone chan error
-	)
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	writeDone := make(chan error, 1)
+	length, ctype := int64(-1), "application/x-tar"
 	if m.Kind == protocol.KindFile {
-		e := m.Entries[0]
-		rc, err := open(0, e)
-		if err != nil {
-			return err
-		}
-		defer rc.Close()
-		tr.file(e.Path)
-		body, length = trackReader{r: io.LimitReader(rc, e.Size), t: tr}, e.Size
+		length, ctype = m.Entries[0].Size, "application/octet-stream"
+		go func() {
+			err := writeFile(pw, m.Entries[0], open, tr)
+			pw.CloseWithError(err)
+			writeDone <- err
+		}()
 	} else {
-		var pw *io.PipeWriter
-		pr, pw = io.Pipe()
-		tarDone = make(chan error, 1)
 		go func() {
 			err := writeTar(pw, m, open, tr)
 			pw.CloseWithError(err)
-			tarDone <- err
+			writeDone <- err
 		}()
-		body, length, ctype = pr, -1, "application/x-tar"
 	}
 
 	u := fmt.Sprintf("http://%s/api/recv?token=%s", t.Addr, url.QueryEscape(reply.Token))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, pr)
 	if err != nil {
+		pr.Close()
+		<-writeDone
 		return err
 	}
 	req.ContentLength = length
@@ -149,26 +149,46 @@ func SendManifest(ctx context.Context, id *node.Identity, t Target, m protocol.M
 	}
 	req.Header.Set("Content-Type", ctype)
 	resp, err := httpClient.Do(req)
-	if tarDone != nil {
+	pr.Close() // unblocks the writer if the request ended early
+	werr := <-writeDone
+	if errors.Is(werr, io.ErrClosedPipe) {
+		werr = nil // the request ended first; err or the status says why
+	}
+	if err == nil {
+		defer resp.Body.Close()
+	}
+	switch {
+	case err == nil && resp.StatusCode == http.StatusGone:
+		return fmt.Errorf("%w by the receiver", ErrCancelled)
+	case ctx.Err() != nil && (err != nil || werr != nil):
+		return fmt.Errorf("send stopped: %w", ctx.Err())
+	case werr != nil:
 		// A failure while reading local files is the real cause; report it
 		// rather than the aborted request it caused.
-		pr.Close() // unblocks the tar writer if the request ended early
-		if terr := <-tarDone; terr != nil && !errors.Is(terr, io.ErrClosedPipe) {
-			if err == nil {
-				resp.Body.Close()
-			}
-			return terr
-		}
-	}
-	if err != nil {
+		return werr
+	case err != nil:
 		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	case resp.StatusCode != http.StatusOK:
 		return fmt.Errorf("upload failed: %s: %s", resp.Status, readMsg(resp.Body))
 	}
 	tr.finish()
 	return nil
+}
+
+// writeFile streams the single file of a kind:file manifest: exactly e.Size
+// bytes of it.
+func writeFile(w io.Writer, e protocol.Entry, open OpenFunc, tr *tracker) error {
+	rc, err := open(0, e)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	tr.file(e.Path)
+	n, err := io.CopyN(trackWriter{w: w, t: tr}, rc, e.Size)
+	if errors.Is(err, io.EOF) {
+		err = fmt.Errorf("%s: %w: it shrank while sending (%d of %d bytes)", e.Path, ErrSize, n, e.Size)
+	}
+	return err
 }
 
 // writeTar streams the entries of m as a tar archive: folders as TypeDir

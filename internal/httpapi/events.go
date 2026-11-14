@@ -7,10 +7,12 @@ import (
 )
 
 // Event is a message pushed to connected browsers over SSE. Types: "offer"
-// (an IncomingOffer), "offer_gone", "progress", "done", "sent", "error"; each
-// carries a transfer_id. "name" is the transfer label (the first top-level
-// file or folder); "progress" adds file, file_index (1-based) and files, and
-// "done"/"sent" add files.
+// (an IncomingOffer), "offer_gone" {transfer_id, reason: accepted, declined,
+// timed out or withdrawn}, "progress", "done", "sent", "error" {result,
+// error, dir} and "cancelled" {dir, by: local or peer, error}; each carries a
+// transfer_id. "name" is the transfer label (the first top-level file or
+// folder); "progress" adds dir, sent, total, file, file_index (1-based) and
+// files, and "done"/"sent" add files and bytes.
 type Event struct {
 	Type string `json:"type"`
 	Data any    `json:"data,omitempty"`

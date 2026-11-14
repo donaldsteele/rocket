@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/donaldsteele/rocket/internal/discovery"
+	"github.com/donaldsteele/rocket/internal/history"
 	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/transfer"
 )
@@ -46,7 +49,7 @@ func runSend(args []string) int {
 	defer cancel()
 
 	var t transfer.Target
-	label := target
+	label, peerName := target, target
 	if transfer.IsHostPort(target) {
 		t = transfer.Target{Addr: target}
 	} else {
@@ -58,6 +61,7 @@ func runSend(args []string) int {
 		}
 		t = transfer.Target{Addr: peer.Addr, FP: peer.Fingerprint}
 		label = fmt.Sprintf("%s (%s)", peer.Name, peer.Addr)
+		peerName = peer.Name
 	}
 
 	what := transfer.Label(plan.Manifest)
@@ -65,6 +69,7 @@ func runSend(args []string) int {
 		what = fmt.Sprintf("%s (%d files, %d bytes)", what, transfer.Files(plan.Manifest), plan.Manifest.Total)
 	}
 	fmt.Printf("sending %s to %s; waiting for the receiver to accept...\n", what, label)
+	started := time.Now()
 	err = transfer.SendPlan(ctx, rs.id, t, plan, func(p transfer.Progress) {
 		line := fmt.Sprintf("  %3d%%  %d/%d bytes", pct(p.Sent, p.Total), p.Sent, p.Total)
 		if p.Files > 1 {
@@ -76,12 +81,33 @@ func runSend(args []string) int {
 		fmt.Printf("\r%-79s", line)
 	})
 	fmt.Println()
+	recordSend(rs.cfg.DataDir, history.Entry{
+		Dir: history.DirOut, Name: transfer.Label(plan.Manifest), PeerName: peerName, PeerFP: t.FP,
+		Files: transfer.Files(plan.Manifest), Bytes: plan.Manifest.Total, Started: started,
+	}, err)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
 	fmt.Println("done")
 	return 0
+}
+
+// recordSend adds a finished send to the history in dataDir (best effort:
+// a history problem never fails the send).
+func recordSend(dataDir string, e history.Entry, err error) {
+	h, herr := history.Open(dataDir)
+	if herr != nil {
+		return
+	}
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	e.ID = hex.EncodeToString(b[:])
+	e.Result = transfer.Outcome(err)
+	if err != nil {
+		e.Error = err.Error()
+	}
+	_ = h.Add(e)
 }
 
 func resolvePeer(ctx context.Context, reg *discovery.Registry, target string, wait time.Duration) (discovery.Peer, bool) {

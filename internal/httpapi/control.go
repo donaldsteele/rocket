@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
+	"github.com/donaldsteele/rocket/internal/history"
 	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/transfer"
 )
@@ -18,7 +20,7 @@ func (s *Server) handleSelf(w http.ResponseWriter, _ *http.Request) {
 		"name":        s.id.Name,
 		"fingerprint": s.id.Fingerprint(),
 		"pub":         s.id.PublicKeyB64(),
-		"downloadDir": s.cfg.DownloadDir,
+		"downloadDir": s.downloadDir(),
 		"port":        s.cfg.HTTPPort,
 		"version":     s.Version,
 	})
@@ -71,17 +73,29 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
-// resolveTarget turns a peer reference into a send target: host:port is used
-// directly; otherwise it is a discovered peer's name or fingerprint prefix,
-// whose fingerprint the receiver must then answer with.
-func (s *Server) resolveTarget(peer string) (transfer.Target, error) {
+// resolveTarget turns a peer reference into a send target and a display
+// name: host:port is used directly (and named by its address); otherwise it
+// is a discovered peer's name or fingerprint prefix, whose fingerprint the
+// receiver must then answer with.
+func (s *Server) resolveTarget(peer string) (transfer.Target, string, error) {
 	if transfer.IsHostPort(peer) {
-		return transfer.Target{Addr: peer}, nil
+		return transfer.Target{Addr: peer}, peer, nil
 	}
 	if p, ok := s.reg.Find(peer); ok {
-		return transfer.Target{Addr: p.Addr, FP: p.Fingerprint}, nil
+		return transfer.Target{Addr: p.Addr, FP: p.Fingerprint}, p.Name, nil
 	}
-	return transfer.Target{}, fmt.Errorf("peer %q not found on the network", peer)
+	return transfer.Target{}, "", fmt.Errorf("peer %q not found on the network", peer)
+}
+
+// startOutgoing registers an outgoing transfer (waiting for the receiver's
+// decision) and returns its context: POST /api/cancel cancels it, which
+// withdraws a pending offer or aborts the upload. abort, if not nil, also
+// runs on cancel (see transfer.Manager.Start).
+func (s *Server) startOutgoing(parent context.Context, tid, peerName string, t transfer.Target, m protocol.Manifest, abort func()) context.Context {
+	return s.xfers.Start(parent, transfer.Info{
+		ID: tid, Dir: history.DirOut, Name: transfer.Label(m), PeerName: peerName, PeerFP: t.FP,
+		Files: transfer.Files(m), Total: m.Total, State: transfer.StateWaiting,
+	}, abort)
 }
 
 // handleSend sends local files and folders (paths on this computer) to a
@@ -102,29 +116,32 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	target, err := s.resolveTarget(body.Peer)
+	target, peerName, err := s.resolveTarget(body.Peer)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	tid := randToken()
 	name := transfer.Label(plan.Manifest)
+	ctx := s.startOutgoing(context.Background(), tid, peerName, target, plan.Manifest, nil)
 	go func() {
-		err := transfer.SendPlan(context.Background(), s.id, target, plan, s.progressFn(tid, name, "out"))
+		err := transfer.SendPlan(ctx, s.id, target, plan, s.progressFn(tid, name, "out"))
 		s.publishSent(tid, name, target, plan.Manifest, err)
 	}()
 	writeJSON(w, map[string]any{"ok": true, "transfer_id": tid, "files": transfer.Files(plan.Manifest), "total": plan.Manifest.Total})
 }
 
-// publishSent emits "sent" for a finished outgoing transfer, or "error".
-func (s *Server) publishSent(tid, name string, target transfer.Target, m protocol.Manifest, err error) {
-	if err != nil {
-		s.publishError(tid, name, err)
-		return
+// publishSent ends an outgoing transfer: history, then "sent" on success
+// (endTransfer publishes "cancelled" or "error" otherwise). It returns the
+// error as endTransfer reports it.
+func (s *Server) publishSent(tid, name string, target transfer.Target, m protocol.Manifest, err error) error {
+	if _, err = s.endTransfer(tid, err); err != nil {
+		return err
 	}
 	s.hub.publish(Event{Type: "sent", Data: map[string]any{
 		"transfer_id": tid, "name": name, "to": target.Addr, "files": transfer.Files(m), "bytes": m.Total,
 	}})
+	return nil
 }
 
 // relayManifestField is the multipart form field that must come first in a
@@ -139,7 +156,7 @@ const relayManifestField = "manifest"
 // in order. One bare file goes out as kind:file, anything else as a tar
 // (kind:multi) built on the fly from the parts; nothing is staged.
 func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
-	target, err := s.resolveTarget(r.URL.Query().Get("peer"))
+	target, peerName, err := s.resolveTarget(r.URL.Query().Get("peer"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -179,14 +196,23 @@ func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
 			return nil, fmt.Errorf("file %d is not %q", k+1, want)
 		}
 		k++
-		return part, nil
+		// Closing a multipart part drains the rest of it, which after a
+		// cancel could take as long as the whole upload; the next NextPart
+		// skips what is left anyway.
+		return io.NopCloser(part), nil
 	}
-	// The send outlives neither this request nor its body: cancel it if the
-	// browser goes away.
-	err = transfer.SendManifest(r.Context(), s.id, target, m, open, s.progressFn(tid, name, "out"))
-	s.publishSent(tid, name, target, m, err)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+	// The send outlives neither this request nor its body: it stops if the
+	// browser goes away, or on POST /api/cancel, which also stops the read of
+	// the browser upload (the tar writer may be blocked in it).
+	rc := http.NewResponseController(w)
+	ctx := s.startOutgoing(r.Context(), tid, peerName, target, m, func() { _ = rc.SetReadDeadline(time.Now()) })
+	err = transfer.SendManifest(ctx, s.id, target, m, open, s.progressFn(tid, name, "out"))
+	if err = s.publishSent(tid, name, target, m, err); err != nil {
+		code := http.StatusBadGateway
+		if transfer.Outcome(err) == history.ResultCancelled {
+			code = http.StatusGone
+		}
+		http.Error(w, err.Error(), code)
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "transfer_id": tid, "files": transfer.Files(m)})

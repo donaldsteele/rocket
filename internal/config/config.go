@@ -28,7 +28,7 @@ const (
 
 // Config holds resolved runtime paths and ports.
 type Config struct {
-	DataDir     string // keys, peer trust store, drop tokens
+	DataDir     string // keys, trust store, drop tokens, settings, history
 	DownloadDir string // received files land here (Downloads/rocket)
 	Name        string // device name; empty means the hostname
 	HTTPPort    int
@@ -46,7 +46,8 @@ type Overrides struct {
 }
 
 // Load resolves the configuration for this user and OS (flags, then
-// environment, then defaults) and creates the data and download folders.
+// environment, then settings.json in the data folder, then defaults) and
+// creates the data and download folders.
 func Load(o Overrides) (*Config, error) {
 	c := &Config{
 		DataDir:     pick(o.DataDir, os.Getenv(EnvDataDir)),
@@ -65,11 +66,16 @@ func Load(o Overrides) (*Config, error) {
 			return nil, err
 		}
 	}
-	if c.DownloadDir == "" {
-		c.DownloadDir = filepath.Join(downloadsDir(), "rocket")
-	}
 	if c.DataDir, err = filepath.Abs(c.DataDir); err != nil {
 		return nil, err
+	}
+	// Saved settings come after flags and environment. A damaged
+	// settings.json is ignored here (defaults apply).
+	saved, _ := ReadSettings(c.DataDir)
+	c.Name = pick(c.Name, saved.DeviceName)
+	c.DownloadDir = pick(c.DownloadDir, saved.DownloadDir)
+	if c.DownloadDir == "" {
+		c.DownloadDir = DefaultDownloadDir()
 	}
 	if c.DownloadDir, err = filepath.Abs(c.DownloadDir); err != nil {
 		return nil, err
@@ -120,6 +126,10 @@ func dataDir() (string, error) {
 	}
 	return filepath.Join(base, "rocket"), nil
 }
+
+// DefaultDownloadDir is where received files go when nothing else is set:
+// Downloads/rocket (or <home>/rocket without a Downloads folder).
+func DefaultDownloadDir() string { return filepath.Join(downloadsDir(), "rocket") }
 
 // downloadsDir returns the user's Downloads folder, falling back to the home
 // directory when it cannot be determined.
