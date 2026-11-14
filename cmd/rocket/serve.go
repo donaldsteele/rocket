@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -21,10 +23,11 @@ import (
 
 // runtimeState bundles everything a running rocket host needs.
 type runtimeState struct {
-	cfg   *config.Config
-	id    *node.Identity
-	trust *peers.Store
-	reg   *discovery.Registry
+	cfg    *config.Config
+	id     *node.Identity
+	trust  *peers.Store
+	reg    *discovery.Registry
+	noMDNS bool
 }
 
 // setup loads config (with flag overrides), identity, trust store and the
@@ -46,7 +49,53 @@ func setup(cf *commonFlags) (*runtimeState, error) {
 		Name: id.Name, Fingerprint: id.Fingerprint(),
 		HTTPPort: cfg.HTTPPort, Version: buildinfo.Version, OS: runtime.GOOS,
 	}, cfg.BeaconPort)
-	return &runtimeState{cfg: cfg, id: id, trust: trust, reg: reg}, nil
+	return &runtimeState{cfg: cfg, id: id, trust: trust, reg: reg, noMDNS: cf.noMDNS}, nil
+}
+
+// startMDNS browses for peers over mDNS in the background and, when advertise
+// is set, announces this host as <name>._rocket._tcp.local. It does nothing
+// with --no-mdns. A failure is a warning on stderr: the beacon keeps running.
+// Progress lines go to info (stdout for the UI; io.Discard where stdout is
+// reserved, as in `rocket mcp`). The returned stop func ends mDNS and waits
+// briefly for the advertiser's goodbye packet.
+func (rs *runtimeState) startMDNS(ctx context.Context, advertise bool, info io.Writer) (stop func()) {
+	if rs.noMDNS {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	go func() {
+		if err := rs.reg.Browse(ctx, logger); err != nil {
+			fmt.Fprintln(os.Stderr, "warning: mDNS browse unavailable (beacon still running):", err)
+		}
+	}()
+	done := make(chan struct{})
+	if !advertise {
+		close(done)
+	} else {
+		go func() {
+			defer close(done)
+			adv := rs.reg.Advertiser(logger)
+			if err := adv.Start(ctx); err != nil {
+				if ctx.Err() == nil {
+					fmt.Fprintln(os.Stderr, "warning: mDNS advertise failed (beacon still running):", err)
+				}
+				return
+			}
+			host, inst := adv.Names()
+			fmt.Fprintf(info, "mdns: advertising %q as %s.local on %s.local:%d\n",
+				inst, discovery.ServiceType, host, rs.cfg.HTTPPort)
+			<-ctx.Done()
+			adv.Close()
+		}()
+	}
+	return func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 // serve starts discovery and the HTTP server, blocking until the UI quits, a
@@ -81,6 +130,7 @@ func (rs *runtimeState) serve(openBrowser bool) int {
 			fmt.Fprintln(os.Stderr, "discovery:", err)
 		}
 	}()
+	stopMDNS := rs.startMDNS(ctx, true, os.Stdout)
 
 	fmt.Printf("rocket %s\n", buildinfo.Version)
 	fmt.Printf("  name:        %s\n", rs.id.Name)
@@ -105,6 +155,7 @@ func (rs *runtimeState) serve(openBrowser bool) int {
 	case <-ctx.Done():
 	case <-srv.Quit():
 	}
+	stopMDNS()
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer shutCancel()
 	_ = hs.Shutdown(shutCtx)

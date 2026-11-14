@@ -32,7 +32,7 @@ func (s *Server) handlePeers(w http.ResponseWriter, _ *http.Request) {
 	for _, p := range peers {
 		out = append(out, map[string]any{
 			"name": p.Name, "fp": p.Fingerprint, "addr": p.Addr,
-			"os": p.OS, "version": p.Version,
+			"os": p.OS, "version": p.Version, "via": p.Via,
 		})
 	}
 	writeJSON(w, out)

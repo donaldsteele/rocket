@@ -18,7 +18,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  recv     run headless: announce and accept, no browser")
 	fmt.Fprintln(os.Stderr, "  mcp      serve the MCP interface for an AI agent over stdio")
 	fmt.Fprintln(os.Stderr, "  version  print the version")
-	fmt.Fprintln(os.Stderr, "flags (ui, send, recv, mcp): --port, --beacon-port, --data-dir, --download-dir, --name")
+	fmt.Fprintln(os.Stderr, "flags (ui, send, recv, mcp): --port, --beacon-port, --data-dir, --download-dir, --name, --no-mdns")
 	fmt.Fprintln(os.Stderr, "run 'rocket <command> -h' for the flags of one command")
 }
 

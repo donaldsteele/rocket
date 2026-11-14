@@ -93,11 +93,12 @@ type tools struct{ svc *Service }
 type noInput struct{}
 
 type peerOut struct {
-	Name        string `json:"name"`
-	Fingerprint string `json:"fingerprint"`
-	Addr        string `json:"addr"`
-	Version     string `json:"version"`
-	OS          string `json:"os"`
+	Name        string   `json:"name"`
+	Fingerprint string   `json:"fingerprint"`
+	Addr        string   `json:"addr"`
+	Version     string   `json:"version"`
+	OS          string   `json:"os"`
+	Via         []string `json:"via"`
 }
 
 type listPeersOut struct {
@@ -107,7 +108,7 @@ type listPeersOut struct {
 func (t *tools) listPeers(_ context.Context, _ *mcp.CallToolRequest, _ noInput) (*mcp.CallToolResult, listPeersOut, error) {
 	var out listPeersOut
 	for _, p := range t.svc.Reg.Peers() {
-		out.Peers = append(out.Peers, peerOut{Name: p.Name, Fingerprint: p.Fingerprint, Addr: p.Addr, Version: p.Version, OS: p.OS})
+		out.Peers = append(out.Peers, peerOut{Name: p.Name, Fingerprint: p.Fingerprint, Addr: p.Addr, Version: p.Version, OS: p.OS, Via: p.Via})
 	}
 	return nil, out, nil
 }

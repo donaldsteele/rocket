@@ -44,6 +44,7 @@ func runMCP(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() { _ = rs.reg.Run(ctx) }()
+	defer rs.startMDNS(ctx, false, io.Discard)() // browse only: no HTTP server here
 
 	hist, err := history.Open(rs.cfg.DataDir)
 	if err != nil {

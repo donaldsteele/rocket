@@ -1,6 +1,7 @@
 // rocket web UI. Vanilla Alpine component. Talks to the local rocket server:
-// peers come from UDP-beacon discovery, transfers are pushed with an accept
-// prompt (trust-on-first-use), and progress arrives over an SSE event stream.
+// peers come from UDP-beacon and mDNS discovery, transfers are pushed with an
+// accept prompt (trust-on-first-use), and progress arrives over an SSE event
+// stream.
 
 // api calls the loopback control API. Every non-GET call carries the
 // X-Rocket-CSRF header the server requires.
@@ -277,6 +278,14 @@ function app() {
       const t = new Date().toLocaleTimeString();
       this.logLines.unshift({ t, m });
       if (this.logLines.length > 200) this.logLines.pop();
+    },
+    // peerMeta is the second line of a peer row: fingerprint, OS and how it
+    // was found (beacon, mdns or both).
+    peerMeta(p) {
+      const parts = [p.fp];
+      if (p.os) parts.push(p.os);
+      if (Array.isArray(p.via) && p.via.length) parts.push('via ' + p.via.join(' + '));
+      return parts.join(' · ');
     },
     pct(a, b) { return b > 0 ? Math.floor((a * 100) / b) : 0; },
     fmtSize(n) {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"time"
@@ -18,7 +19,7 @@ import (
 
 // runSend sends files and folders to a peer named on the command line, all
 // in one transfer: a host:port, or a discovered peer's name or fingerprint
-// prefix (it briefly listens for beacons to resolve those).
+// prefix (it briefly listens for beacons and mDNS to resolve those).
 func runSend(args []string) int {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	cf := addCommonFlags(fs)
@@ -54,6 +55,7 @@ func runSend(args []string) int {
 		t = transfer.Target{Addr: target}
 	} else {
 		go func() { _ = rs.reg.Run(ctx) }()
+		defer rs.startMDNS(ctx, false, io.Discard)()
 		peer, ok := resolvePeer(ctx, rs.reg, target, *wait)
 		if !ok {
 			fmt.Fprintf(os.Stderr, "peer %q not found on the network\n", target)
