@@ -4,7 +4,7 @@ All notable changes to rocket are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and rocket uses
 [semantic versioning](https://semver.org/).
 
-## [1.0.0] - Unreleased
+## [1.0.0] - 2026-11-14
 
 The first release.
 
