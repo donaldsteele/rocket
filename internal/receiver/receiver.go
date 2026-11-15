@@ -349,13 +349,40 @@ func (b *ctxBody) Close() error { return b.rc.Close() }
 // failIncoming ends a failed receive: history, an "error" or "cancelled"
 // event, and the HTTP answer. A cancel on this side answers 410 Gone so the
 // sender can tell a cancel from a failure.
-func (rx *Receiver) failIncoming(w http.ResponseWriter, up *Upload, err error) {
+func (rx *Receiver) failIncoming(w http.ResponseWriter, r *http.Request, up *Upload, err error) {
 	res, err := rx.cfg.Ledger.End(up.TransferID, err)
 	if res == history.ResultCancelled {
-		http.Error(w, "cancelled by the receiver", http.StatusGone)
+		answerGone(w, r)
 		return
 	}
 	http.Error(w, "transfer failed: "+err.Error(), RecvCode(err))
+}
+
+// goneDrain bounds how long answerGone keeps reading a cancelled upload.
+const goneDrain = 2 * time.Second
+
+// answerGone tells the sender its upload was cancelled here. The 410 is
+// flushed first, then the rest of the body is read and dropped for up to
+// goneDrain. Returning with unread data would close the connection with
+// bytes still queued, and the kernel answers that with a reset; on Windows
+// the reset can destroy the 410 before the sender has read it, so the
+// sender would report a network error instead of the cancel. The sender
+// stops writing once it has the answer, which ends the drain early.
+func answerGone(w http.ResponseWriter, r *http.Request) {
+	rc := http.NewResponseController(w)
+	duplex := rc.EnableFullDuplex() == nil
+	http.Error(w, "cancelled by the receiver", http.StatusGone)
+	if !duplex || rc.Flush() != nil {
+		return
+	}
+	body := r.Body
+	if cb, ok := body.(*ctxBody); ok {
+		body = cb.rc // ctxBody refuses reads once the transfer is cancelled
+	}
+	if rc.SetReadDeadline(time.Now().Add(goneDrain)) != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, body)
 }
 
 // Done emits the "done" event for a finished receive. name is the transfer
@@ -501,7 +528,7 @@ func (rx *Receiver) HandleRecv(w http.ResponseWriter, r *http.Request) {
 	progress := rx.cfg.Ledger.Progress(up.TransferID, label, "in")
 	out, err := rx.cfg.Sink.Begin(up.TransferID, up.Manifest, progress)
 	if err != nil {
-		rx.failIncoming(w, up, err)
+		rx.failIncoming(w, r, up, err)
 		return
 	}
 	var res transfer.Result
@@ -522,7 +549,7 @@ func (rx *Receiver) HandleRecv(w http.ResponseWriter, r *http.Request) {
 		res, err = transfer.ExtractTar(out, up.Manifest, r.Body)
 	}
 	if err != nil {
-		rx.failIncoming(w, up, err)
+		rx.failIncoming(w, r, up, err)
 		return
 	}
 	rx.cfg.Ledger.End(up.TransferID, nil)
