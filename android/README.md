@@ -78,8 +78,20 @@ Covered: single file and folder both ways, the share sheet, decline,
 "Always accept" then auto-accept, a second `photos` saved as
 `photos (1)`, cancel on either side (partial files removed, including the
 pending MediaStore entry), the offer notification's Accept action, and
-200% font size. The site screenshots `site/assets/shots/android-*.png` come
-from this setup (720x1600 at 280 dpi, SystemUI demo mode).
+200% font size.
+
+For 1.1 (protocol 2) also: transfers both ways shown and recorded as
+Encrypted; a lost connection mid-file both ways (a TCP relay between the
+hosts, killed and restarted) with the send showing Reconnecting n/5 and
+continuing from the resume point without a second prompt; a phone send
+that gave up (Interrupted), the app reinstalled, then Resume from the
+Transfers tab through the persisted URI grant; a desktop 1.0 peer listed
+as Needs update, refused with "runs an older rocket (protocol 1)", and a
+protocol-1 offer to the phone answered 426.
+
+The site screenshots `site/assets/shots/android-*.png` come from this
+setup in SystemUI demo mode, at 720x1600 (the 1.1 ones captured at
+1080x2400, 420 dpi, the same layout, and scaled down).
 
 ## Resources
 

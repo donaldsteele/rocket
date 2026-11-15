@@ -62,6 +62,14 @@ object Lucide {
     )
     val Upload = icon("upload", "M12 3v12", "m17 8-5-5-5 5", "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4")
     val Download = icon("download", "M12 15V3", "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m7 10 5 5 5-5")
+    val Lock = icon("lock", rect(3f, 11f, 18f, 11f, 2f), "M7 11V7a5 5 0 0 1 10 0v4")
+    val LockOpen = icon("lock-open", rect(3f, 11f, 18f, 11f, 2f), "M7 11V7a5 5 0 0 1 9.9-1")
+    val Unplug = icon(
+        "unplug",
+        "m19 5 3-3", "m2 22 3-3", "M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z",
+        "M7.5 13.5 10 11", "M10.5 16.5 13 14", "m12 6 6 6 2.3-2.3a2.4 2.4 0 0 0 0-3.4l-2.6-2.6a2.4 2.4 0 0 0-3.4 0Z",
+    )
+    val Play = icon("play", "M6 3L20 12L6 21L6 3Z")
 }
 
 private fun icon(name: String, vararg paths: String): ImageVector {

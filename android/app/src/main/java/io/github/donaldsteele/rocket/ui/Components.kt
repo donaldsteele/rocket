@@ -60,6 +60,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.donaldsteele.rocket.R
 import io.github.donaldsteele.rocket.core.Peer
+import io.github.donaldsteele.rocket.core.canSend
+import io.github.donaldsteele.rocket.core.rocketcore.Rocketcore
 import io.github.donaldsteele.rocket.ui.theme.Mono
 import io.github.donaldsteele.rocket.ui.theme.Rocket
 
@@ -114,18 +116,44 @@ fun Tone.color(): Color = when (this) {
 
 /** A status as a word plus a shape (and a colour), like desktop's chips. */
 @Composable
-fun StatusChip(icon: ImageVector, word: String, tone: Tone, modifier: Modifier = Modifier) {
+fun StatusChip(icon: ImageVector, word: String, tone: Tone, modifier: Modifier = Modifier, spoken: String? = null) {
     val c = Rocket.colors
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .border(1.dp, c.lineStrong, RoundedCornerShape(10.dp))
             .padding(horizontal = 8.dp, vertical = 2.dp)
-            .semantics(mergeDescendants = true) {},
+            .then(
+                // spoken replaces the word for screen readers ("attempt 2 of 5").
+                if (spoken != null) {
+                    Modifier.clearAndSetSemantics { contentDescription = spoken }
+                } else {
+                    Modifier.semantics(mergeDescendants = true) {}
+                },
+            ),
     ) {
         Icon(icon, contentDescription = null, tint = tone.color(), modifier = Modifier.size(14.dp))
         Spacer(Modifier.width(4.dp))
         Text(word, style = MaterialTheme.typography.labelMedium, color = c.fg)
+    }
+}
+
+/** "Encrypted": the file bytes of a transfer between rocket apps travel encrypted. */
+@Composable
+fun EncryptedChip(modifier: Modifier = Modifier) = StatusChip(Lucide.Lock, "Encrypted", Tone.Ok, modifier)
+
+/** The note above a list of peers that can be sent to. */
+@Composable
+fun EncryptedNote(modifier: Modifier = Modifier) {
+    val c = Rocket.colors
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier.semantics(mergeDescendants = true) {}) {
+        Icon(Lucide.Lock, contentDescription = null, tint = c.ok, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(
+            "Files you send to these devices are encrypted on the way. Names and sizes are not.",
+            style = MaterialTheme.typography.bodySmall,
+            color = c.fgMuted,
+        )
     }
 }
 
@@ -208,11 +236,19 @@ fun osIcon(os: String): ImageVector = when (os) {
     else -> Lucide.Monitor
 }
 
-/** One discovered host, with the actions offered for it. */
+/** The wire protocol this phone speaks; peers announcing another need an update. */
+val PROTO: Int = Rocketcore.ProtoVersion.toInt()
+
+/**
+ * One discovered host, with the actions offered for it. A host that speaks
+ * another protocol (an older rocket) shows "Needs update" and why, and no
+ * actions.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PeerRow(peer: Peer, modifier: Modifier = Modifier, actions: @Composable () -> Unit) {
     val c = Rocket.colors
+    val ok = peer.canSend(PROTO)
     Surface(
         color = c.bg,
         shape = RoundedCornerShape(4.dp),
@@ -232,10 +268,18 @@ fun PeerRow(peer: Peer, modifier: Modifier = Modifier, actions: @Composable () -
                         color = c.fgMuted,
                     )
                 }
+                if (!ok) {
+                    Spacer(Modifier.width(8.dp))
+                    StatusChip(Lucide.TriangleAlert, "Needs update", Tone.Warn)
+                }
             }
             Spacer(Modifier.height(10.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                actions()
+            if (ok) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    actions()
+                }
+            } else {
+                Text(peerUpdateText(peer, PROTO), style = MaterialTheme.typography.bodyMedium, color = c.fgMuted)
             }
         }
     }

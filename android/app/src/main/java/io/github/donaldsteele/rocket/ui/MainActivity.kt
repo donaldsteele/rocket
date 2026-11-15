@@ -214,7 +214,7 @@ private fun AppShell(requestedTab: Int, onTabShown: () -> Unit) {
         when (tab) {
             MainActivity.TAB_SEND -> SendScreen(onMessage = say, modifier = m)
             MainActivity.TAB_RECEIVE -> ReceiveScreen(onMessage = say, modifier = m)
-            MainActivity.TAB_TRANSFERS -> TransfersScreen(modifier = m)
+            MainActivity.TAB_TRANSFERS -> TransfersScreen(onMessage = say, modifier = m)
             MainActivity.TAB_HISTORY -> HistoryScreen(onMessage = say, modifier = m)
             else -> SettingsScreen(onMessage = say, modifier = m)
         }

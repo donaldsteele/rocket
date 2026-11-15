@@ -34,7 +34,7 @@ class Core(context: Context) {
     )
 
     val items = ContentItems(app)
-    val transfers = Transfers(node, items)
+    val transfers = Transfers(node, items, OutgoingStore(File(app.filesDir, "rocket/outgoing-items"), items))
     val receiver = Receiver(app, node, transfers)
     val discovery = Discovery(app, node, ownService = { receiver.serviceName })
 
@@ -118,16 +118,43 @@ class Core(context: Context) {
         get() = prefs.getBoolean(KEY_ASKED_NOTIFY, false)
         set(v) = prefs.edit { putBoolean(KEY_ASKED_NOTIFY, v) }
 
+    init {
+        transfers.reloadResumable()
+    }
+
     /**
      * Sends items to target in the transfer service. grants are content URIs
      * this app may read only through a grant tied to the calling activity
      * (the share sheet's); they are handed on to the service so they stay
-     * readable after the activity closes.
+     * readable after the activity closes. kept are the URIs this app took
+     * persistable access to (ContentItems.take), for a Resume later.
      */
-    fun send(context: Context, target: SendTarget, items: List<SendItem>, grants: List<Uri> = emptyList()) {
-        val job = transfers.enqueue(target, items)
+    fun send(
+        context: Context,
+        target: SendTarget,
+        items: List<SendItem>,
+        grants: List<Uri> = emptyList(),
+        kept: List<String> = emptyList(),
+    ) {
+        val job = transfers.enqueue(target, items, kept)
         try {
             TransferService.startSend(context, job, grants)
+        } catch (e: Exception) {
+            transfers.forget(job)
+            throw e
+        }
+    }
+
+    /**
+     * Resumes interrupted send [send] with items (the saved ones, or files
+     * picked again) in the transfer service: to the same peer, continuing
+     * where it stopped when the files are unchanged.
+     */
+    fun resume(context: Context, send: InterruptedSend, items: List<SendItem>, kept: List<String>) {
+        val target = SendTarget(addr = "", fp = send.peerFp, name = send.peerName)
+        val job = transfers.enqueue(target, items, kept, resumeOf = send.transferId)
+        try {
+            TransferService.startSend(context, job, emptyList())
         } catch (e: Exception) {
             transfers.forget(job)
             throw e

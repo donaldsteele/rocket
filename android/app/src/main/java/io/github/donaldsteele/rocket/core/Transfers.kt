@@ -27,9 +27,15 @@ enum class TransferState(val active: Boolean) {
     /** Offered; the receiver has not decided yet. */
     Waiting(true),
     Sending(true),
+
+    /** The connection was lost; the send is offered again by itself. */
+    Reconnecting(true),
     Done(false),
     Failed(false),
     Cancelled(false),
+
+    /** The connection was lost for good: a send kept to be resumed, or a receive kept to be continued. */
+    Interrupted(false),
 }
 
 /** One send as the Transfers screen shows it. */
@@ -51,6 +57,11 @@ data class Transfer(
     val incoming: Boolean = false,
     /** Where a finished receive was saved (a content URI or folder name). */
     val savedTo: String = "",
+    /** While reconnecting: retry [attempt] of [attempts]. */
+    val attempt: Int = 0,
+    val attempts: Int = 0,
+    /** Every transfer between rocket apps is encrypted; false only for one that never started. */
+    val encrypted: Boolean = true,
 )
 
 /** Applies one event to a transfer. */
@@ -73,7 +84,16 @@ fun Transfer.withEvent(ev: TransferEvent): Transfer {
             state = TransferState.Done,
             savedTo = ev.path.ifEmpty { savedTo },
         )
-        is TransferEvent.Failed -> copy(name = n, state = TransferState.Failed, error = ev.error)
+        is TransferEvent.Retrying -> if (state.active) {
+            copy(name = n, state = TransferState.Reconnecting, attempt = ev.attempt, attempts = ev.attempts, error = ev.error)
+        } else {
+            this
+        }
+        is TransferEvent.Failed -> copy(
+            name = n,
+            state = if (ev.interrupted) TransferState.Interrupted else TransferState.Failed,
+            error = ev.error,
+        )
         is TransferEvent.Cancelled -> copy(
             name = n,
             state = TransferState.Cancelled,
@@ -114,15 +134,29 @@ fun applyIncoming(list: List<Transfer>, ev: TransferEvent, info: TransferInfo?):
  * The transfers of this app session: sends, and receives the
  * [Receiver] reports through [onIncoming]. A send is queued here ([enqueue]), started
  * by the transfer service ([start]) so it keeps running in the background,
- * and followed through the Go core's events.
+ * and followed through the Go core's events. A send that loses its
+ * connection for good is kept: its items in [store] (the Go core keeps the
+ * rest), to be resumed from [resumable].
  */
-class Transfers(private val node: Node, private val opener: ItemOpener) {
-    private class Job(val target: SendTarget, val items: List<SendItem>)
+class Transfers(
+    private val node: Node,
+    private val opener: ItemOpener,
+    private val store: OutgoingStore,
+) {
+    private class Job(
+        val target: SendTarget,
+        val items: List<SendItem>,
+        /** URIs with persistable read access this send holds. */
+        val grants: List<String>,
+        /** The interrupted send this one resumes, or null for a new send. */
+        val resumeOf: String?,
+    )
 
     private val jobs = ConcurrentHashMap<Long, Job>()
     private val nextJob = AtomicLong()
     private val nextLocal = AtomicLong()
     private val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "rocket-send").apply { isDaemon = true } }
+    private val background = Executors.newSingleThreadExecutor { r -> Thread(r, "rocket-resumable").apply { isDaemon = true } }
 
     private val _list = MutableStateFlow<List<Transfer>>(emptyList())
 
@@ -144,10 +178,15 @@ class Transfers(private val node: Node, private val opener: ItemOpener) {
     /** Bumps whenever a transfer ends, so history can reload. */
     val ended: StateFlow<Int> = _ended.asStateFlow()
 
-    /** Queues a send; pass the returned job ID to [start]. */
-    fun enqueue(target: SendTarget, items: List<SendItem>): Long {
+    private val _resumable = MutableStateFlow(Resumable())
+
+    /** Interrupted sends and kept receives ([reloadResumable]). */
+    val resumable: StateFlow<Resumable> = _resumable.asStateFlow()
+
+    /** Queues a send; pass the returned job ID to [start]. grants are URIs with persistable access it holds. */
+    fun enqueue(target: SendTarget, items: List<SendItem>, grants: List<String> = emptyList(), resumeOf: String? = null): Long {
         val id = nextJob.incrementAndGet()
-        jobs[id] = Job(target, items)
+        jobs[id] = Job(target, items, grants, resumeOf)
         _starting.update { it + 1 }
         return id
     }
@@ -161,14 +200,25 @@ class Transfers(private val node: Node, private val opener: ItemOpener) {
         val job = jobs.remove(jobId) ?: return
         executor.execute {
             val source = GoSource(job.items, opener)
-            val listener = Listener(job.target, summarize(job.items), source)
+            val listener = Listener(job, summarize(job.items), source)
             try {
-                // The name shown when the peer was picked: discovery may have
-                // dropped the peer while the picker was open.
-                val tid = node.sendNamed(job.target.addr, job.target.fp, job.target.name, source, listener)
+                val tid = if (job.resumeOf != null) {
+                    node.resume(job.resumeOf, source, listener).also {
+                        // The core forgot the interrupted send; its grants
+                        // now belong to this one, and its card gives way.
+                        store.remove(job.resumeOf, release = false)
+                        dropInterrupted(job.resumeOf)
+                        reloadResumable()
+                    }
+                } else {
+                    // The name shown when the peer was picked: discovery may have
+                    // dropped the peer while the picker was open.
+                    node.sendNamed(job.target.addr, job.target.fp, job.target.name, source, listener)
+                }
                 listener.started(tid)
             } catch (e: Exception) {
                 source.close()
+                if (job.resumeOf == null) store.releaseUnused(job.grants)
                 val why = e.message ?: e.toString()
                 _messages.tryEmit("Could not send to ${job.target.name}: $why")
                 val s = summarize(job.items)
@@ -177,7 +227,7 @@ class Transfers(private val node: Node, private val opener: ItemOpener) {
                         Transfer(
                             id = "local-${nextLocal.incrementAndGet()}", peerName = job.target.name, name = s.label,
                             sent = 0, total = s.bytes, file = "", fileIndex = 0, files = s.files,
-                            state = TransferState.Failed, error = why, cancellable = false,
+                            state = TransferState.Failed, error = why, cancellable = false, encrypted = false,
                         ),
                     ) + it
                 }
@@ -190,7 +240,9 @@ class Transfers(private val node: Node, private val opener: ItemOpener) {
 
     /** Drops a queued job that will never start (its service start failed). */
     fun forget(jobId: Long) {
-        if (jobs.remove(jobId) != null) _starting.update { it - 1 }
+        val job = jobs.remove(jobId) ?: return
+        if (job.resumeOf == null) store.releaseUnused(job.grants)
+        _starting.update { it - 1 }
     }
 
     fun cancel(id: String): Boolean = node.cancel(id)
@@ -203,7 +255,12 @@ class Transfers(private val node: Node, private val opener: ItemOpener) {
     /** Records an event of a receive; info describes a receive seen for the first time. */
     fun onIncoming(ev: TransferEvent, info: TransferInfo?) {
         _list.update { applyIncoming(it, ev, info) }
-        if (ev !is TransferEvent.Progress) _ended.update { it + 1 }
+        if (ev !is TransferEvent.Progress && ev !is TransferEvent.Retrying) _ended.update { it + 1 }
+    }
+
+    /** Removes the card of interrupted transfer id: a later attempt continued it. */
+    fun dropInterrupted(id: String) {
+        _list.update { l -> l.filterNot { it.id == id && it.state == TransferState.Interrupted } }
     }
 
     /** Whether a receive is in flight. */
@@ -214,13 +271,37 @@ class Transfers(private val node: Node, private val opener: ItemOpener) {
         _list.update { l -> l.filter { it.state.active } }
     }
 
+    /** Reads what can be resumed again, in the background; saved items the core forgot go. */
+    fun reloadResumable() {
+        background.execute {
+            val r = runCatching { parseResumable(node.resumableJSON()) }.getOrDefault(Resumable())
+            _resumable.value = r
+            runCatching { store.prune(r.outgoing.map { it.transferId }.toSet()) }
+        }
+    }
+
+    /** The saved items of interrupted send id, or null when they were not kept. Reads a file. */
+    fun saved(id: String): SavedSend? = store.load(id)
+
+    /**
+     * Forgets interrupted send id (and tells its receiver to drop what it
+     * kept) or removes receive id kept here. Returns null, or what went
+     * wrong. Call off the main thread.
+     */
+    fun discard(id: String): String? {
+        val err = runCatching { node.discard(id) }.exceptionOrNull()
+        store.remove(id)
+        reloadResumable()
+        return err?.let { it.message ?: it.toString() }
+    }
+
     private inner class Listener(
-        private val target: SendTarget,
+        private val job: Job,
         private val summary: SendSummary,
         private val source: GoSource,
     ) : ProgressListener {
         private fun fresh(tid: String) = Transfer(
-            id = tid, peerName = target.name, name = summary.label, sent = 0, total = summary.bytes,
+            id = tid, peerName = job.target.name, name = summary.label, sent = 0, total = summary.bytes,
             file = "", fileIndex = 0, files = summary.files, state = TransferState.Waiting, error = "",
             cancellable = true,
         )
@@ -239,10 +320,16 @@ class Transfers(private val node: Node, private val opener: ItemOpener) {
                 val i = l.indexOfFirst { it.id == tid }
                 if (i < 0) listOf(fresh(tid).withEvent(ev)) + l else l.toMutableList().also { it[i] = it[i].withEvent(ev) }
             }
-            if (ev !is TransferEvent.Progress) {
-                source.close()
-                _ended.update { it + 1 }
+            if (ev is TransferEvent.Progress || ev is TransferEvent.Retrying) return
+            source.close()
+            if (ev is TransferEvent.Failed && ev.interrupted) {
+                // Kept by the core for 24 hours: keep what Resume needs.
+                runCatching { store.save(SavedSend(tid, job.items, job.grants)) }
+            } else {
+                store.releaseUnused(job.grants)
             }
+            reloadResumable()
+            _ended.update { it + 1 }
         }
     }
 }

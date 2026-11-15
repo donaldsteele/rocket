@@ -47,6 +47,7 @@ import io.github.donaldsteele.rocket.core
 import io.github.donaldsteele.rocket.core.SendItem
 import io.github.donaldsteele.rocket.core.SendSummary
 import io.github.donaldsteele.rocket.core.SendTarget
+import io.github.donaldsteele.rocket.core.canSend
 import io.github.donaldsteele.rocket.core.summarize
 import io.github.donaldsteele.rocket.ui.theme.Mono
 import io.github.donaldsteele.rocket.ui.theme.Rocket
@@ -161,7 +162,10 @@ private fun ShareScreen(uris: List<Uri>, refused: Int, onSent: (String) -> Unit)
     fun send(t: SendTarget) {
         val r = ready ?: return
         try {
-            core.send(context, t, r.items, grants = uris)
+            // Share-sheet grants are usually not persistable; when one is,
+            // an interrupted send can be resumed without sharing again.
+            val kept = uris.map { it.toString() }.filter { core.items.take(it) }
+            core.send(context, t, r.items, grants = uris, kept = kept)
             onSent(t.name)
         } catch (e: Exception) {
             error = "Could not send to ${t.name}: ${e.message ?: e}"
@@ -210,6 +214,9 @@ private fun ShareScreen(uris: List<Uri>, refused: Int, onSent: (String) -> Unit)
                 problem?.let { p -> item { Notice(p, Tone.Warn) } }
                 if (peers.isEmpty()) {
                     item { EmptyBox("Looking for rocket hosts on this network…") }
+                }
+                if (peers.any { it.canSend(PROTO) }) {
+                    item { EncryptedNote() }
                 }
                 items(peers, key = { it.fp }) { p ->
                     PeerRow(p) {

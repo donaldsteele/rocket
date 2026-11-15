@@ -1,8 +1,13 @@
 package receiver
 
 import (
+	"crypto/sha256"
+	"encoding"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"strings"
 
@@ -129,6 +134,44 @@ type File interface {
 	Abort()
 }
 
+// KeepFiles is a Files that can leave a transfer broken by a network
+// failure in place, to be continued later (NewFilesSink).
+type KeepFiles interface {
+	Files
+	// Keep ends the transfer without removing anything it stored, finished
+	// files and the incomplete one alike, and describes what it stored for
+	// FilesStore.Resume, Check and Discard.
+	Keep() (json.RawMessage, error)
+	// Reopen opens incomplete file ref (a KeptFile's Ref, from this
+	// transfer or the one it continues) to continue it at byte offset: the
+	// file is cut to offset and writes go on from there.
+	Reopen(ref string, offset int64) (KeptFile, error)
+}
+
+// KeptFile is a File that can be left incomplete for a resume.
+type KeptFile interface {
+	File
+	// Ref names the file for KeepFiles.Reopen.
+	Ref() string
+	// Close stops writing and leaves the incomplete file as it is.
+	Close() error
+}
+
+// FilesStore makes the KeepFiles of each transfer and continues kept ones.
+// NewFilesSink turns it into a ResumableSink.
+type FilesStore interface {
+	// Begin starts storing transfer id of manifest m.
+	Begin(id string, m protocol.Manifest) (KeepFiles, error)
+	// Resume continues storing a transfer kept as state (what KeepFiles.Keep
+	// returned). The KeepFiles it returns owns everything the kept transfer
+	// stored: its Abort removes that too.
+	Resume(id string, m protocol.Manifest, state json.RawMessage) (KeepFiles, error)
+	// Check reports whether everything state describes is still there.
+	Check(state json.RawMessage) error
+	// Discard removes everything state describes.
+	Discard(state json.RawMessage)
+}
+
 // FilesSink is a Sink that stores each transfer through the Files the
 // function returns for it.
 type FilesSink func(id string, m protocol.Manifest) (Files, error)
@@ -139,19 +182,147 @@ func (fs FilesSink) Begin(id string, m protocol.Manifest, progress transfer.Prog
 	if err != nil {
 		return nil, err
 	}
-	return &filesOutput{files: files, m: m, tr: transfer.NewTracker(progress, m.Total, transfer.Files(m)), tops: map[string]string{}}, nil
+	return newFilesOutput(files, nil, m, progress), nil
+}
+
+// NewFilesSink is a ResumableSink that stores transfers through s, like
+// FilesSink, and keeps a transfer broken by a network failure: its
+// Outputs are Keepers. The resume point of a kept transfer is the
+// incomplete file at the length written, with the SHA-256 of what was
+// written to it (hashed on the way in, so nothing is read back).
+func NewFilesSink(s FilesStore) ResumableSink { return filesStoreSink{s} }
+
+type filesStoreSink struct{ s FilesStore }
+
+func (fs filesStoreSink) Begin(id string, m protocol.Manifest, progress transfer.ProgressFn) (Output, error) {
+	files, err := fs.s.Begin(id, m)
+	if err != nil {
+		return nil, err
+	}
+	if files == nil {
+		return nil, errors.New("the sink returned no transfer")
+	}
+	return newFilesOutput(files, files, m, progress), nil
+}
+
+func (fs filesStoreSink) Resume(id string, m protocol.Manifest, state json.RawMessage, progress transfer.ProgressFn) (Output, error) {
+	var st filesState
+	if err := json.Unmarshal(state, &st); err != nil {
+		return nil, err
+	}
+	if err := st.fits(m); err != nil {
+		return nil, err
+	}
+	files, err := fs.s.Resume(id, m, st.Sink)
+	if err != nil {
+		return nil, err
+	}
+	if files == nil {
+		return nil, errors.New("the sink returned no transfer")
+	}
+	o := newFilesOutput(files, files, m, progress)
+	o.next, o.count, o.paths, o.lastSum = st.Next, st.Count, append([]string(nil), st.Paths...), st.Last
+	for k, v := range st.Tops {
+		o.tops[k] = v
+	}
+	o.part, o.partOff, o.partHash = st.Part, st.Offset, st.Hash
+	o.tr.From(st.Sent, st.Count)
+	return o, nil
+}
+
+func (fs filesStoreSink) Check(state json.RawMessage) error {
+	var st filesState
+	if err := json.Unmarshal(state, &st); err != nil {
+		return err
+	}
+	return fs.s.Check(st.Sink)
+}
+
+func (fs filesStoreSink) Discard(state json.RawMessage) {
+	var st filesState
+	if json.Unmarshal(state, &st) == nil {
+		fs.s.Discard(st.Sink)
+	}
+}
+
+// filesState is what a filesOutput's Keep leaves: the sink's own
+// description plus where the manifest stopped.
+type filesState struct {
+	Sink  json.RawMessage   `json:"sink"`
+	Next  int               `json:"next"` // entries before Next are complete
+	Tops  map[string]string `json:"tops"`
+	Paths []string          `json:"paths"`
+	Count int               `json:"count"` // files complete
+	Sent  int64             `json:"sent"`  // bytes stored, the incomplete file included
+	Last  string            `json:"last,omitempty"`
+	// Part is the incomplete file of entry Next (KeptFile.Ref), Offset its
+	// length and Hash the SHA-256 state of its bytes
+	// (encoding.BinaryMarshaler of crypto/sha256).
+	Part   string `json:"part,omitempty"`
+	Offset int64  `json:"offset"`
+	Hash   []byte `json:"hash,omitempty"`
+}
+
+// fits checks that st can continue manifest m.
+func (st filesState) fits(m protocol.Manifest) error {
+	bad := st.Next < 0 || st.Next > len(m.Entries) || st.Count < 0 || st.Sent < 0 || st.Sent > m.Total
+	if !bad && st.Part != "" {
+		bad = st.Next == len(m.Entries) || m.Entries[st.Next].Mode&protocol.ModeDir != 0 ||
+			st.Offset < 0 || st.Offset > m.Entries[st.Next].Size || len(st.Hash) == 0
+	}
+	if bad {
+		return fmt.Errorf("%w: kept state does not fit the offer", transfer.ErrArchive)
+	}
+	return nil
 }
 
 // filesOutput writes a manifest through Files: names sanitized, top-level
 // folders mapped to the fresh names Files made, each file exactly its size.
+// With keep set it can also keep a broken transfer (Keeper).
 type filesOutput struct {
 	files Files
+	keep  KeepFiles // nil: cannot keep
 	m     protocol.Manifest
 	tr    *transfer.Tracker
 	next  int
 	tops  map[string]string // lower-cased sanitized top-level folder -> name Files made
 	paths []string
 	count int
+	// lastSum is the hex SHA-256 of the last file completed.
+	lastSum string
+	// cur is the file of entry next after a network failure cut it short,
+	// left for Keep or Abort.
+	cur *inflight
+	// part is the incomplete file of entry next that a resumed output
+	// continues (until Write reopens it), partOff its length and partHash
+	// the SHA-256 state of its bytes.
+	part     string
+	partOff  int64
+	partHash []byte
+}
+
+func newFilesOutput(files Files, keep KeepFiles, m protocol.Manifest, progress transfer.ProgressFn) *filesOutput {
+	return &filesOutput{
+		files: files, keep: keep, m: m,
+		tr:   transfer.NewTracker(progress, m.Total, transfer.Files(m)),
+		tops: map[string]string{},
+	}
+}
+
+// inflight is a file being written, hashing what reaches it.
+type inflight struct {
+	f File
+	h hash.Hash
+	n int64 // bytes in the file
+}
+
+func (c *inflight) Write(p []byte) (int, error) {
+	k, err := c.f.Write(p)
+	if k > 0 {
+		c.h.Write(p[:k])
+		c.n += int64(k)
+	}
+	return k, err
 }
 
 func (o *filesOutput) Write(i int, src io.Reader) error {
@@ -183,25 +354,59 @@ func (o *filesOutput) Write(i int, src io.Reader) error {
 		o.next++
 		return nil
 	}
-	f, err := o.files.Create(rel, e.Size, e.Mode&0o777)
+	cur, err := o.open(rel, e)
 	if err != nil {
 		return err
 	}
 	o.tr.File(e.Path)
-	if err := copyExact(o.tr.Writer(f), src, e); err != nil {
-		f.Abort()
+	if err := copyExact(o.tr.Writer(cur), src, e, cur.n); err != nil {
+		if _, ok := cur.f.(KeptFile); ok && o.keep != nil && transfer.IsNetwork(err) {
+			o.cur = cur // Keep keeps it, Abort removes it
+			return err
+		}
+		cur.f.Abort()
 		return err
 	}
-	loc, err := f.Commit()
+	loc, err := cur.f.Commit()
 	if err != nil {
 		return err
 	}
+	o.lastSum = hex.EncodeToString(cur.h.Sum(nil))
 	if !nested {
 		o.paths = append(o.paths, loc)
 	}
 	o.count++
 	o.next++
 	return nil
+}
+
+// open starts the file of entry e at rel, or reopens the incomplete one a
+// resumed output continues.
+func (o *filesOutput) open(rel string, e protocol.Entry) (*inflight, error) {
+	if o.part == "" {
+		f, err := o.files.Create(rel, e.Size, e.Mode&0o777)
+		if err != nil {
+			return nil, err
+		}
+		if f == nil {
+			return nil, errors.New("the sink returned no file")
+		}
+		return &inflight{f: f, h: sha256.New()}, nil
+	}
+	h := sha256.New()
+	if err := h.(encoding.BinaryUnmarshaler).UnmarshalBinary(o.partHash); err != nil {
+		return nil, fmt.Errorf("kept hash of %s: %w", e.Path, err)
+	}
+	f, err := o.keep.Reopen(o.part, o.partOff)
+	if err != nil {
+		return nil, err
+	}
+	if f == nil {
+		return nil, errors.New("the sink returned no file")
+	}
+	cur := &inflight{f: f, h: h, n: o.partOff}
+	o.part, o.partOff, o.partHash = "", 0, nil
+	return cur, nil
 }
 
 // topDir returns the name Files made for top-level folder top, making it
@@ -231,19 +436,109 @@ func (o *filesOutput) Finish() (transfer.Result, error) {
 	return transfer.Result{Paths: append([]string(nil), o.paths...), Files: o.count, Bytes: o.tr.Sent()}, nil
 }
 
-func (o *filesOutput) Abort() { o.files.Abort() }
+// Abort removes everything stored, including what a kept transfer this
+// output continues stored.
+func (o *filesOutput) Abort() {
+	if o.cur != nil {
+		o.cur.f.Abort()
+		o.cur = nil
+	}
+	o.files.Abort()
+}
 
 func (o *filesOutput) Location() string { return o.files.Location() }
 
-// copyExact copies exactly e.Size bytes from src to w and checks that src
-// has nothing more.
-func copyExact(w io.Writer, src io.Reader, e protocol.Entry) error {
-	n, err := io.CopyN(w, src, e.Size)
+// Keep implements Keeper when the Files can keep (NewFilesSink). The resume
+// point is, as transfer.Extractor's: the incomplete file at its length;
+// else the next file at 0; else the last file at its end; else the
+// beginning.
+func (o *filesOutput) Keep() (KeptOutput, error) {
+	if o.keep == nil {
+		return KeptOutput{}, errors.New("this sink cannot keep a transfer")
+	}
+	st := filesState{Next: o.next, Tops: o.tops, Paths: o.paths, Count: o.count, Last: o.lastSum}
+	for _, e := range o.m.Entries[:o.next] {
+		if e.Mode&protocol.ModeDir == 0 {
+			st.Sent += e.Size
+		}
+	}
+	empty := sha256.Sum256(nil)
+	var pt protocol.ResumePoint
+	switch next := nextFileEntry(o.m, o.next); {
+	case o.cur != nil:
+		kf := o.cur.f.(KeptFile) // Write keeps only a KeptFile
+		if o.cur.n > o.m.Entries[o.next].Size {
+			return KeptOutput{}, fmt.Errorf("%w: %s is larger than offered", transfer.ErrSize, o.m.Entries[o.next].Path)
+		}
+		hb, err := o.cur.h.(encoding.BinaryMarshaler).MarshalBinary()
+		if err != nil {
+			return KeptOutput{}, err
+		}
+		if err := kf.Close(); err != nil {
+			return KeptOutput{}, err
+		}
+		st.Part, st.Offset, st.Hash = kf.Ref(), o.cur.n, hb
+		pt = protocol.ResumePoint{Entry: uint32(o.next), Offset: uint64(o.cur.n), SHA256: hex.EncodeToString(o.cur.h.Sum(nil))}
+	case o.part != "":
+		// Resumed, and broken again before the incomplete file was reached.
+		h := sha256.New()
+		if err := h.(encoding.BinaryUnmarshaler).UnmarshalBinary(o.partHash); err != nil {
+			return KeptOutput{}, err
+		}
+		st.Part, st.Offset, st.Hash = o.part, o.partOff, o.partHash
+		pt = protocol.ResumePoint{Entry: uint32(o.next), Offset: uint64(o.partOff), SHA256: hex.EncodeToString(h.Sum(nil))}
+	case next >= 0:
+		pt = protocol.ResumePoint{Entry: uint32(next), SHA256: hex.EncodeToString(empty[:])}
+	case o.lastSum != "":
+		last := prevFileEntry(o.m, o.next)
+		pt = protocol.ResumePoint{Entry: uint32(last), Offset: uint64(o.m.Entries[last].Size), SHA256: o.lastSum}
+	default:
+		pt = protocol.ResumePoint{SHA256: hex.EncodeToString(empty[:])}
+	}
+	st.Sent += st.Offset
+	sink, err := o.keep.Keep()
+	if err != nil {
+		return KeptOutput{}, err
+	}
+	st.Sink = sink
+	b, err := json.Marshal(st)
+	if err != nil {
+		return KeptOutput{}, err
+	}
+	o.cur, o.part = nil, "" // kept: no longer this output's to remove
+	return KeptOutput{Next: st.Next, Point: pt, Done: st.Sent, State: b}, nil
+}
+
+// nextFileEntry is the index of the first file entry at or after i, or -1.
+func nextFileEntry(m protocol.Manifest, i int) int {
+	for ; i < len(m.Entries); i++ {
+		if m.Entries[i].Mode&protocol.ModeDir == 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+// prevFileEntry is the index of the last file entry before i, or -1.
+func prevFileEntry(m protocol.Manifest, i int) int {
+	for i--; i >= 0; i-- {
+		if m.Entries[i].Mode&protocol.ModeDir == 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+// copyExact copies the rest of entry e (its size less have, the bytes an
+// earlier attempt stored) from src to w and checks that src has nothing
+// more.
+func copyExact(w io.Writer, src io.Reader, e protocol.Entry, have int64) error {
+	n, err := io.CopyN(w, src, e.Size-have)
 	if err != nil {
 		// Only a plain end of input means the body was short; a wrapped
 		// error (a cut-off stream) keeps its identity.
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			return fmt.Errorf("%w: %s: got %d of %d bytes", transfer.ErrSize, e.Path, n, e.Size)
+			return fmt.Errorf("%w: %s: got %d of %d bytes", transfer.ErrSize, e.Path, have+n, e.Size)
 		}
 		return err
 	}

@@ -15,7 +15,12 @@ data class Peer(
     val os: String,
     val version: String,
     val via: List<String>,
+    /** The wire protocol the peer announces; 1 (rocket 1.0) when it announces none. */
+    val proto: Int = 1,
 )
+
+/** Whether this phone can send to the peer: it speaks the same protocol. */
+fun Peer.canSend(own: Int): Boolean = proto == own
 
 fun parsePeers(json: String): List<Peer> {
     val arr = runCatching { JSONArray(json) }.getOrNull() ?: return emptyList()
@@ -30,6 +35,7 @@ fun parsePeers(json: String): List<Peer> {
             os = o.optString("os"),
             version = o.optString("version"),
             via = o.optJSONArray("via").strings(),
+            proto = o.optInt("proto", 1).coerceAtLeast(1),
         )
     }
 }
@@ -47,9 +53,11 @@ data class HistoryEntry(
     /** Epoch milliseconds, or 0 when unknown. */
     val started: Long,
     val ended: Long,
-    /** ok, declined, cancelled, error or timeout. */
+    /** ok, declined, cancelled, error, timeout or interrupted. */
     val result: String,
     val error: String,
+    /** Whether the file bytes travelled encrypted (every transfer between rocket 1.1 apps). */
+    val encrypted: Boolean = false,
 )
 
 fun parseHistory(json: String): List<HistoryEntry> {
@@ -68,6 +76,7 @@ fun parseHistory(json: String): List<HistoryEntry> {
             ended = parseTime(o.optString("ended")),
             result = o.optString("result"),
             error = o.optString("error"),
+            encrypted = o.optBoolean("encrypted"),
         )
     }
 }
@@ -101,9 +110,25 @@ sealed interface TransferEvent {
         val path: String = "",
     ) : TransferEvent
 
+    /**
+     * A transfer failed. [interrupted]: a send that lost its connection and
+     * gave up after its retries, kept to be resumed; or a receive whose
+     * connection was lost, kept to be continued.
+     */
     data class Failed(
         override val transferId: String,
         override val name: String,
+        val error: String,
+        val interrupted: Boolean = false,
+    ) : TransferEvent
+
+    /** A send lost its connection and is offered again after [delayMs]: retry [attempt] of [attempts]. */
+    data class Retrying(
+        override val transferId: String,
+        override val name: String,
+        val attempt: Int,
+        val attempts: Int,
+        val delayMs: Long,
         val error: String,
     ) : TransferEvent
 
@@ -134,7 +159,15 @@ fun parseTransferEvent(json: String): TransferEvent? {
             files = d.optInt("files"),
         )
         "sent", "done" -> TransferEvent.Sent(id, name, d.optInt("files"), d.optLong("bytes"), d.optString("path"))
-        "error" -> TransferEvent.Failed(id, name, d.optString("error").ifEmpty { "failed" })
+        "error" -> TransferEvent.Failed(id, name, d.optString("error").ifEmpty { "failed" }, d.optString("result") == "interrupted")
+        "retrying" -> TransferEvent.Retrying(
+            transferId = id,
+            name = name,
+            attempt = d.optInt("attempt"),
+            attempts = d.optInt("attempts"),
+            delayMs = d.optLong("delay_ms"),
+            error = d.optString("error"),
+        )
         "cancelled" -> TransferEvent.Cancelled(id, name, d.optString("by"), d.optString("error"))
         else -> null
     }
@@ -205,6 +238,89 @@ fun parseOfferGone(json: String): OfferGone? {
     return OfferGone(id, d.optString("reason"))
 }
 
+/** Whether an event changes what is kept for a resume ("kept" or "kept_gone"). */
+fun isKeptEvent(json: String): Boolean {
+    val o = runCatching { JSONObject(json) }.getOrNull() ?: return false
+    return o.optString("type") == "kept" || o.optString("type") == "kept_gone"
+}
+
+/** The kept receive a "kept_gone" event says was completed by a later attempt, or null. */
+fun keptCompleted(json: String): String? {
+    val o = runCatching { JSONObject(json) }.getOrNull() ?: return null
+    val d = o.optJSONObject("data") ?: return null
+    if (o.optString("type") != "kept_gone" || d.optString("reason") != "completed") return null
+    return d.optString("id").ifEmpty { null }
+}
+
+/** A send that lost its connection and gave up after its retries (ResumableJSON "outgoing"). */
+data class InterruptedSend(
+    val transferId: String,
+    val name: String,
+    val peerName: String,
+    val peerFp: String,
+    val files: Int,
+    val bytes: Long,
+    val error: String,
+    /** Epoch milliseconds when it is forgotten, or 0. */
+    val expires: Long,
+)
+
+/** What arrived of a receive whose connection was lost, kept on this phone (ResumableJSON "incoming"). */
+data class KeptReceive(
+    val id: String,
+    val name: String,
+    val senderName: String,
+    val senderFp: String,
+    val files: Int,
+    val total: Long,
+    val done: Long,
+    val location: String,
+    /** Epoch milliseconds when it is removed, or 0. */
+    val expires: Long,
+)
+
+/** Everything that can be resumed (ResumableJSON). */
+data class Resumable(
+    val outgoing: List<InterruptedSend> = emptyList(),
+    val incoming: List<KeptReceive> = emptyList(),
+) {
+    val isEmpty: Boolean get() = outgoing.isEmpty() && incoming.isEmpty()
+}
+
+fun parseResumable(json: String): Resumable {
+    val o = runCatching { JSONObject(json) }.getOrNull() ?: return Resumable()
+    val out = o.optJSONArray("outgoing").objects().mapNotNull { r ->
+        val id = r.optString("transfer_id")
+        if (id.isEmpty()) return@mapNotNull null
+        InterruptedSend(
+            transferId = id,
+            name = r.optString("name"),
+            peerName = r.optString("peer_name").ifEmpty { r.optString("addr") },
+            peerFp = r.optString("peer_fp"),
+            files = r.optInt("files"),
+            bytes = r.optLong("bytes"),
+            error = r.optString("error"),
+            expires = parseTime(r.optString("expires")),
+        )
+    }
+    val inc = o.optJSONArray("incoming").objects().mapNotNull { r ->
+        val id = r.optString("id")
+        if (id.isEmpty()) return@mapNotNull null
+        KeptReceive(
+            id = id,
+            name = r.optString("name"),
+            senderName = r.optString("sender_name").ifEmpty { "another device" },
+            senderFp = r.optString("sender_fp"),
+            files = r.optInt("files"),
+            total = r.optLong("total"),
+            done = r.optLong("done"),
+            location = r.optString("location"),
+            expires = parseTime(r.optString("expires")),
+        )
+    }
+    return Resumable(out, inc)
+}
+
 /** A transfer in flight, as in desktop rocket's GET /api/transfers. */
 data class TransferInfo(
     val id: String,
@@ -257,6 +373,11 @@ fun parseTrusted(json: String): List<TrustedSender> {
 internal fun parseTime(s: String): Long {
     if (s.isEmpty() || s.startsWith("0001-01-01")) return 0
     return runCatching { OffsetDateTime.parse(s).toInstant().toEpochMilli() }.getOrDefault(0)
+}
+
+private fun JSONArray?.objects(): List<JSONObject> {
+    if (this == null) return emptyList()
+    return (0 until length()).mapNotNull { optJSONObject(it) }
 }
 
 private fun JSONArray?.strings(): List<String> {

@@ -230,9 +230,10 @@ fun SettingsScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
                 SectionTitle(Lucide.ShieldCheck, "Security")
                 Text(
                     "Every offer is signed by the sender's key, and \"Always accept from this device\" pins that key, " +
-                        "so another device cannot pass itself off as one you trust. The files themselves travel as " +
-                        "plain HTTP on your network: someone who can watch the network could read them. Use rocket " +
-                        "on networks you trust.",
+                        "so another device cannot pass itself off as one you trust. The contents of files are " +
+                        "encrypted between rocket apps (1.1 and later), with keys made fresh for every transfer, and " +
+                        "a change on the way is caught. File names, sizes and device names are not encrypted: " +
+                        "someone who can watch the network can see them.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 TextButton(onClick = { uri.openUri("$PROJECT_URL/blob/main/docs/security.md") }, modifier = Modifier.heightIn(min = 48.dp)) {

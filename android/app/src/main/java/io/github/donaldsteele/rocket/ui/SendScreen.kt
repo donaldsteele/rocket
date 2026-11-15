@@ -42,6 +42,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.donaldsteele.rocket.core
 import io.github.donaldsteele.rocket.core.SendItem
 import io.github.donaldsteele.rocket.core.SendTarget
+import io.github.donaldsteele.rocket.core.canSend
 import io.github.donaldsteele.rocket.core.summarize
 import io.github.donaldsteele.rocket.ui.theme.Mono
 import io.github.donaldsteele.rocket.ui.theme.Rocket
@@ -66,23 +67,34 @@ class SendModel(app: Application) : AndroidViewModel(app) {
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
-    fun sendFiles(target: SendTarget, uris: List<Uri>) = send(target) { core.items.fromUris(uris) }
+    fun sendFiles(target: SendTarget, uris: List<Uri>) = send(target, uris) { core.items.fromUris(uris) }
 
-    fun sendFolder(target: SendTarget, tree: Uri) = send(target) { core.items.fromTree(tree) }
+    fun sendFolder(target: SendTarget, tree: Uri) = send(target, listOf(tree)) { core.items.fromTree(tree) }
 
-    private fun send(target: SendTarget, read: () -> List<SendItem>) {
+    /**
+     * Reads the picked items and sends them. picked are the URIs the picker
+     * returned: rocket takes persistable access to them, so the send can be
+     * resumed after the app was closed (released when it is not needed).
+     */
+    private fun send(target: SendTarget, picked: List<Uri>, read: () -> List<SendItem>) {
         viewModelScope.launch {
             _preparing.value = true
+            var kept = emptyList<String>()
             try {
-                val items = withContext(Dispatchers.IO) { read() }
+                val items = withContext(Dispatchers.IO) {
+                    kept = picked.map { it.toString() }.filter { core.items.take(it) }
+                    read()
+                }
                 if (items.isEmpty()) {
                     _messages.tryEmit("Nothing to send.")
+                    kept.forEach { core.items.release(it) }
                     return@launch
                 }
-                core.send(getApplication(), target, items)
+                core.send(getApplication(), target, items, kept = kept)
                 val s = summarize(items)
                 _messages.tryEmit("Sending ${countWhat(s.label, s.files)} to ${target.name}. Progress is in Transfers.")
             } catch (e: Exception) {
+                kept.forEach { core.items.release(it) }
                 _messages.tryEmit("Could not send to ${target.name}: ${e.message ?: e}")
             } finally {
                 _preparing.value = false
@@ -185,6 +197,9 @@ fun SendScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
             }
         }
         problem?.let { p -> item { Notice(p, Tone.Warn) } }
+        if (peers.any { it.canSend(PROTO) }) {
+            item { EncryptedNote() }
+        }
         if (peers.isEmpty()) {
             item {
                 EmptyBox(

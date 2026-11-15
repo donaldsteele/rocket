@@ -2,8 +2,10 @@ package rocketcore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"github.com/donaldsteele/rocket/internal/httpapi"
 	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/receiver"
+	"github.com/donaldsteele/rocket/internal/resume"
 )
 
 // Decider asks the person about an incoming offer.
@@ -33,11 +36,22 @@ type EventListener interface {
 }
 
 // Sink stores accepted transfers (on Android: Download/rocket through
-// MediaStore).
+// MediaStore). A transfer broken by a lost connection is kept
+// (SinkTransfer.Keep) and continued by the sender's next attempt (Resume),
+// or removed (Discard) when it is not continued within 24 hours.
 type Sink interface {
 	// Begin starts storing transfer transferID; manifestJSON is its checked
 	// manifest ({kind, entries: [{path, size, mode}], total}).
 	Begin(transferID, manifestJSON string) (SinkTransfer, error)
+	// Resume continues storing a kept transfer as transferID; state is
+	// what SinkTransfer.Keep returned. The SinkTransfer returned owns
+	// everything the kept one stored: its Abort removes that too.
+	Resume(transferID, manifestJSON, state string) (SinkTransfer, error)
+	// Check fails when something state describes is gone (the person
+	// deleted a file, say).
+	Check(state string) error
+	// Discard removes everything state describes.
+	Discard(state string)
 }
 
 // SinkTransfer stores one transfer's folders and files, in order. Paths are
@@ -55,6 +69,15 @@ type SinkTransfer interface {
 	Abort()
 	// Location says where the transfer went, for display.
 	Location() string
+	// Keep ends a transfer whose connection was lost, leaving everything
+	// it stored in place (finished files, the incomplete file and its
+	// folders), and returns a description of it for Sink.Resume, Check and
+	// Discard. Go has closed its descriptors first.
+	Keep() (string, error)
+	// Reopen opens incomplete file ref (SinkFile.Ref, of this transfer or
+	// the kept one it continues) to continue it. Its Fd must be readable
+	// and writable ("rw"); Go cuts the file to where it continues.
+	Reopen(ref string) (SinkFile, error)
 }
 
 // SinkFile is one file being stored.
@@ -70,6 +93,9 @@ type SinkFile interface {
 	Commit() (string, error)
 	// Abort deletes the incomplete file.
 	Abort()
+	// Ref names the file while it is incomplete (a content URI), for
+	// SinkTransfer.Reopen.
+	Ref() string
 }
 
 type receiving struct {
@@ -105,15 +131,22 @@ func (n *Node) StartReceiver(port int, d Decider, s Sink, l EventListener) (int,
 		return 0, err
 	}
 	bound := ln.Addr().(*net.TCPAddr).Port
+	sink := sinkAdapter(s)
+	kept, err := receiver.OpenKept(n.dataDir, sink)
+	if err != nil {
+		ln.Close()
+		return 0, err
+	}
 	id := n.identity()
 	rx := receiver.New(receiver.Config{
 		Identity:   id,
 		Trust:      n.trust,
 		Ledger:     n.ledger,
 		Decider:    receiver.DeciderFunc(func(o receiver.IncomingOffer) { d.Ask(toJSON(o)) }),
-		Sink:       sinkAdapter(s),
+		Sink:       sink,
 		Hello:      func() (string, string) { return n.version, OS },
 		AutoAccept: n.AutoAccept,
+		Kept:       kept,
 	})
 	hs := &http.Server{
 		Handler:           rx.Handler(),
@@ -128,9 +161,29 @@ func (n *Node) StartReceiver(port int, d Decider, s Sink, l EventListener) (int,
 			Name: id.Name, Fingerprint: id.Fingerprint(), HTTPPort: bound, Version: n.version, OS: OS,
 		})
 	}
+	// Kept transfers whose 24 hours are up go now and then every hour (in
+	// the background: a sweep reports through dispatch, which takes n.mu).
+	go sweepKept(ctx, rx)
 	n.recv = &receiving{rx: rx, hs: hs, port: bound, cancel: cancel}
+	n.kept = kept
 	n.events = l
 	return bound, nil
+}
+
+// sweepKept sweeps rx's expired kept transfers now and every
+// resume.SweepEvery until ctx ends.
+func sweepKept(ctx context.Context, rx *receiver.Receiver) {
+	rx.Sweep()
+	tick := time.NewTicker(resume.SweepEvery)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			rx.Sweep()
+		}
+	}
 }
 
 // StopReceiver declines the offers waiting for a decision, cancels the
@@ -205,18 +258,51 @@ func (n *Node) IncomingJSON() string {
 	return toJSON(r.rx.PendingOffers())
 }
 
-// sinkAdapter stores transfers through a Kotlin Sink.
-func sinkAdapter(s Sink) receiver.Sink {
-	return receiver.FilesSink(func(id string, m protocol.Manifest) (receiver.Files, error) {
-		t, err := s.Begin(id, toJSON(m))
-		if err != nil {
-			return nil, err
-		}
-		if t == nil {
-			return nil, errors.New("the sink returned no transfer")
-		}
-		return sinkFiles{t}, nil
-	})
+// sinkAdapter stores transfers through a Kotlin Sink, keeping a transfer
+// broken by a lost connection (receiver.NewFilesSink).
+func sinkAdapter(s Sink) receiver.ResumableSink { return receiver.NewFilesSink(sinkStore{s}) }
+
+// sinkStore is a receiver.FilesStore over a Kotlin Sink. The Kotlin side's
+// state string travels inside the receiver's kept record as a JSON string.
+type sinkStore struct{ s Sink }
+
+func (k sinkStore) Begin(id string, m protocol.Manifest) (receiver.KeepFiles, error) {
+	t, err := k.s.Begin(id, toJSON(m))
+	return sinkFilesOf(t, err)
+}
+
+func (k sinkStore) Resume(id string, m protocol.Manifest, state json.RawMessage) (receiver.KeepFiles, error) {
+	var st string
+	if err := json.Unmarshal(state, &st); err != nil {
+		return nil, err
+	}
+	t, err := k.s.Resume(id, toJSON(m), st)
+	return sinkFilesOf(t, err)
+}
+
+func (k sinkStore) Check(state json.RawMessage) error {
+	var st string
+	if err := json.Unmarshal(state, &st); err != nil {
+		return err
+	}
+	return k.s.Check(st)
+}
+
+func (k sinkStore) Discard(state json.RawMessage) {
+	var st string
+	if json.Unmarshal(state, &st) == nil {
+		k.s.Discard(st)
+	}
+}
+
+func sinkFilesOf(t SinkTransfer, err error) (receiver.KeepFiles, error) {
+	if err != nil {
+		return nil, err
+	}
+	if t == nil {
+		return nil, errors.New("the sink returned no transfer")
+	}
+	return sinkFiles{t}, nil
 }
 
 type sinkFiles struct{ t SinkTransfer }
@@ -241,6 +327,50 @@ func (f sinkFiles) Create(rel string, size int64, _ uint32) (receiver.File, erro
 func (f sinkFiles) Abort() { f.t.Abort() }
 
 func (f sinkFiles) Location() string { return f.t.Location() }
+
+func (f sinkFiles) Keep() (json.RawMessage, error) {
+	st, err := f.t.Keep()
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(st)
+}
+
+// Reopen opens the kept incomplete file ref through its descriptor, cut
+// to offset and positioned there. A file the sink cannot hand over as a
+// descriptor cannot be continued.
+func (f sinkFiles) Reopen(ref string, offset int64) (receiver.KeptFile, error) {
+	sf, err := f.t.Reopen(ref)
+	if err != nil {
+		return nil, err
+	}
+	if sf == nil {
+		return nil, errors.New("the sink returned no file")
+	}
+	fd := sf.Fd()
+	if fd < 0 {
+		return nil, fmt.Errorf("the kept part of %s cannot be continued", ref)
+	}
+	w := os.NewFile(uintptr(fd), ref)
+	fail := func(err error) (receiver.KeptFile, error) {
+		w.Close()
+		return nil, err
+	}
+	st, err := w.Stat()
+	if err != nil {
+		return fail(err)
+	}
+	if st.Size() < offset {
+		return fail(fmt.Errorf("the kept part of %s is shorter than recorded", ref))
+	}
+	if err := w.Truncate(offset); err != nil {
+		return fail(err)
+	}
+	if _, err := w.Seek(offset, io.SeekStart); err != nil {
+		return fail(err)
+	}
+	return &sinkFile{f: sf, w: w}, nil
+}
 
 // sinkFile writes to the descriptor the sink gave, or through its Write.
 type sinkFile struct {
@@ -276,4 +406,17 @@ func (s *sinkFile) Abort() {
 		s.w = nil
 	}
 	s.f.Abort()
+}
+
+func (s *sinkFile) Ref() string { return s.f.Ref() }
+
+// Close closes Go's descriptor and leaves the incomplete file as it is
+// (the SinkTransfer's Keep closes the Kotlin side).
+func (s *sinkFile) Close() error {
+	if s.w == nil {
+		return nil
+	}
+	err := s.w.Close()
+	s.w = nil
+	return err
 }

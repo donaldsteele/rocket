@@ -264,34 +264,168 @@ func waitNames(t *testing.T, root string, want []string) {
 }
 
 // TestDesktopRetriesToPhone: a desktop send to a phone through a dropping
-// connection retries; the phone keeps nothing of the broken attempt (its
-// sink removes it) and receives the whole file on the retry.
+// connection retries; the phone keeps what arrived of the broken attempt
+// (its sink's Keep) and continues the same file from the resume point it
+// offers, so only the rest of the body is sent again. Both ways of
+// writing (a descriptor, or Write) are kept and continued.
 func TestDesktopRetriesToPhone(t *testing.T) {
+	for _, useFd := range []bool{true, false} {
+		phone, desk := newPhone(t, "pixel"), newDesktop(t, "desk")
+		if err := phone.trust.Approve(desk.id.Fingerprint(), "desk", desk.id.PublicKeyB64()); err != nil {
+			t.Fatal(err)
+		}
+		sink := newTempSink(t, useFd)
+		ev := newEvents(t)
+		port, err := phone.StartReceiver(0, &decider{n: phone, accept: true}, sink, ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := randomData(600 << 10)
+		p := newCutProxy(t, "http://127.0.0.1:"+strconv.Itoa(port), 200<<10)
+		m := protocol.FileManifest("song.flac", int64(len(data)), 0o644)
+		open := func(int, protocol.Entry) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(data)), nil }
+		err = transfer.SendManifestOpts(context.Background(), desk.id, transfer.Target{Addr: p.addr(), FP: phone.Fingerprint()}, m, open, nil,
+			transfer.SendOptions{Retry: true, Delays: []time.Duration{20 * time.Millisecond}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := sink.tree(); len(got) != 1 || got["song.flac"] != string(data) {
+			t.Fatalf("phone stored %v", keys(got))
+		}
+		sink.mu.Lock()
+		begun, aborted, kept, resumed := sink.begun, sink.aborted, sink.kept, sink.resumed
+		sink.mu.Unlock()
+		if begun != 1 || aborted != 0 || kept != 1 || resumed != 1 {
+			t.Fatalf("sink begun %d, aborted %d, kept %d, resumed %d", begun, aborted, kept, resumed)
+		}
+		checkResumed(t, p, "song.flac", int64(len(data)))
+		ev.skipTo("kept")
+		if g := ev.skipTo("kept_gone"); g.Data["reason"] != "completed" {
+			t.Fatalf("kept_gone %v", g.Data)
+		}
+		if j := phone.ResumableJSON(); j != `{"incoming":[],"outgoing":[]}` {
+			t.Fatalf("resumable %s", j)
+		}
+	}
+}
+
+// skipTo returns the next event of type typ, skipping every other.
+func (e *events) skipTo(typ string) event {
+	e.t.Helper()
+	timeout := time.After(20 * time.Second)
+	for {
+		select {
+		case ev := <-e.ch:
+			if ev.Type == typ {
+				return ev
+			}
+		case <-timeout:
+			e.t.Fatalf("no %q event", typ)
+			return event{}
+		}
+	}
+}
+
+// incoming decodes ResumableJSON's kept receives.
+func incoming(t *testing.T, n *Node) []map[string]any {
+	t.Helper()
+	var r struct {
+		Incoming []map[string]any `json:"incoming"`
+	}
+	if err := json.Unmarshal([]byte(n.ResumableJSON()), &r); err != nil {
+		t.Fatal(err)
+	}
+	return r.Incoming
+}
+
+// waitIncoming waits until n keeps k receives and returns them.
+func waitIncoming(t *testing.T, n *Node, k int) []map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		in := incoming(t, n)
+		if len(in) == k {
+			return in
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("kept %v, want %d", in, k)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestPhoneKeepsAcrossRestartAndDiscards: a receive broken mid-folder is
+// kept through a receiver restart and continued by the sender's next
+// offer without a prompt (the sender is not trusted); another kept
+// receive is removed with its files by Discard.
+func TestPhoneKeepsAcrossRestartAndDiscards(t *testing.T) {
 	phone, desk := newPhone(t, "pixel"), newDesktop(t, "desk")
-	if err := phone.trust.Approve(desk.id.Fingerprint(), "desk", desk.id.PublicKeyB64()); err != nil {
-		t.Fatal(err)
-	}
 	sink := newTempSink(t, true)
-	port, err := phone.StartReceiver(0, &decider{n: phone, accept: true}, sink, newEvents(t))
+	dec := &decider{n: phone, accept: true}
+	port, err := phone.StartReceiver(0, dec, sink, newEvents(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := randomData(600 << 10)
-	p := newCutProxy(t, "http://127.0.0.1:"+strconv.Itoa(port), 200<<10)
-	m := protocol.FileManifest("song.flac", int64(len(data)), 0o644)
-	open := func(int, protocol.Entry) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(data)), nil }
-	err = transfer.SendManifestOpts(context.Background(), desk.id, transfer.Target{Addr: p.addr(), FP: phone.Fingerprint()}, m, open, nil,
-		transfer.SendOptions{Retry: true, Delays: []time.Duration{20 * time.Millisecond}})
+	a, b := randomData(150<<10), randomData(400<<10)
+	m := protocol.Manifest{Kind: protocol.KindMulti, Entries: []protocol.Entry{
+		{Path: "album", Mode: protocol.ModeDir | 0o755},
+		{Path: "album/a.jpg", Size: int64(len(a)), Mode: 0o644},
+		{Path: "album/b.jpg", Size: int64(len(b)), Mode: 0o644},
+	}, Total: int64(len(a) + len(b))}
+	open := func(i int, _ protocol.Entry) (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader([][]byte{nil, a, b}[i])), nil
+	}
+	send := func(addr string) error {
+		return transfer.SendManifestOpts(context.Background(), desk.id, transfer.Target{Addr: addr, FP: phone.Fingerprint()}, m, open, nil,
+			transfer.SendOptions{Retry: true, Delays: []time.Duration{}})
+	}
+	p := newCutProxy(t, "http://127.0.0.1:"+strconv.Itoa(port), 300<<10)
+	if err := send(p.addr()); !errors.Is(err, transfer.ErrInterrupted) {
+		t.Fatalf("first attempt: %v", err)
+	}
+	in := waitIncoming(t, phone, 1)
+	if len(in) != 1 || in[0]["name"] != "album" || in[0]["sender_name"] != "desk" || in[0]["total"] != float64(m.Total) {
+		t.Fatalf("incoming %v", in)
+	}
+	if done := in[0]["done"].(float64); done <= float64(len(a)) || done >= float64(m.Total) {
+		t.Fatalf("done %v", done)
+	}
+	phone.StopReceiver()
+	if in := incoming(t, phone); len(in) != 1 {
+		t.Fatalf("kept receive not listed with the receiver off: %v", in)
+	}
+	port, err = phone.StartReceiver(0, dec, sink, newEvents(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := sink.tree(); len(got) != 1 || got["song.flac"] != string(data) {
-		t.Fatalf("phone stored %v", keys(got))
+	p2 := newCutProxy(t, "http://127.0.0.1:"+strconv.Itoa(port), 1<<30)
+	if err := send(p2.addr()); err != nil {
+		t.Fatal(err)
 	}
-	if begun, aborted := sink.counts(); begun != 2 || aborted != 1 {
-		t.Fatalf("sink begun %d, aborted %d", begun, aborted)
+	if dec.count() != 1 {
+		t.Fatalf("asked %d times, want only the first offer", dec.count())
 	}
-	if _, resumes := p.seen(); len(resumes) != 2 || resumes[1] != nil {
-		t.Fatalf("the phone offered a resume point: %v", resumes)
+	if _, resumes := p2.seen(); len(resumes) != 1 || resumes[0] == nil || resumes[0].Entry != 2 {
+		t.Fatalf("resume point %v", resumes)
 	}
+	sameTree(t, sink.tree(), map[string]string{"album": "<dir>", "album/a.jpg": string(a), "album/b.jpg": string(b)})
+	if len(incoming(t, phone)) != 0 {
+		t.Fatal("still kept after completing")
+	}
+
+	// Discard: a kept receive goes with its files.
+	p3 := newCutProxy(t, "http://127.0.0.1:"+strconv.Itoa(port), 100<<10)
+	m.Entries[0].Path, m.Entries[1].Path, m.Entries[2].Path = "other", "other/a.jpg", "other/b.jpg"
+	if err := send(p3.addr()); !errors.Is(err, transfer.ErrInterrupted) {
+		t.Fatalf("third attempt: %v", err)
+	}
+	in = waitIncoming(t, phone, 1)
+	id, _ := in[0]["id"].(string)
+	if err := phone.Discard(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := phone.Discard(id); err == nil {
+		t.Fatal("discarded twice")
+	}
+	waitNames(t, sink.root, []string{"album", "album/a.jpg", "album/b.jpg"})
 }

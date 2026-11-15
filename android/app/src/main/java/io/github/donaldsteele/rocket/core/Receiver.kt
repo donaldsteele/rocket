@@ -29,7 +29,8 @@ enum class ReceiverState { Off, Starting, On, Stopping }
  * /api/offer and POST /api/recv only) while the person has receiving on,
  * advertises it over NSD as `<name>._rocket._tcp` (TXT fp, ver, os, proto),
  * and turns offers into the in-app sheet and a notification. Accepted files
- * go to Download/rocket. The receive service starts and stops it; starting
+ * go to Download/rocket; a receive whose connection is lost is kept there
+ * and continued when the sender tries again. The receive service starts and stops it; starting
  * and stopping run on a background thread because stopping waits for
  * receives to wind down.
  */
@@ -193,6 +194,12 @@ class Receiver(
             removeOffer(gone.transferId)
             return
         }
+        if (isKeptEvent(eventJSON)) {
+            // The attempt that completed a kept receive has its own card.
+            keptCompleted(eventJSON)?.let { transfers.dropInterrupted(it) }
+            transfers.reloadResumable()
+            return
+        }
         val ev = parseTransferEvent(eventJSON) ?: return
         val known = transfers.list.value.any { it.id == ev.transferId }
         val info = if (known) null else describe(ev.transferId)
@@ -238,6 +245,7 @@ class Receiver(
                 onSaved = { f -> MediaScannerConnection.scanFile(app, arrayOf(f.path), null, null) },
                 claims = claims,
                 where = "${Environment.DIRECTORY_DOWNLOADS}/$DOWNLOAD_FOLDER",
+                openRw = { f -> ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_WRITE).use { it.detachFd() } },
             )
         }
 

@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- rocket speaks plain HTTP to other hosts on the local network (protocol
-     v1, see docs/security.md): offers are signed and sender keys pinned, but
-     the traffic itself is not encrypted. The transfers run in the Go core,
-     which does not consult this file; it states the policy for any Android
+     v2, see docs/security.md): offers and replies are signed and sender keys
+     pinned, and file contents are encrypted inside the HTTP body, but names,
+     sizes and device names are not. The transfers run in the Go core, which
+     does not consult this file; it states the policy for any Android
      networking code. -->
 <network-security-config xmlns:tools="http://schemas.android.com/tools">
     <base-config

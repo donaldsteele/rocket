@@ -9,10 +9,14 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import androidx.annotation.RequiresApi
+import androidx.core.net.toUri
 import io.github.donaldsteele.rocket.core.rocketcore.Sink
 import io.github.donaldsteele.rocket.core.rocketcore.SinkFile
 import io.github.donaldsteele.rocket.core.rocketcore.SinkTransfer
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.util.Locale
@@ -20,7 +24,9 @@ import java.util.Locale
 /**
  * Where accepted transfers are saved. The Go core checks every path against
  * the manifest and sanitizes it before a sink sees it; a sink only picks
- * fresh names and stores bytes (see rocketcore.Sink).
+ * fresh names and stores bytes (see rocketcore.Sink). A transfer cut off by
+ * a lost connection is kept (SinkTransfer.keep) and continued by the
+ * sender's next attempt (resume), or removed (discard).
  */
 interface DownloadSink : Sink {
     /** Where files go, for display ("Download/rocket"). */
@@ -78,7 +84,10 @@ class Claims {
  * replaced, and an aborted transfer removes everything it wrote.
  *
  * [openFd] returns a detached writable descriptor for a file, or -1 to take
- * the bytes through SinkFile.write; [onSaved] hears of each finished file.
+ * the bytes through SinkFile.write; [openRw] a readable and writable one
+ * (not truncated) to continue a kept part file, or -1 when it cannot;
+ * [onSaved] hears of each finished file. A kept transfer leaves its part
+ * file and finished files in place.
  */
 class FileSink(
     private val root: File,
@@ -86,19 +95,54 @@ class FileSink(
     private val onSaved: (File) -> Unit = {},
     private val claims: Claims = Claims(),
     override val where: String = root.path,
+    private val openRw: (File) -> Int = { -1 },
 ) : DownloadSink {
     override fun begin(transferID: String, manifestJSON: String): SinkTransfer {
         if (!root.isDirectory && !root.mkdirs()) throw IOException("cannot create the folder $where")
         return Tx(transferID)
     }
 
+    override fun resume(transferID: String, manifestJSON: String, state: String): SinkTransfer {
+        val k = KeptFiles.parse(state)
+        return Tx(transferID).apply {
+            made += k.dirs.map(::inside)
+            saved += k.files.map(::inside)
+            parts += k.parts.map(::inside)
+        }
+    }
+
+    override fun check(state: String) {
+        val k = KeptFiles.parse(state)
+        (k.dirs + k.files + k.parts).map(::inside).firstOrNull { !it.exists() }?.let {
+            throw IOException("${it.name} is gone")
+        }
+    }
+
+    override fun discard(state: String) = goCallback("discard", Unit) {
+        val k = runCatching { KeptFiles.parse(state) }.getOrNull() ?: return@goCallback
+        (k.parts + k.files).forEach { p -> runCatching { inside(p).delete() } }
+        k.dirs.asReversed().forEach { p -> runCatching { inside(p).delete() } }
+    }
+
     override fun finished(transferId: String) = claims.release(transferId)
+
+    /** A kept path, which must be inside [root]. */
+    private fun inside(path: String): File {
+        val f = File(path)
+        if (!isUnderAny(f.path, listOf(root.path)) || f.normalize() == root.normalize()) {
+            throw IOException("kept path $path is not in $where")
+        }
+        return f
+    }
 
     private inner class Tx(private val id: String) : SinkTransfer {
         /** Folders this transfer created, parents first. */
-        private val made = mutableListOf<File>()
-        private val saved = mutableListOf<File>()
+        val made = mutableListOf<File>()
+        val saved = mutableListOf<File>()
         private val open = mutableListOf<Out>()
+
+        /** Part files kept by an earlier attempt that this one continues. */
+        val parts = mutableListOf<File>()
 
         override fun mkdir(rel: String): String {
             if ('/' !in rel) {
@@ -141,7 +185,7 @@ class FileSink(
         }
 
         override fun abort() = goCallback("abort", Unit) {
-            val (outs, files, dirs) = synchronized(this) { Triple(open.toList(), saved.toList(), made.toList()) }
+            val (outs, files, dirs) = synchronized(this) { Triple(open.toList(), saved.toList() + parts, made.toList()) }
             outs.forEach { it.abort() }
             files.forEach { runCatching { it.delete() } }
             // Children before parents; delete() leaves a folder that is not
@@ -151,15 +195,49 @@ class FileSink(
 
         override fun location(): String = goCallback("location", "") { where }
 
-        private inner class Out(private val part: File, private val final: File) : SinkFile {
+        override fun keep(): String {
+            val outs = synchronized(this) { open.toList() }
+            outs.forEach { it.close() }
+            return synchronized(this) {
+                KeptFiles(
+                    dirs = made.map { it.path },
+                    files = saved.map { it.path },
+                    parts = (parts + outs.map { it.part }).distinct().map { it.path },
+                ).json()
+            }
+        }
+
+        override fun reopen(ref: String): SinkFile {
+            val part = inside(ref)
+            val known = synchronized(this) { part in parts || open.any { it.part == part } }
+            if (!known || !part.name.endsWith(PART) || !part.isFile) throw IOException("no kept part file $ref")
+            val final = File(part.parentFile, part.name.removeSuffix(PART))
+            return Out(part, final, rw = true).also {
+                synchronized(this) {
+                    parts -= part
+                    open += it
+                }
+            }
+        }
+
+        inner class Out(val part: File, private val final: File, private val rw: Boolean = false) : SinkFile {
             private var stream: OutputStream? = null
 
             // No error result: a descriptor that cannot be opened means -1,
             // and the bytes come through write(), which can report it.
-            override fun fd(): Long = goCallback("fd", -1L) { openFd(part).toLong() }
+            override fun fd(): Long = goCallback("fd", -1L) { (if (rw) openRw(part) else openFd(part)).toLong() }
+
+            override fun ref(): String = goCallback("ref", "") { part.path }
+
+            /** Stops writing, leaving the part file (keep). */
+            fun close() {
+                runCatching { stream?.close() }
+                stream = null
+            }
 
             override fun write(data: ByteArray) {
-                val s = stream ?: part.outputStream().also { stream = it }
+                // A reopened part file is continued, never cut short here.
+                val s = stream ?: FileOutputStream(part, rw).also { stream = it }
                 s.write(data)
             }
 
@@ -216,7 +294,58 @@ class MediaStoreSink(
 
     override fun begin(transferID: String, manifestJSON: String): SinkTransfer = Tx(transferID)
 
+    override fun resume(transferID: String, manifestJSON: String, state: String): SinkTransfer {
+        val k = KeptFiles.parse(state)
+        return Tx(transferID).apply {
+            uris += k.files.map { ownItem(it) }
+            dirs += k.dirs.map(::insideDisk)
+        }
+    }
+
+    override fun check(state: String) {
+        val k = KeptFiles.parse(state)
+        k.files.map { ownItem(it) }.firstOrNull { !exists(it) }?.let { throw IOException("a kept file is gone ($it)") }
+    }
+
+    override fun discard(state: String) = goCallback("discard", Unit) {
+        val k = runCatching { KeptFiles.parse(state) }.getOrNull() ?: return@goCallback
+        k.files.forEach { u -> runCatching { resolver.delete(ownItem(u), null, null) } }
+        k.dirs.asReversed().forEach { d -> runCatching { insideDisk(d).delete() } }
+    }
+
     override fun finished(transferId: String) = claims.release(transferId)
+
+    /** A kept item, which must be one of the Downloads collection's. */
+    private fun ownItem(s: String): Uri {
+        val uri = s.toUri()
+        val base = collection.toString().trimEnd('/')
+        if (uri.scheme != ContentResolver.SCHEME_CONTENT || !uri.toString().startsWith("$base/")) {
+            throw IOException("kept item $s is not in $where")
+        }
+        return uri
+    }
+
+    /** A kept folder, which must be inside Download/rocket. */
+    private fun insideDisk(path: String): File {
+        val f = File(path)
+        if (!isUnderAny(f.path, listOf(disk.path)) || f.normalize() == disk.normalize()) {
+            throw IOException("kept folder $path is not in $where")
+        }
+        return f
+    }
+
+    /** Whether item uri is still there, pending or not. */
+    private fun exists(uri: Uri): Boolean {
+        val cols = arrayOf(MediaStore.MediaColumns._ID)
+        val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val q = Bundle().apply { putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE) }
+            resolver.query(uri, cols, q, null)
+        } else {
+            @Suppress("DEPRECATION")
+            resolver.query(MediaStore.setIncludePending(uri), cols, null, null, null)
+        }
+        return cursor?.use { it.count > 0 } ?: false
+    }
 
     /**
      * Whether top-level name is used in Download/rocket, as a folder or a
@@ -250,8 +379,10 @@ class MediaStoreSink(
     }
 
     private inner class Tx(private val id: String) : SinkTransfer {
-        private val uris = mutableListOf<Uri>()
-        private val dirs = mutableListOf<File>()
+        /** Every item this transfer inserted (or the kept one it continues), pending or published. */
+        val uris = mutableListOf<Uri>()
+        val dirs = mutableListOf<File>()
+        private val open = mutableListOf<Item>()
 
         override fun mkdir(rel: String): String {
             if ('/' !in rel) {
@@ -289,7 +420,19 @@ class MediaStoreSink(
             }
             val uri = resolver.insert(collection, values) ?: throw IOException("cannot save $name in $where")
             synchronized(this) { uris += uri }
-            return Item(uri)
+            return Item(uri).also { synchronized(this) { open += it } }
+        }
+
+        override fun keep(): String {
+            val items = synchronized(this) { open.toList() }
+            items.forEach { it.close() }
+            return synchronized(this) { KeptFiles(dirs = dirs.map { it.path }, files = uris.map { it.toString() }, parts = emptyList()).json() }
+        }
+
+        override fun reopen(ref: String): SinkFile {
+            val uri = ownItem(ref)
+            if (synchronized(this) { uri !in uris }) throw IOException("no kept item $ref")
+            return Item(uri, rw = true).also { synchronized(this) { open += it } }
         }
 
         override fun abort() = goCallback("abort", Unit) {
@@ -300,15 +443,26 @@ class MediaStoreSink(
 
         override fun location(): String = goCallback("location", "") { where }
 
-        private inner class Item(private val uri: Uri) : SinkFile {
+        private inner class Item(private val uri: Uri, private val rw: Boolean = false) : SinkFile {
             private var stream: OutputStream? = null
 
             // The descriptor is detached for Go, which closes it; close()
             // on the emptied ParcelFileDescriptor is then a no-op. fd() has
             // no error result: when the pending item cannot be opened, -1
             // sends the bytes through write(), which reports the failure.
+            // A kept item is reopened "rw", so it is not truncated (Go cuts
+            // it to where it continues).
             override fun fd(): Long = goCallback("fd", -1L) {
-                resolver.openFileDescriptor(uri, "w")?.use { it.detachFd().toLong() } ?: -1L
+                resolver.openFileDescriptor(uri, if (rw) "rw" else "w")?.use { it.detachFd().toLong() } ?: -1L
+            }
+
+            override fun ref(): String = goCallback("ref", "") { uri.toString() }
+
+            /** Stops writing, leaving the pending item (keep). */
+            fun close() {
+                runCatching { stream?.close() }
+                stream = null
+                synchronized(this@Tx) { open -= this }
             }
 
             override fun write(data: ByteArray) {
@@ -321,6 +475,7 @@ class MediaStoreSink(
                 stream = null
                 val done = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
                 if (resolver.update(uri, done, null, null) < 1) throw IOException("cannot publish $uri")
+                synchronized(this@Tx) { open -= this }
                 return uri.toString()
             }
 
@@ -328,8 +483,34 @@ class MediaStoreSink(
                 runCatching { stream?.close() }
                 stream = null
                 runCatching { resolver.delete(uri, null, null) }
-                synchronized(this@Tx) { uris -= uri }
+                synchronized(this@Tx) {
+                    uris -= uri
+                    open -= this
+                }
             }
+        }
+    }
+}
+
+/**
+ * What a kept transfer stored, as SinkTransfer.keep describes it: folders
+ * made (parents first), files (paths or content URIs) and part files.
+ */
+internal data class KeptFiles(val dirs: List<String>, val files: List<String>, val parts: List<String>) {
+    fun json(): String = JSONObject()
+        .put("dirs", JSONArray(dirs))
+        .put("files", JSONArray(files))
+        .put("parts", JSONArray(parts))
+        .toString()
+
+    companion object {
+        fun parse(state: String): KeptFiles {
+            val o = JSONObject(state)
+            fun list(key: String): List<String> {
+                val a = o.optJSONArray(key) ?: return emptyList()
+                return (0 until a.length()).map { a.getString(it) }
+            }
+            return KeptFiles(list("dirs"), list("files"), list("parts"))
         }
     }
 }

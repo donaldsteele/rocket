@@ -236,7 +236,11 @@ limits, manifest and path checks. The differences:
 - **Files** go to `Download/rocket` through MediaStore (Android 10 and later)
   or the file system (Android 8 and 9, with `WRITE_EXTERNAL_STORAGE`). Paths
   are checked and made safe in Go before the app sees them; a cancelled or
-  failed receive removes its pending entry.
+  failed receive removes its pending entry. A receive cut off by a lost
+  connection is kept for 24 hours like on the desktop: its incomplete file
+  stays a pending MediaStore item, which other apps do not see, until the
+  sender's next attempt completes it, Discard removes it, or it expires.
+  Kept receives are swept while receiving is on.
 - **Share sheet.** rocket sends only what another app shares as content
   (`content://` from that app's provider). `file://` links and rocket's own
   providers are refused, and so is a file that turns out to be in rocket's
@@ -289,8 +293,9 @@ archive first.
 ## Other limits
 
 - **Resume needs both ends.** Browser drops and uploads relayed from the
-  browser UI do not resume, and the Android app does not keep a broken
-  receive yet (the sender's retry starts that transfer over).
+  browser UI do not resume. An Android send picked from the share sheet
+  usually cannot be read again after the app was closed, so Resume asks for
+  the files again.
 - **Unsigned binaries.** Release zips are not code-signed or notarized. Check
   them against `SHA256SUMS` from the release page. (The Android APK is signed;
   see [Android](#android).)

@@ -235,6 +235,8 @@ type tempSink struct {
 	mu      sync.Mutex
 	begun   int
 	aborted int
+	kept    int
+	resumed int
 }
 
 func newTempSink(t *testing.T, useFd bool) *tempSink {
@@ -257,6 +259,50 @@ func (s *tempSink) Begin(id, manifestJSON string) (SinkTransfer, error) {
 	return &tempTransfer{s: s}, nil
 }
 
+// tempState is what a tempTransfer's Keep returns.
+type tempState struct {
+	Tops []string `json:"tops"`
+}
+
+func (s *tempSink) Resume(id, manifestJSON, state string) (SinkTransfer, error) {
+	var st tempState
+	if err := json.Unmarshal([]byte(state), &st); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.resumed++
+	s.mu.Unlock()
+	return &tempTransfer{s: s, tops: st.Tops}, nil
+}
+
+func (s *tempSink) Check(state string) error {
+	var st tempState
+	if err := json.Unmarshal([]byte(state), &st); err != nil {
+		return err
+	}
+	for _, p := range st.Tops {
+		_, err := os.Lstat(p)
+		if _, perr := os.Lstat(p + ".part"); err != nil && perr != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *tempSink) Discard(state string) {
+	var st tempState
+	if json.Unmarshal([]byte(state), &st) == nil {
+		removeTops(st.Tops)
+	}
+}
+
+func removeTops(tops []string) {
+	for _, p := range tops {
+		os.RemoveAll(p)
+		os.Remove(p + ".part")
+	}
+}
+
 func (s *tempSink) counts() (begun, aborted int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -271,6 +317,7 @@ func (s *tempSink) tree() map[string]string {
 type tempTransfer struct {
 	s    *tempSink
 	tops []string // top-level items made, on disk
+	open []*tempFile
 }
 
 // fresh returns p, or p with " (n)" before the extension, that does not
@@ -325,17 +372,40 @@ func (x *tempTransfer) Create(rel string, size int64) (SinkFile, error) {
 	if !strings.Contains(rel, "/") {
 		x.tops = append(x.tops, final)
 	}
-	return &tempFile{x: x, f: f, final: final, size: size}, nil
+	tf := &tempFile{x: x, f: f, final: final, size: size}
+	x.open = append(x.open, tf)
+	return tf, nil
 }
 
 func (x *tempTransfer) Abort() {
-	for _, p := range x.tops {
-		os.RemoveAll(p)
-		os.Remove(p + ".part")
-	}
+	removeTops(x.tops)
 	x.s.mu.Lock()
 	x.s.aborted++
 	x.s.mu.Unlock()
+}
+
+func (x *tempTransfer) Keep() (string, error) {
+	for _, f := range x.open {
+		if f.f != nil {
+			f.f.Close()
+			f.f = nil
+		}
+	}
+	x.s.mu.Lock()
+	x.s.kept++
+	x.s.mu.Unlock()
+	b, err := json.Marshal(tempState{Tops: x.tops})
+	return string(b), err
+}
+
+func (x *tempTransfer) Reopen(ref string) (SinkFile, error) {
+	f, err := os.OpenFile(ref+".part", os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+	tf := &tempFile{x: x, f: f, final: ref, size: -1}
+	x.open = append(x.open, tf)
+	return tf, nil
 }
 
 func (x *tempTransfer) Location() string { return x.s.root }
@@ -347,8 +417,10 @@ type tempFile struct {
 	size  int64
 }
 
+func (f *tempFile) Ref() string { return f.final }
+
 func (f *tempFile) Fd() int {
-	if !f.x.s.useFd {
+	if !f.x.s.useFd && f.size >= 0 {
 		return -1
 	}
 	fd := dupFd(f.x.s.t, f.f)
@@ -368,7 +440,7 @@ func (f *tempFile) Commit() (string, error) {
 			return "", err
 		}
 	}
-	if st, err := os.Stat(f.final + ".part"); err != nil || st.Size() != f.size {
+	if st, err := os.Stat(f.final + ".part"); err != nil || (f.size >= 0 && st.Size() != f.size) {
 		f.x.s.t.Errorf("commit of %s: size %v, want %d (%v)", f.final, st, f.size, err)
 	}
 	return f.final, os.Rename(f.final+".part", f.final)

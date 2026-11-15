@@ -470,9 +470,12 @@ point or `(0,0)`:
   desktop UI) make one attempt and ignore resume points; when they fail
   they send a cancel notice so the receiver keeps nothing.
 
-The Android app sends the same way, keeping the content URIs for Resume.
-Receiving on Android keeps nothing yet: a broken receive is removed, and the
-sender's retry is a new offer.
+The Android app sends the same way, keeping the content URIs for Resume
+(with persistable read access where the provider allows it, otherwise
+Resume asks for the files again). It keeps a broken receive the same way
+too: the finished files and the incomplete one stay in `Download/rocket`
+(the incomplete one as a pending MediaStore item, invisible to other apps),
+and the sender's next offer continues it.
 
 ## POST /api/recv/cancel
 

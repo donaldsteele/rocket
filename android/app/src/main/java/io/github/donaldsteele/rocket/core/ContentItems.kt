@@ -2,6 +2,7 @@ package io.github.donaldsteele.rocket.core
 
 import android.content.ContentResolver
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
@@ -27,7 +28,7 @@ import java.util.Locale
  * descriptor that turns out to point into rocket's private storage is
  * refused.
  */
-class ContentItems(context: Context) : ItemOpener {
+class ContentItems(context: Context) : ItemOpener, GrantKeeper {
     private val app = context.applicationContext
     private val cr: ContentResolver = app.contentResolver
     private val ownPackage: String = app.packageName
@@ -169,6 +170,39 @@ class ContentItems(context: Context) : ItemOpener {
             throw e
         }
         return s
+    }
+
+    /**
+     * Takes persistable read access to a picked URI (a document or a
+     * folder tree from the system picker), so a send can be resumed after
+     * the app was closed. Providers that do not offer it (most share-sheet
+     * URIs) return false; Resume then asks for the files again.
+     */
+    override fun take(uri: String): Boolean = runCatching {
+        cr.takePersistableUriPermission(uri.toUri(), Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        true
+    }.getOrDefault(false)
+
+    override fun release(uri: String) {
+        runCatching { cr.releasePersistableUriPermission(uri.toUri(), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+    }
+
+    /**
+     * Whether the files in items can still be opened (Resume without asking
+     * again). Access is granted per pick, so the first few files tell. Blocks.
+     */
+    fun canRead(items: List<SendItem>): Boolean = items.asSequence().mapNotNull { it.ref }.take(16).all { ref ->
+        runCatching {
+            val uri = ref.toUri()
+            requireReadable(uri)
+            val pfd = runCatching { cr.openFileDescriptor(uri, "r") }.getOrNull()
+            if (pfd != null) {
+                pfd.close()
+            } else {
+                (cr.openInputStream(uri) ?: throw FileNotFoundException(ref)).close()
+            }
+            true
+        }.getOrDefault(false)
     }
 
     private fun tooMany() = IllegalStateException("More than ${"%,d".format(MAX_ITEMS)} items: rocket sends at most that many at once.")

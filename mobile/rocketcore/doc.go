@@ -62,15 +62,22 @@
 //
 //	ResumableJSON() string              {"outgoing": [{transfer_id, name, peer_name, peer_fp,
 //	                                    addr, files, bytes, error, interrupted, expires}],
-//	                                    "incoming": []} (GET /api/resumable's shape)
+//	                                    "incoming": [{id, name, sender_name, sender_fp, files,
+//	                                    total, done, location, kept_at, expires}]}
+//	                                    (GET /api/resumable's shape)
 //	Resume(transferID, Source, ProgressListener) (newTransferID, error)
 //	    send it again with the same files (the app keeps their content URIs,
 //	    or asks for them again)
-//	Discard(transferID) error           forget it and tell the receiver to drop what it kept
+//	Discard(id) error                   forget an interrupted send and tell the receiver to
+//	                                    drop what it kept, or remove a kept receive
 //
-// Receiving on Android keeps nothing of a broken transfer yet (the Sink
-// cannot continue a file): it is removed as before, and the sender's retry
-// is a new offer.
+// A receive that breaks for a network reason is kept the same way: the
+// Sink's Keep leaves what arrived in place ("kept" event, a KeptView), and
+// the sender's next offer of the same files with the same key is accepted
+// without a prompt and continues where it stopped (Sink.Resume, Reopen).
+// A kept receive is removed after 24 hours (swept while the receiver
+// runs), on Discard, on a cancel notice, or when the transfer completes
+// ("kept_gone" {id, reason}).
 //
 // # Receiving
 //
@@ -79,8 +86,8 @@
 //	    /api/recv/cancel (a sender's cancel notice) on port (a
 //	    free port when it is taken; 0 picks one) and announce on the beacon.
 //	    Decider.Ask(offerJSON) shows an offer; answer with Answer. Every
-//	    other event (offer_gone, progress, done, error, cancelled) goes to
-//	    the EventListener.
+//	    other event (offer_gone, progress, done, error, cancelled, kept,
+//	    kept_gone) goes to the EventListener.
 //	StopReceiver()                      decline waiting offers, cancel receives, stop
 //	Answer(offerID, accept, trust) bool trust pins the sender ("always accept")
 //	IncomingJSON() string               offers waiting for a decision

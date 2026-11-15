@@ -1,6 +1,9 @@
 package io.github.donaldsteele.rocket.ui
 
 import io.github.donaldsteele.rocket.core.IncomingOffer
+import io.github.donaldsteele.rocket.core.InterruptedSend
+import io.github.donaldsteele.rocket.core.KeptReceive
+import io.github.donaldsteele.rocket.core.Peer
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -93,3 +96,67 @@ const val NAV_LABEL_MAX_SCALE = 1.15f
  */
 fun navLabelFactor(fontScale: Float): Float =
     if (fontScale > NAV_LABEL_MAX_SCALE) NAV_LABEL_MAX_SCALE / fontScale else 1f
+
+/** Why a peer cannot be sent to, when it speaks protocol [Peer.proto] and this phone [own]. */
+fun peerUpdateText(p: Peer, own: Int): String {
+    if (p.proto > own) return "Runs a newer rocket (protocol ${p.proto}). Update rocket on this phone to send to it."
+    val ver = if (p.version.isNotEmpty()) "rocket ${p.version}" else "an older rocket"
+    return "Runs $ver (protocol ${p.proto}). Update it to rocket 1.1 or later to send to it."
+}
+
+/** "Reconnecting 2/5", the word for a send waiting to retry. */
+fun reconnectingWord(attempt: Int, attempts: Int): String =
+    if (attempts > 0) "Reconnecting $attempt/$attempts" else "Reconnecting"
+
+/** "Reconnecting, attempt 2 of 5", as a screen reader says it. */
+fun reconnectingSpoken(attempt: Int, attempts: Int): String =
+    if (attempts > 0) "Reconnecting, attempt $attempt of $attempts" else "Reconnecting"
+
+/**
+ * "Connection lost: the other device does not answer. rocket tries again by
+ * itself and continues where it stopped." The Go core's error (a URL, a
+ * socket address) is boiled down to what it means.
+ */
+fun reconnectingLine(error: String): String {
+    val why = networkWhy(error)
+    return "Connection lost" + (if (why.isNotEmpty()) ": $why" else "") +
+        ". rocket tries again by itself and continues where it stopped."
+}
+
+/** What a network error from the core means, in a few words; "" when it is not clear. */
+fun networkWhy(error: String): String {
+    val e = error.lowercase(Locale.ROOT)
+    return when {
+        "refused" in e -> "the other device does not answer"
+        "unreachable" in e || "no route" in e -> "the network cannot reach the other device"
+        "timeout" in e || "timed out" in e || "no byte" in e || "stalled" in e -> "nothing moved for a while"
+        "reset" in e || "forcibly closed" in e || "broken pipe" in e || "eof" in e ||
+            "closed" in e || "final frame" in e -> "the connection was cut"
+        else -> ""
+    }
+}
+
+/** A time like 15:04 today, or "Mon 15:04" on another day; "" when unknown. */
+fun untilText(ms: Long, now: Long = System.currentTimeMillis()): String {
+    if (ms <= 0) return ""
+    val d = Date(ms)
+    val t = DateFormat.getTimeInstance(DateFormat.SHORT).format(d)
+    val sameDay = java.text.SimpleDateFormat("yyyyMMdd", Locale.ROOT).let { it.format(d) == it.format(Date(now)) }
+    return if (sameDay) t else "${java.text.SimpleDateFormat("EEE", Locale.getDefault()).format(d)} $t"
+}
+
+/** "3 files · 1.2 GB · kept until 15:04" for an interrupted send. */
+fun interruptedMeta(s: InterruptedSend, now: Long = System.currentTimeMillis()): String =
+    listOfNotNull(
+        if (s.files > 1) "${s.files} files" else null,
+        formatSize(s.bytes),
+        untilText(s.expires, now).takeIf { it.isNotEmpty() }?.let { "kept until $it" },
+    ).joinToString(" · ")
+
+/** "42% · 410.0 MB of 980.0 MB · kept until 15:04" for a receive kept here. */
+fun keptMeta(k: KeptReceive, now: Long = System.currentTimeMillis()): String =
+    listOfNotNull(
+        "${percent(k.done, k.total)}%",
+        "${formatSize(k.done)} of ${formatSize(k.total)}",
+        untilText(k.expires, now).takeIf { it.isNotEmpty() }?.let { "kept until $it" },
+    ).joinToString(" · ")

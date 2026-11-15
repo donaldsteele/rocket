@@ -44,6 +44,7 @@ const defaultHistoryLimit = 100
 // Node is this phone as a rocket host.
 type Node struct {
 	version  string
+	dataDir  string
 	id       atomic.Pointer[node.Identity]
 	trust    *peers.Store
 	hist     *history.Store
@@ -59,6 +60,7 @@ type Node struct {
 	recv        *receiving
 	sends       map[string]ProgressListener // running sends, by transfer ID
 	events      EventListener               // the receiver's, while it runs
+	kept        *receiver.KeptStore         // receives kept for a resume, from the first StartReceiver on
 }
 
 // NewNode opens (creating on first run) the identity, trust store, history
@@ -96,7 +98,7 @@ func NewNode(dataDir, name, version string) (*Node, error) {
 		version = "dev"
 	}
 	n := &Node{
-		version: version, trust: trust, hist: hist, settings: settings, outbox: outbox,
+		version: version, dataDir: dataDir, trust: trust, hist: hist, settings: settings, outbox: outbox,
 		beaconPort: DefaultBeaconPort,
 		sends:      map[string]ProgressListener{},
 	}
@@ -187,23 +189,41 @@ func (n *Node) Revoke(fp string) error {
 // ResumableJSON lists what can be resumed, in the shape of desktop rocket's
 // GET /api/resumable: {"outgoing": [interrupted sends: {transfer_id, name,
 // peer_name, peer_fp, addr, files, bytes, error, interrupted, expires,
-// ...}], "incoming": [transfers kept on this device]}. Resume or Discard an
-// outgoing one by its transfer_id. This core keeps no incoming transfers
-// yet (the app's MediaStore sink cannot continue a file), so "incoming" is
-// empty.
+// ...}], "incoming": [receives kept on this device: {id, name,
+// sender_name, sender_fp, files, total, done, location, kept_at,
+// expires}]}. Resume or Discard an outgoing one by its transfer_id;
+// Discard an incoming one by its id (it continues by itself when the
+// sender tries again). Incoming ones are listed from the first
+// StartReceiver on (the kept files belong to the app's Sink).
 func (n *Node) ResumableJSON() string {
 	n.outbox.Sweep()
-	return toJSON(map[string]any{"outgoing": n.outbox.List(), "incoming": []receiver.KeptView{}})
+	n.mu.Lock()
+	kept := n.kept
+	n.mu.Unlock()
+	in := []receiver.KeptView{}
+	if kept != nil {
+		in = kept.List()
+	}
+	return toJSON(map[string]any{"outgoing": n.outbox.List(), "incoming": in})
 }
 
 // Discard forgets interrupted send id and tells its receiver, if it can be
-// reached, to drop what it kept.
+// reached, to drop what it kept; or removes receive id kept on this device
+// with everything it stored.
 func (n *Node) Discard(id string) error {
-	rec, ok := n.outbox.Get(id)
-	if !ok {
-		return errors.New("nothing to discard with that id")
+	if rec, ok := n.outbox.Get(id); ok {
+		return receiver.DiscardOutgoing(n.outbox, n.identity(), rec)
 	}
-	return receiver.DiscardOutgoing(n.outbox, n.identity(), rec)
+	n.mu.Lock()
+	r, kept := n.recv, n.kept
+	n.mu.Unlock()
+	switch {
+	case r != nil && r.rx.DiscardKept(id):
+		return nil
+	case r == nil && kept != nil && kept.Discard(id):
+		return nil
+	}
+	return errors.New("nothing to discard with that id")
 }
 
 // TransfersJSON lists the transfers in flight, oldest first.

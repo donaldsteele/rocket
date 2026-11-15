@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -142,14 +143,36 @@ private fun HistoryRow(e: HistoryEntry) {
                 Spacer(Modifier.width(8.dp))
                 StatusChip(icon, word, tone)
             }
+            if (showSecurity(e.result)) {
+                Spacer(Modifier.height(6.dp))
+                if (e.encrypted) EncryptedChip() else StatusChip(Lucide.LockOpen, "Not encrypted", Tone.Muted)
+            }
             val meta = listOf(formatSize(e.bytes), formatWhen(e.ended.takeIf { it > 0 } ?: e.started))
                 .filter { it.isNotEmpty() }
                 .joinToString(" · ")
             Text(meta, fontFamily = Mono, fontSize = 12.sp, color = c.fgMuted, modifier = Modifier.padding(top = 6.dp))
-            if (e.error.isNotEmpty() && e.result != "ok") {
-                Text(e.error, style = MaterialTheme.typography.bodySmall, color = c.fgMuted)
+            val why = if (e.result == "interrupted") interruptedHistoryLine(e) else e.error
+            if (why.isNotEmpty() && e.result != "ok") {
+                Text(why, style = MaterialTheme.typography.bodySmall, color = c.fgMuted)
             }
         }
+    }
+}
+
+/**
+ * Whether a history entry says if its bytes were encrypted: only when bytes
+ * could have moved (not for a declined or unanswered offer), as on desktop.
+ */
+internal fun showSecurity(result: String): Boolean = result != "declined" && result != "timeout"
+
+/** What an interrupted transfer's history entry says, instead of the raw network error. */
+internal fun interruptedHistoryLine(e: HistoryEntry): String {
+    val why = networkWhy(e.error)
+    val lost = "The connection was lost" + (if (why.isNotEmpty()) " ($why)" else "") + "."
+    return if (e.dir == "in") {
+        "$lost What arrived was kept for 24 hours, to continue when the sender tries again."
+    } else {
+        "$lost It could be resumed from Transfers for 24 hours."
     }
 }
 
@@ -160,5 +183,6 @@ internal fun resultLook(result: String): Triple<ImageVector, String, Tone> = whe
     "cancelled" -> Triple(Lucide.Square, "Cancelled", Tone.Warn)
     "error" -> Triple(Lucide.TriangleAlert, "Failed", Tone.Bad)
     "timeout" -> Triple(Lucide.Clock, "No answer", Tone.Warn)
+    "interrupted" -> Triple(Lucide.Unplug, "Interrupted", Tone.Warn)
     else -> Triple(Lucide.Info, result.ifEmpty { "Unknown" }, Tone.Muted)
 }

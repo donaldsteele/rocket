@@ -258,6 +258,10 @@ fun OfferBody(o: IncomingOffer, onAnswer: (accept: Boolean, trust: Boolean) -> U
                 }
             }
         }
+        // Every offer the phone gets is from a rocket app (there is no drop
+        // page on Android), so its files arrive encrypted.
+        Spacer(Modifier.height(8.dp))
+        EncryptedChip(Modifier.padding(start = 32.dp))
         Spacer(Modifier.height(10.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             PrimaryAction(

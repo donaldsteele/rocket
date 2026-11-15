@@ -22,6 +22,7 @@ import io.github.donaldsteele.rocket.core.Transfer
 import io.github.donaldsteele.rocket.core.TransferState
 import io.github.donaldsteele.rocket.ui.MainActivity
 import io.github.donaldsteele.rocket.ui.formatSize
+import io.github.donaldsteele.rocket.ui.reconnectingWord
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -134,7 +135,9 @@ class TransferService : Service() {
             active.size > 1 -> "Sending ${active.size} transfers"
             else -> "Preparing to send"
         }
+        val reconnecting = active.firstOrNull { it.state == TransferState.Reconnecting }
         val text = when {
+            reconnecting != null -> "Connection lost. " + reconnectingWord(reconnecting.attempt, reconnecting.attempts) + "…"
             active.any { it.state == TransferState.Waiting } && sent == 0L -> "Waiting for the receiver to accept"
             total > 0 -> "${formatSize(sent)} of ${formatSize(total)}"
             starting > 0 -> "Reading the files"
