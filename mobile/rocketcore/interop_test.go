@@ -1,13 +1,13 @@
 package rocketcore
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/donaldsteele/rocket/internal/protocol"
+	"github.com/donaldsteele/rocket/internal/protocol/securestream"
 	"github.com/donaldsteele/rocket/internal/transfer"
 )
 
@@ -458,7 +459,7 @@ func TestPhoneRejectsForgedOffer(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(body)
 	}
-	o, err := protocol.NewOffer(mallory.id, "desk", phone.Fingerprint(), protocol.FileManifest("evil.exe", 1, 0o644), time.Now())
+	o, _, err := protocol.NewOffer(mallory.id, "desk", phone.Fingerprint(), protocol.FileManifest("evil.exe", 1, 0o644), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +475,7 @@ func TestPhoneRejectsForgedOffer(t *testing.T) {
 		t.Fatalf("stolen key: %d %s", code, body)
 	}
 	// An offer addressed to another host.
-	o2, _ := protocol.NewOffer(desk.id, "desk", mallory.id.Fingerprint(), protocol.FileManifest("x", 1, 0o644), time.Now())
+	o2, _, _ := protocol.NewOffer(desk.id, "desk", mallory.id.Fingerprint(), protocol.FileManifest("x", 1, 0o644), time.Now())
 	if code, body := post(o2); code != 400 || !strings.Contains(body, protocol.ErrWrongReceiver.Error()) {
 		t.Fatalf("wrong receiver: %d %s", code, body)
 	}
@@ -483,7 +484,10 @@ func TestPhoneRejectsForgedOffer(t *testing.T) {
 	}
 }
 
-func TestPhoneRejectsHostileTar(t *testing.T) {
+// TestPhoneRejectsBadBodies: the phone's receiver checks the encrypted body
+// like the desktop's: a tampered frame, a cut-off stream, data after the end
+// and a body sent in clear each get 400, and nothing stays in the sink.
+func TestPhoneRejectsBadBodies(t *testing.T) {
 	phone, desk := newPhone(t, "pixel"), newDesktop(t, "desk")
 	d := &decider{n: phone, accept: true}
 	sink, ev := newTempSink(t, false), newEvents(t)
@@ -493,41 +497,144 @@ func TestPhoneRejectsHostileTar(t *testing.T) {
 		{Path: "d/a.txt", Size: 3, Mode: 0o644},
 		{Path: "d/b.txt", Size: 3, Mode: 0o644},
 	}, Total: 6}
-	o, err := protocol.NewOffer(desk.id, "desk", phone.Fingerprint(), m, time.Now())
+	h := transfer.Start{}.Header()
+	good := append(h[:], "aaabbb"...)
+	sealed := func(key, plain []byte) []byte {
+		b, err := securestream.Seal(key, plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	cases := map[string]func(key []byte) []byte{
+		"tampered":  func(key []byte) []byte { b := sealed(key, good); b[len(b)-3] ^= 1; return b },
+		"cut off":   func(key []byte) []byte { b := sealed(key, good); return b[:len(b)-1] },
+		"trailing":  func(key []byte) []byte { return append(sealed(key, good), 'x') },
+		"in clear":  func([]byte) []byte { return good },
+		"too short": func(key []byte) []byte { return sealed(key, append(h[:], "aaabb"...)) },
+	}
+	for name, body := range cases {
+		o, eph, err := protocol.NewOffer(desk.id, "desk", phone.Fingerprint(), m, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(o)
+		resp, err := http.Post("http://"+addr+"/api/offer", "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var reply protocol.OfferReply
+		_ = json.NewDecoder(resp.Body).Decode(&reply)
+		resp.Body.Close()
+		sb, _ := protocol.SigningBytes(o)
+		if err := protocol.VerifyReply(phone.identity().Pub, sb, &reply); err != nil || !reply.Accepted {
+			t.Fatalf("%s: reply %+v (%v)", name, reply, err)
+		}
+		key, err := protocol.BodyKey(eph, reply.Eph, o, reply.TransferID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err = http.Post("http://"+addr+"/api/recv?token="+reply.Token, transfer.BodyType, bytes.NewReader(body(key)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 400 {
+			t.Fatalf("%s: %d", name, resp.StatusCode)
+		}
+		if e := ev.wait("error"); e.Data["dir"] != "in" {
+			t.Fatalf("%s: error event %v", name, e.Data)
+		}
+		waitEmpty(t, sink.root)
+	}
+}
+
+// TestProtocol1RefusedByPhone: the phone refuses a protocol-1 offer with
+// 426, and refuses to send to a protocol-1 peer with the update message.
+func TestProtocol1RefusedByPhone(t *testing.T) {
+	phone, desk := newPhone(t, "pixel"), newDesktop(t, "desk")
+	d := &decider{n: phone, accept: true}
+	addr := startReceiving(t, phone, d, newTempSink(t, true), newEvents(t))
+	o, _, err := protocol.NewOffer(desk.id, "desk", phone.Fingerprint(), protocol.FileManifest("x", 1, 0o644), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
+	o.Proto, o.Eph = 1, ""
+	_ = o.SignWith(desk.id)
 	b, _ := json.Marshal(o)
 	resp, err := http.Post("http://"+addr+"/api/offer", "application/json", bytes.NewReader(b))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reply protocol.OfferReply
-	_ = json.NewDecoder(resp.Body).Decode(&reply)
+	msg, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !reply.Accepted {
-		t.Fatalf("offer not accepted: %+v", reply)
+	if resp.StatusCode != http.StatusUpgradeRequired || strings.TrimSpace(string(msg)) != protocol.OldSenderMsg {
+		t.Fatalf("protocol-1 offer: %d %q", resp.StatusCode, msg)
 	}
-	// a.txt is fine; then a symlink where b.txt should be.
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	_ = tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: "d/", Mode: 0o755})
-	_ = tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: "d/a.txt", Size: 3, Mode: 0o644})
-	_, _ = tw.Write([]byte("aaa"))
-	_ = tw.WriteHeader(&tar.Header{Typeflag: tar.TypeSymlink, Name: "d/b.txt", Linkname: "../../../etc/passwd"})
-	_ = tw.Close()
-	resp, err = http.Post("http://"+addr+"/api/recv?token="+reply.Token, "application/x-tar", &buf)
-	if err != nil {
+	if d.count() != 0 {
+		t.Fatal("protocol-1 offer shown")
+	}
+
+	// A 1.0 desktop: its hello says protocol 1.
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/hello" {
+			t.Errorf("1.0 peer got %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(protocol.Hello{Proto: 1, Name: "old laptop", FP: desk.id.Fingerprint(), Pub: desk.id.PublicKeyB64(), Version: "1.0.0"})
+	}))
+	defer old.Close()
+	ev := newEvents(t)
+	if _, err := phone.Send(strings.TrimPrefix(old.URL, "http://"), desk.id.Fingerprint(), &testSource{t: t, items: []item{
+		{path: "x.txt", data: []byte("x")},
+	}}, ev); err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != 400 {
-		t.Fatalf("hostile tar: %d", resp.StatusCode)
-	}
-	if e := ev.wait("error"); e.Data["dir"] != "in" {
+	if e := ev.wait("error"); e.Data["error"] != "old laptop runs an older rocket (protocol 1); update it to 1.1 or later" {
 		t.Fatalf("error event %v", e.Data)
 	}
-	waitEmpty(t, sink.root)
+}
+
+// TestEncryptedHistoryAndProto: both ends record peer transfers as
+// encrypted, and the peer list carries each peer's protocol version.
+func TestEncryptedHistoryAndProto(t *testing.T) {
+	phone, desk := newPhone(t, "pixel"), newDesktop(t, "desk")
+	if err := desk.trust.Approve(phone.Fingerprint(), "pixel", phone.PublicKey()); err != nil {
+		t.Fatal(err)
+	}
+	ev := newEvents(t)
+	if _, err := phone.Send(desk.addr(), desk.id.Fingerprint(), &testSource{t: t, items: []item{
+		{path: "e.txt", data: []byte("encrypted")},
+	}}, ev); err != nil {
+		t.Fatal(err)
+	}
+	ev.wait("sent")
+	h, _ := phone.HistoryJSON(0)
+	if !strings.Contains(h, `"encrypted":true`) {
+		t.Fatalf("phone history %s", h)
+	}
+	code, body := desk.call("GET", "/api/history", nil)
+	if code != 200 || !strings.Contains(string(body), `"encrypted":true`) {
+		t.Fatalf("desktop history %d %s", code, body)
+	}
+
+	phone.ObserveMDNS("new desk", "00000000000000a2", "10.0.0.2", 29005, "1.1.0", "windows", "2")
+	phone.ObserveMDNS("old desk", "00000000000000a1", "10.0.0.1", 29005, "1.0.0", "windows", "1")
+	phone.ObserveMDNS("ancient", "00000000000000a0", "10.0.0.3", 29005, "0.9.0", "linux", "")
+	var ps []struct {
+		Name  string `json:"name"`
+		Proto int    `json:"proto"`
+	}
+	if err := json.Unmarshal([]byte(phone.PeersJSON()), &ps); err != nil || len(ps) != 3 {
+		t.Fatalf("peers %s (%v)", phone.PeersJSON(), err)
+	}
+	want := map[string]int{"new desk": ProtoVersion, "old desk": 1, "ancient": 1}
+	for _, p := range ps {
+		if want[p.Name] != p.Proto {
+			t.Errorf("%s: proto %d, want %d", p.Name, p.Proto, want[p.Name])
+		}
+	}
 }
 
 func TestStopReceiverDeclinesWaitingOffers(t *testing.T) {

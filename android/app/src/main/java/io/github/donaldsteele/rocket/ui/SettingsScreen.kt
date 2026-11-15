@@ -34,6 +34,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.semantics.contentDescription
 import io.github.donaldsteele.rocket.core.TrustedSender
+import io.github.donaldsteele.rocket.core.rocketcore.Rocketcore
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -243,7 +244,7 @@ fun SettingsScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
         Panel {
             Column {
                 SectionTitle(Lucide.Info, "About")
-                Text("rocket ${BuildConfig.VERSION_NAME} for Android · protocol v1", style = MaterialTheme.typography.bodyMedium)
+                Text("rocket ${BuildConfig.VERSION_NAME} for Android · protocol v${Rocketcore.ProtoVersion}", style = MaterialTheme.typography.bodyMedium)
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "LAN file transfer between rocket hosts. The wire protocol is rocket's Go code, the same as on desktop.",

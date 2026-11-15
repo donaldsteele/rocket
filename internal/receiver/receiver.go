@@ -1,7 +1,8 @@
 // Package receiver is the peer-facing receive side of a rocket host
-// (protocol v1, docs/protocol.md): GET /api/hello, POST /api/offer and POST
-// /api/recv, with offer verification, rate and pending limits, one-shot
-// upload tokens, and the checks of the body against the signed manifest.
+// (protocol v2, docs/protocol.md): GET /api/hello, POST /api/offer and POST
+// /api/recv, with offer verification, signed replies, rate and pending
+// limits, one-shot upload tokens, the decryption of the body and its checks
+// against the signed manifest.
 //
 // Two interfaces connect it to its host. A Decider asks the person about an
 // offer; the answer comes back later through Receiver.Answer. A Sink stores
@@ -30,6 +31,7 @@ import (
 	"github.com/donaldsteele/rocket/internal/node"
 	"github.com/donaldsteele/rocket/internal/peers"
 	"github.com/donaldsteele/rocket/internal/protocol"
+	"github.com/donaldsteele/rocket/internal/protocol/securestream"
 	"github.com/donaldsteele/rocket/internal/transfer"
 )
 
@@ -88,6 +90,7 @@ type Upload struct {
 	IP         string
 	Drop       bool     // desktop browser drop (POST /drop/upload) vs peer (POST /api/recv)
 	Names      []string // drop only: base name the browser gave each file, in order
+	key        []byte   // peer only: the body key of this transfer
 	expires    time.Time
 }
 
@@ -322,7 +325,7 @@ func (rx *Receiver) StartIncoming(w http.ResponseWriter, r *http.Request, up *Up
 	rc := http.NewResponseController(w)
 	ctx := rx.cfg.Ledger.Transfers.Start(r.Context(), transfer.Info{
 		ID: up.TransferID, Dir: history.DirIn, Name: label, PeerName: up.SenderName, PeerFP: up.SenderFP,
-		Files: transfer.Files(up.Manifest), Total: up.Manifest.Total,
+		Files: transfer.Files(up.Manifest), Total: up.Manifest.Total, Encrypted: !up.Drop,
 	}, func() { _ = rc.SetReadDeadline(time.Now()) })
 	r.Body = &ctxBody{ctx: ctx, rc: r.Body}
 }
@@ -426,20 +429,24 @@ func (rx *Receiver) Done(up *Upload, name, where string, res transfer.Result) {
 }
 
 // RecvCode maps a receive error to an HTTP status: 400 when the body does not
-// match the offer (sizes, archive entries, body limit), 500 otherwise.
+// match the offer (sizes, entries, start point, body limit) or the encrypted
+// stream is bad (a frame that fails authentication, cut off, oversized or
+// followed by more data), 500 otherwise.
 func RecvCode(err error) int {
 	var mbe *http.MaxBytesError
-	if errors.Is(err, transfer.ErrSize) || errors.Is(err, transfer.ErrArchive) || errors.As(err, &mbe) {
+	for _, bad := range []error{
+		transfer.ErrSize, transfer.ErrArchive, transfer.ErrStart,
+		securestream.ErrAuth, securestream.ErrTruncated, securestream.ErrTrailingData,
+		securestream.ErrFrameSize, securestream.ErrCounter,
+	} {
+		if errors.Is(err, bad) {
+			return http.StatusBadRequest
+		}
+	}
+	if errors.As(err, &mbe) {
 		return http.StatusBadRequest
 	}
 	return http.StatusInternalServerError
-}
-
-// TarLimit bounds a kind:multi body: the announced bytes plus room for tar
-// framing (a header, PAX records for long or non-ASCII names, padding) per
-// entry and the end-of-archive marker.
-func TarLimit(m protocol.Manifest) int64 {
-	return m.Total + int64(len(m.Entries))*16<<10 + 1<<20
 }
 
 // --- peer protocol handlers ---
@@ -456,6 +463,10 @@ func (rx *Receiver) HandleHello(w http.ResponseWriter, _ *http.Request) {
 
 // HandleOffer verifies a signed peer offer and long-polls for the person's
 // decision (skipped for a trusted sender whose key matches the pinned key).
+// Every answer is signed with this host's key (protocol.SignReply); an
+// accepted one carries a fresh ephemeral key, from which both sides derive
+// the body key. An offer of an older protocol gets 426 and
+// protocol.OldSenderMsg.
 //
 // Every offer with a good signature spends a slot in the replay cache, so
 // offers are rate-limited per IP, and an offer that could only be refused
@@ -480,6 +491,12 @@ func (rx *Receiver) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	decoded()
+	if o.Proto < protocol.Version {
+		// A rocket 1.0 sender: tell it plainly to update.
+		w.Header().Set("Upgrade", fmt.Sprintf("rocket/%d", protocol.Version))
+		http.Error(w, protocol.OldSenderMsg, http.StatusUpgradeRequired)
+		return
+	}
 	// Trust-on-first-use with proof of key possession: a sender whose
 	// fingerprint is trusted AND whose key matches the pinned key skips the
 	// prompt, unless auto-accept is switched off. (The key is proven by
@@ -499,13 +516,38 @@ func (rx *Receiver) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "offer rejected: "+err.Error(), code)
 		return
 	}
+	offerSB, err := protocol.SigningBytes(&o)
+	if err != nil {
+		http.Error(w, "offer rejected: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 
+	// This side's ephemeral key and the body key are made before anyone is
+	// asked, so an offer whose key cannot be used fails at once.
 	tid := NewToken()
+	ephPriv, eph, err := protocol.NewEphemeral()
+	if err != nil {
+		http.Error(w, "cannot make a key: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	key, err := protocol.BodyKey(ephPriv, o.Eph, &o, tid)
+	if err != nil {
+		http.Error(w, "offer rejected: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	name := CleanLabel(o.SenderName, o.SenderFP)
-	up := &Upload{TransferID: tid, Manifest: o.Manifest, SenderName: name, SenderFP: o.SenderFP, IP: ip}
+	up := &Upload{TransferID: tid, Manifest: o.Manifest, SenderName: name, SenderFP: o.SenderFP, IP: ip, key: key}
+	answer := func(reply protocol.OfferReply) {
+		reply.TransferID = tid
+		if reply.Accepted {
+			reply.Token, reply.Eph = rx.MintUpload(up), eph
+		}
+		protocol.SignReply(rx.cfg.Identity, offerSB, &reply)
+		writeJSON(w, reply)
+	}
 
 	if autoOK {
-		writeJSON(w, protocol.OfferReply{Accepted: true, Token: rx.MintUpload(up), TransferID: tid})
+		answer(protocol.OfferReply{Accepted: true})
 		return
 	}
 
@@ -519,37 +561,39 @@ func (rx *Receiver) HandleOffer(w http.ResponseWriter, r *http.Request) {
 	d, ok, timedOut := rx.Wait(r.Context(), p)
 	switch {
 	case !ok && timedOut:
-		writeJSON(w, protocol.OfferReply{Accepted: false, TransferID: tid, Reason: protocol.ReasonTimedOut})
+		answer(protocol.OfferReply{Reason: protocol.ReasonTimedOut})
 	case !ok:
 		// The sender went away; nothing to answer.
 	case !d.Accept:
-		writeJSON(w, protocol.OfferReply{Accepted: false, TransferID: tid, Reason: protocol.ReasonDeclined})
+		answer(protocol.OfferReply{Reason: protocol.ReasonDeclined})
 	default:
 		if d.Trust {
 			if err := rx.cfg.Trust.Approve(o.SenderFP, name, o.SenderPub); err != nil {
 				rx.cfg.Ledger.Error(tid, view.Name, fmt.Errorf("could not save trusted sender: %w", err))
 			}
 		}
-		writeJSON(w, protocol.OfferReply{Accepted: true, Token: rx.MintUpload(up), TransferID: tid})
+		answer(protocol.OfferReply{Accepted: true})
 	}
 }
 
 // HandleRecv streams an accepted upload into the Sink. The one-shot token
-// must come from the offering IP. For kind:file the body is the raw file and
-// Content-Length must equal the manifest total; for kind:multi it is a tar
-// whose entries must match the manifest exactly. The receive is registered
-// with the transfer manager: cancelling it stops the read, removes what was
+// must come from the offering IP. The body is a securestream under the key
+// agreed for this transfer (protocol v2): a start header, which must be the
+// beginning of the transfer, then every file's bytes in manifest order,
+// checked against the signed manifest. Content-Length, when given, must be
+// exactly the sealed size. Any failure, including a frame that fails
+// authentication, removes everything stored. The receive is registered with
+// the transfer manager: cancelling it stops the read, removes what was
 // stored and answers the sender 410 Gone.
 func (rx *Receiver) HandleRecv(w http.ResponseWriter, r *http.Request) {
 	up := rx.TakeUpload(r.URL.Query().Get("token"), false, RemoteIP(r))
-	if up == nil {
+	if up == nil || up.key == nil {
 		http.Error(w, "invalid, expired or used token", http.StatusForbidden)
 		return
 	}
 	label := transfer.Label(up.Manifest)
-	if up.Manifest.Kind == protocol.KindMulti {
-		r.Body = http.MaxBytesReader(w, r.Body, TarLimit(up.Manifest))
-	}
+	want := transfer.SealedBodySize(up.Manifest, transfer.Start{})
+	r.Body = http.MaxBytesReader(w, r.Body, want)
 	rx.StartIncoming(w, r, up, label)
 	progress := rx.cfg.Ledger.Progress(up.TransferID, label, "in")
 	out, err := rx.cfg.Sink.Begin(up.TransferID, up.Manifest, progress)
@@ -557,23 +601,18 @@ func (rx *Receiver) HandleRecv(w http.ResponseWriter, r *http.Request) {
 		rx.failIncoming(w, r, up, err)
 		return
 	}
-	var res transfer.Result
-	switch up.Manifest.Kind {
-	case protocol.KindFile:
-		if r.ContentLength != up.Manifest.Total {
-			err = fmt.Errorf("%w: content length %d does not match the offered size %d", transfer.ErrSize, r.ContentLength, up.Manifest.Total)
-			out.Abort()
-			break
-		}
-		if err = out.Write(0, r.Body); err == nil {
-			res, err = out.Finish()
-		}
-		if err != nil {
-			out.Abort()
-		}
-	default: // kind:multi (Verify accepts no other kind)
-		res, err = transfer.ExtractTar(out, up.Manifest, r.Body)
+	if r.ContentLength >= 0 && r.ContentLength != want {
+		out.Abort()
+		rx.failIncoming(w, r, up, fmt.Errorf("%w: content length %d, the offer needs %d", transfer.ErrSize, r.ContentLength, want))
+		return
 	}
+	body, err := securestream.NewReader(r.Body, up.key)
+	if err != nil {
+		out.Abort()
+		rx.failIncoming(w, r, up, err)
+		return
+	}
+	res, err := transfer.ReceiveBody(out, up.Manifest, body)
 	if err != nil {
 		rx.failIncoming(w, r, up, err)
 		return

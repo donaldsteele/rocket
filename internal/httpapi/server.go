@@ -124,7 +124,7 @@ func (s *Server) Quit() <-chan struct{} { return s.quit }
 // per path.
 func (s *Server) routes() []route {
 	return []route{
-		// LAN surface: peer protocol v1.
+		// LAN surface: peer protocol v2.
 		{"GET /api/hello", surfaceLAN, s.rx.HandleHello},
 		{"POST /api/offer", surfaceLAN, s.rx.HandleOffer},
 		{"POST /api/recv", surfaceLAN, s.rx.HandleRecv},

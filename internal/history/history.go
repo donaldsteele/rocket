@@ -54,6 +54,9 @@ type Entry struct {
 	Ended    time.Time `json:"ended"`
 	Result   Result    `json:"result"`
 	Error    string    `json:"error,omitempty"`
+	// Encrypted is true for every peer transfer (protocol 2 encrypts every
+	// body) and false for browser drops and entries written before 1.1.
+	Encrypted bool `json:"encrypted"`
 }
 
 // Store is the history file, safe for concurrent use within a process.

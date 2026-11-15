@@ -12,9 +12,12 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/donaldsteele/rocket/internal/protocol"
 )
 
 // Discovery sources, as reported in Peer.Via.
@@ -48,14 +51,18 @@ func ttlFor(via string) time.Duration {
 
 // Peer is another rocket host seen on the network.
 type Peer struct {
-	Name        string    `json:"name"`
-	Fingerprint string    `json:"fp"`
-	Addr        string    `json:"-"` // host:port for the HTTP API
-	HTTPPort    int       `json:"port"`
-	Version     string    `json:"ver"`
-	OS          string    `json:"os"`
-	Via         []string  `json:"via"` // live sources: "beacon", "mdns"
-	LastSeen    time.Time `json:"-"`
+	Name        string   `json:"name"`
+	Fingerprint string   `json:"fp"`
+	Addr        string   `json:"-"` // host:port for the HTTP API
+	HTTPPort    int      `json:"port"`
+	Version     string   `json:"ver"`
+	OS          string   `json:"os"`
+	Via         []string `json:"via"` // live sources: "beacon", "mdns"
+	// Proto is the wire protocol version the peer announces; a peer that
+	// announces none (rocket 1.0) is 1. Only protocol.Version peers can be
+	// sent to.
+	Proto    int       `json:"proto"`
+	LastSeen time.Time `json:"-"`
 }
 
 // Self describes this host, announced to others.
@@ -65,6 +72,7 @@ type Self struct {
 	HTTPPort    int    `json:"port"`
 	Version     string `json:"ver"`
 	OS          string `json:"os"`
+	Proto       int    `json:"proto"` // wire protocol version; New fills in protocol.Version
 }
 
 // sighting is one source's latest report of a peer.
@@ -85,7 +93,11 @@ type Registry struct {
 }
 
 // New creates a registry for this host. beaconPort is the UDP port Run uses.
+// A zero self.Proto is protocol.Version.
 func New(self Self, beaconPort int) *Registry {
+	if self.Proto == 0 {
+		self.Proto = protocol.Version
+	}
 	return &Registry{
 		self: self, beaconPort: beaconPort, now: time.Now,
 		peers: map[string]map[string]sighting{},
@@ -202,6 +214,9 @@ func merge(byVia map[string]sighting) (Peer, bool) {
 			if out.OS == "" {
 				out.OS = p.OS
 			}
+			if out.Proto == 0 {
+				out.Proto = p.Proto
+			}
 			if !v4 && isIPv4Addr(p.Addr) {
 				out.Addr, out.HTTPPort, v4 = p.Addr, p.HTTPPort, true
 			}
@@ -211,7 +226,28 @@ func merge(byVia map[string]sighting) (Peer, bool) {
 			out.LastSeen = s.seen
 		}
 	}
+	if out.Proto == 0 {
+		out.Proto = 1
+	}
 	return out, found
+}
+
+// ParseProto reads an announced protocol version ("2"); anything missing or
+// unreadable is 1, the version of rocket 1.0, which announced "1" or nothing.
+func ParseProto(s string) int {
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > 1<<16 {
+		return 1
+	}
+	return n
+}
+
+// protoOrOld is n, or 1 for a beacon without (or with a nonsense) "proto".
+func protoOrOld(n int) int {
+	if n < 1 || n > 1<<16 {
+		return 1
+	}
+	return n
 }
 
 // isIPv4Addr reports whether the host:port addr has an IPv4 host.

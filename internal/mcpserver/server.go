@@ -155,7 +155,7 @@ func (t *tools) sendFile(ctx context.Context, _ *mcp.CallToolRequest, in sendFil
 	err = transfer.SendPlan(sendCtx, t.svc.ID, target, plan, nil)
 	t.record(history.Entry{
 		ID: newID(), Dir: history.DirOut, Name: transfer.Label(plan.Manifest), PeerName: peer.Name, PeerFP: peer.Fingerprint,
-		Files: out.Files, Bytes: out.Bytes, Started: started,
+		Files: out.Files, Bytes: out.Bytes, Started: started, Encrypted: true,
 	}, err)
 	if err != nil {
 		out.Note = err.Error()

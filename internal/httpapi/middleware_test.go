@@ -123,7 +123,7 @@ func TestLANRoutesReachable(t *testing.T) {
 		}
 	}
 	code, body := request(t, h.srv, "GET", "/api/hello", "192.168.1.50:40000", "192.168.1.10:29100", false)
-	if code != 200 || !strings.Contains(body, h.id.Fingerprint()) || !strings.Contains(body, `"proto":1`) {
+	if code != 200 || !strings.Contains(body, h.id.Fingerprint()) || !strings.Contains(body, `"proto":2`) {
 		t.Fatalf("hello: %d %s", code, body)
 	}
 }

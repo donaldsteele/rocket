@@ -9,8 +9,8 @@ import (
 )
 
 func TestTXT(t *testing.T) {
-	got := TXT(Self{Name: "desk", Fingerprint: "abcdefabcdefabcd", HTTPPort: 29005, Version: "1.0.0", OS: "windows"})
-	want := map[string]string{"fp": "abcdefabcdefabcd", "ver": "1.0.0", "os": "windows", "proto": "1"}
+	got := TXT(Self{Name: "desk", Fingerprint: "abcdefabcdefabcd", HTTPPort: 29005, Version: "1.1.0", OS: "windows"})
+	want := map[string]string{"fp": "abcdefabcdefabcd", "ver": "1.1.0", "os": "windows", "proto": "2"}
 	if len(got) != len(want) {
 		t.Fatalf("TXT = %v, want %v", got, want)
 	}
@@ -30,7 +30,7 @@ func entry(ips []string, port int, txt map[string]string) dnssd.BrowseEntry {
 }
 
 func goodTXT() map[string]string {
-	return map[string]string{"fp": "abcdefabcdefabcd", "ver": "1.0.0", "os": "linux", "proto": "1"}
+	return map[string]string{"fp": "abcdefabcdefabcd", "ver": "1.1.0", "os": "linux", "proto": "2"}
 }
 
 func TestEntryPeerPrefersIPv4(t *testing.T) {
@@ -39,7 +39,7 @@ func TestEntryPeerPrefersIPv4(t *testing.T) {
 		t.Fatal("entry rejected")
 	}
 	if p.Addr != "192.168.1.40:29005" || p.Fingerprint != "abcdefabcdefabcd" || p.Name != "laptop" ||
-		p.Version != "1.0.0" || p.OS != "linux" || p.HTTPPort != 29005 {
+		p.Version != "1.1.0" || p.OS != "linux" || p.HTTPPort != 29005 || p.Proto != 2 {
 		t.Fatalf("peer = %+v", p)
 	}
 
@@ -63,8 +63,6 @@ func TestEntryPeerRejects(t *testing.T) {
 		"no fp":          entry([]string{"192.168.1.40"}, 29005, map[string]string{"proto": "1"}),
 		"upper-case fp":  entry([]string{"192.168.1.40"}, 29005, map[string]string{"fp": "ABCDEFABCDEFABCD", "proto": "1"}),
 		"short fp":       entry([]string{"192.168.1.40"}, 29005, map[string]string{"fp": "abcdef", "proto": "1"}),
-		"other proto":    entry([]string{"192.168.1.40"}, 29005, map[string]string{"fp": "abcdefabcdefabcd", "proto": "2"}),
-		"no proto":       entry([]string{"192.168.1.40"}, 29005, map[string]string{"fp": "abcdefabcdefabcd"}),
 		"zero port":      entry([]string{"192.168.1.40"}, 0, goodTXT()),
 		"link-local v6":  entry([]string{"fe80::1"}, 29005, goodTXT()),
 		"no addresses":   entry(nil, 29005, goodTXT()),
@@ -73,6 +71,21 @@ func TestEntryPeerRejects(t *testing.T) {
 	for name, e := range cases {
 		if p, ok := entryPeer(e); ok {
 			t.Errorf("%s: accepted as %+v", name, p)
+		}
+	}
+}
+
+// TestEntryPeerProto: older and unknown versions are listed (so they can be
+// shown as needing an update), with a missing or unreadable version as 1.
+func TestEntryPeerProto(t *testing.T) {
+	for txt, want := range map[string]int{"2": 2, "1": 1, "": 1, "x": 1, "-3": 1, "3": 3} {
+		text := map[string]string{"fp": "abcdefabcdefabcd"}
+		if txt != "" {
+			text["proto"] = txt
+		}
+		p, ok := entryPeer(entry([]string{"192.168.1.40"}, 29005, text))
+		if !ok || p.Proto != want {
+			t.Errorf("proto %q: %+v %v, want %d", txt, p, ok, want)
 		}
 	}
 }

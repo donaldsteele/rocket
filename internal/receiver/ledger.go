@@ -93,7 +93,7 @@ func (l *Ledger) End(id string, err error) (history.Result, error) {
 	res := transfer.Outcome(err)
 	e := history.Entry{
 		ID: id, Dir: info.Dir, Name: info.Name, PeerName: info.PeerName, PeerFP: info.PeerFP,
-		Files: info.Files, Bytes: info.Total, Started: info.Started, Result: res,
+		Files: info.Files, Bytes: info.Total, Started: info.Started, Result: res, Encrypted: info.Encrypted,
 	}
 	if err != nil {
 		e.Error = err.Error()
@@ -125,5 +125,6 @@ func (l *Ledger) RecordOffer(v IncomingOffer, res history.Result, msg string) {
 	l.AddHistory(history.Entry{
 		ID: v.TransferID, Dir: history.DirIn, Name: top, PeerName: v.SenderName, PeerFP: v.SenderFP,
 		Files: v.Files, Bytes: v.Size, Started: now, Ended: now, Result: res, Error: msg,
+		Encrypted: !v.FromBrowser,
 	})
 }

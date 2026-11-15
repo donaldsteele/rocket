@@ -1,14 +1,15 @@
 // Package transfer carries files from one rocket host to another with a
-// two-phase push (protocol v1): the sender fetches the receiver's hello,
-// sends a signed offer (metadata only), the receiver accepts (trust-on-first-
-// use prompt), then the sender streams the bytes with a one-shot token: the
-// raw file for a kind:file manifest, a tar built on the fly for kind:multi
-// (several files and folders). Nothing is buffered whole in memory or staged;
-// the body streams straight to disk (Extractor, ReceiveTar, ReceiveFile).
+// two-phase push (protocol v2): the sender fetches the receiver's hello,
+// sends a signed offer (metadata and an ephemeral key), the receiver accepts
+// (trust-on-first-use prompt) with a signed reply carrying its own ephemeral
+// key, then the sender streams the bytes with a one-shot token as an
+// encrypted, authenticated securestream (see body.go). Nothing is buffered
+// whole in memory or staged; the body streams straight to disk (ReceiveBody
+// with an Extractor or another EntryWriter). The browser drop page keeps its
+// own plain multipart upload (internal/httpapi).
 package transfer
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/donaldsteele/rocket/internal/node"
 	"github.com/donaldsteele/rocket/internal/protocol"
+	"github.com/donaldsteele/rocket/internal/protocol/securestream"
 )
 
 // Target is the peer to send to. Addr is host:port of its HTTP API. FP, when
@@ -80,9 +82,11 @@ func SendReader(ctx context.Context, id *node.Identity, t Target, name string, s
 	}, progress)
 }
 
-// SendManifest is the core sender: hello, signed offer for m, wait for the
-// decision, then stream the content (open supplies each file) as the raw
-// body for kind:file or as a tar for kind:multi. Nothing is staged.
+// SendManifest is the core sender: hello (the peer must speak protocol 2),
+// a signed offer for m with a fresh ephemeral key, the receiver's signed
+// reply (verified against the key from its hello), then the body: the
+// content (open supplies each file) after a start header, as a securestream
+// under the key both sides derive. Nothing is staged.
 func SendManifest(ctx context.Context, id *node.Identity, t Target, m protocol.Manifest, open OpenFunc, progress ProgressFn) error {
 	if err := m.Validate(); err != nil {
 		return err
@@ -91,16 +95,27 @@ func SendManifest(ctx context.Context, id *node.Identity, t Target, m protocol.M
 	if err != nil {
 		return err
 	}
-	if _, err := protocol.CheckHello(hello, t.FP); err != nil {
+	pub, err := protocol.CheckHello(hello, t.FP)
+	if errors.Is(err, protocol.ErrProto) {
+		return err // names the peer and says what to update
+	}
+	if err != nil {
 		return fmt.Errorf("peer %s: %w", t.Addr, err)
 	}
-	offer, err := protocol.NewOffer(id, id.Name, hello.FP, m, time.Now())
+	offer, eph, err := protocol.NewOffer(id, id.Name, hello.FP, m, time.Now())
+	if err != nil {
+		return err
+	}
+	offerSB, err := protocol.SigningBytes(offer)
 	if err != nil {
 		return err
 	}
 	reply, err := postOffer(ctx, t.Addr, offer)
 	if err != nil {
 		return err
+	}
+	if err := protocol.VerifyReply(pub, offerSB, &reply); err != nil {
+		return fmt.Errorf("peer %s: %w", t.Addr, err)
 	}
 	if !reply.Accepted {
 		if reply.Reason == protocol.ReasonTimedOut {
@@ -111,30 +126,25 @@ func SendManifest(ctx context.Context, id *node.Identity, t Target, m protocol.M
 		}
 		return fmt.Errorf("%w: %s", ErrDeclined, reply.Reason)
 	}
+	key, err := protocol.BodyKey(eph, reply.Eph, offer, reply.TransferID)
+	if err != nil {
+		return fmt.Errorf("peer %s: %w", t.Addr, err)
+	}
+	start := Start{}
 
-	// The body is produced by a goroutine into a pipe: the raw file for
-	// kind:file, a tar for kind:multi. Only that goroutine touches the
-	// sources (open, read, close); the HTTP transport only reads the pipe,
-	// which is safe even when it keeps reading after Do has returned.
+	// The body is produced by a goroutine into a pipe. Only that goroutine
+	// touches the sources (open, read, close); the HTTP transport only reads
+	// the pipe, which is safe even when it keeps reading after Do has
+	// returned.
 	tr := newTracker(progress, m.Total, Files(m))
 	pr, pw := io.Pipe()
 	defer pr.Close()
 	writeDone := make(chan error, 1)
-	length, ctype := int64(-1), "application/x-tar"
-	if m.Kind == protocol.KindFile {
-		length, ctype = m.Entries[0].Size, "application/octet-stream"
-		go func() {
-			err := writeFile(pw, m.Entries[0], open, tr)
-			pw.CloseWithError(err)
-			writeDone <- err
-		}()
-	} else {
-		go func() {
-			err := writeTar(pw, m, open, tr)
-			pw.CloseWithError(err)
-			writeDone <- err
-		}()
-	}
+	go func() {
+		err := writeSealed(pw, key, m, start, open, tr)
+		pw.CloseWithError(err)
+		writeDone <- err
+	}()
 
 	u := fmt.Sprintf("http://%s/api/recv?token=%s", t.Addr, url.QueryEscape(reply.Token))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, pr)
@@ -143,11 +153,8 @@ func SendManifest(ctx context.Context, id *node.Identity, t Target, m protocol.M
 		<-writeDone
 		return err
 	}
-	req.ContentLength = length
-	if length == 0 {
-		req.Body = http.NoBody
-	}
-	req.Header.Set("Content-Type", ctype)
+	req.ContentLength = SealedBodySize(m, start)
+	req.Header.Set("Content-Type", BodyType)
 	resp, err := httpClient.Do(req)
 	pr.Close() // unblocks the writer if the request ended early
 	werr := <-writeDone
@@ -175,58 +182,20 @@ func SendManifest(ctx context.Context, id *node.Identity, t Target, m protocol.M
 	return nil
 }
 
-// writeFile streams the single file of a kind:file manifest: exactly e.Size
-// bytes of it.
-func writeFile(w io.Writer, e protocol.Entry, open OpenFunc, tr *tracker) error {
-	rc, err := open(0, e)
+// BodyType is the Content-Type of a protocol v2 body.
+const BodyType = "application/octet-stream"
+
+// writeSealed writes the body of m beginning at start to w as a
+// securestream under key, final frame included.
+func writeSealed(w io.Writer, key []byte, m protocol.Manifest, start Start, open OpenFunc, tr *tracker) error {
+	sw, err := securestream.NewWriter(w, key)
 	if err != nil {
 		return err
 	}
-	defer rc.Close()
-	tr.file(e.Path)
-	n, err := io.CopyN(trackWriter{w: w, t: tr}, rc, e.Size)
-	if errors.Is(err, io.EOF) {
-		err = fmt.Errorf("%s: %w: it shrank while sending (%d of %d bytes)", e.Path, ErrSize, n, e.Size)
+	if err := writeBody(sw, m, start, open, tr); err != nil {
+		return err
 	}
-	return err
-}
-
-// writeTar streams the entries of m as a tar archive: folders as TypeDir
-// ("path/"), files as TypeReg with exactly the manifest size, in manifest
-// order, so the receiver can match entry for entry.
-func writeTar(w io.Writer, m protocol.Manifest, open OpenFunc, tr *tracker) error {
-	tw := tar.NewWriter(w)
-	now := time.Now()
-	for i, e := range m.Entries {
-		if e.Mode&protocol.ModeDir != 0 {
-			if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: e.Path + "/", Mode: 0o755, ModTime: now}); err != nil {
-				return err
-			}
-			continue
-		}
-		rc, err := open(i, e)
-		if err != nil {
-			return err
-		}
-		mode := int64(e.Mode & 0o777)
-		if mode == 0 {
-			mode = 0o644
-		}
-		err = tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: e.Path, Size: e.Size, Mode: mode, ModTime: now})
-		if err == nil {
-			tr.file(e.Path)
-			var n int64
-			n, err = io.CopyN(trackWriter{w: tw, t: tr}, rc, e.Size)
-			if errors.Is(err, io.EOF) {
-				err = fmt.Errorf("%s: %w: it shrank while sending (%d of %d bytes)", e.Path, ErrSize, n, e.Size)
-			}
-		}
-		rc.Close()
-		if err != nil {
-			return err
-		}
-	}
-	return tw.Close()
+	return sw.Close()
 }
 
 // IsHostPort reports whether s is a literal host:port (numeric port), as

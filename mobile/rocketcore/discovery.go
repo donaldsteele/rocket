@@ -14,8 +14,9 @@ import (
 
 // PeerListener hears about discovered peers.
 type PeerListener interface {
-	// OnPeers gets the full peer list ([{name, fp, addr, os, version, via}],
-	// sorted by name) whenever it changes.
+	// OnPeers gets the full peer list ([{name, fp, addr, os, version, via,
+	// proto}], sorted by name) whenever it changes. A peer whose proto is
+	// not ProtoVersion runs another rocket and cannot be sent to.
 	OnPeers(peersJSON string)
 }
 
@@ -84,15 +85,16 @@ func (n *Node) StopDiscovery() {
 }
 
 // ObserveMDNS records an mDNS (NsdManager) sighting of a peer: its service
-// name, the fp TXT record, the resolved host and port, and the ver and os
-// TXT records. A sighting without a valid fingerprint or port is ignored.
-func (n *Node) ObserveMDNS(name, fp, host string, port int, version, osName string) {
+// name, the fp TXT record, the resolved host and port, and the ver, os and
+// proto TXT records (a missing or unreadable proto counts as 1). A sighting
+// without a valid fingerprint or port is ignored.
+func (n *Node) ObserveMDNS(name, fp, host string, port int, version, osName, proto string) {
 	if !discovery.IsFingerprint(fp) || host == "" || port <= 0 || port > 65535 {
 		return
 	}
 	n.registry().Observe(discovery.ViaMDNS, discovery.Peer{
 		Name: name, Fingerprint: fp, Addr: net.JoinHostPort(host, strconv.Itoa(port)),
-		HTTPPort: port, Version: version, OS: osName,
+		HTTPPort: port, Version: version, OS: osName, Proto: discovery.ParseProto(proto),
 	})
 }
 
@@ -127,6 +129,7 @@ type peerView struct {
 	OS      string   `json:"os"`
 	Version string   `json:"version"`
 	Via     []string `json:"via"`
+	Proto   int      `json:"proto"`
 }
 
 // peersJSON lists the live peers by name, then fingerprint. The registry
@@ -146,7 +149,7 @@ func peersJSON(reg *discovery.Registry) string {
 	})
 	out := make([]peerView, 0, len(ps))
 	for _, p := range ps {
-		out = append(out, peerView{Name: p.Name, FP: p.Fingerprint, Addr: p.Addr, OS: p.OS, Version: p.Version, Via: p.Via})
+		out = append(out, peerView{Name: p.Name, FP: p.Fingerprint, Addr: p.Addr, OS: p.OS, Version: p.Version, Via: p.Via, Proto: p.Proto})
 	}
 	return toJSON(out)
 }

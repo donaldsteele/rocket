@@ -15,13 +15,16 @@ import (
 
 	"github.com/brutella/dnssd"
 	dnslog "github.com/brutella/dnssd/log"
+
+	"github.com/donaldsteele/rocket/internal/protocol"
 )
 
 // ServiceType is the DNS-SD service type rocket advertises and browses.
 const ServiceType = "_rocket._tcp"
 
-// TXTProto is the value of the "proto" TXT key: the wire protocol version.
-const TXTProto = "1"
+// TXTProto is the value of the "proto" TXT key this host advertises: the
+// wire protocol version it speaks.
+var TXTProto = strconv.Itoa(protocol.Version)
 
 // browseInterval is how long one browse runs before it is restarted with a
 // fresh query, so peers that still answer are seen again.
@@ -33,7 +36,7 @@ func init() {
 	dnslog.Info.Disable()
 }
 
-// TXT builds the TXT record map: fp, ver, os and proto=1.
+// TXT builds the TXT record map: fp, ver, os and proto (TXTProto).
 func TXT(self Self) map[string]string {
 	return map[string]string{
 		"fp":    self.Fingerprint,
@@ -214,11 +217,12 @@ func (r *Registry) mdnsRemove(e dnssd.BrowseEntry) {
 }
 
 // entryPeer converts a browse result to a Peer. It rejects entries without a
-// valid fingerprint, with another protocol version, a bad port or no usable
-// address.
+// valid fingerprint, a bad port or no usable address. The protocol version
+// comes from the "proto" TXT key; a missing or unreadable one counts as 1
+// (rocket 1.0 and older), so such a peer is listed as needing an update.
 func entryPeer(e dnssd.BrowseEntry) (Peer, bool) {
 	fp := e.Text["fp"]
-	if !isFingerprint(fp) || e.Text["proto"] != TXTProto {
+	if !isFingerprint(fp) {
 		return Peer{}, false
 	}
 	if e.Port <= 0 || e.Port > 65535 {
@@ -231,7 +235,7 @@ func entryPeer(e dnssd.BrowseEntry) (Peer, bool) {
 	return Peer{
 		Name: e.Name, Fingerprint: fp,
 		Addr:     net.JoinHostPort(ip.String(), strconv.Itoa(e.Port)),
-		HTTPPort: e.Port, Version: e.Text["ver"], OS: e.Text["os"],
+		HTTPPort: e.Port, Version: e.Text["ver"], OS: e.Text["os"], Proto: ParseProto(e.Text["proto"]),
 	}, true
 }
 

@@ -118,7 +118,7 @@ func (n *Node) SendNamed(addr, fp, shown string, src Source, l ProgressListener)
 	n.mu.Unlock()
 	ctx := n.ledger.Transfers.Start(context.Background(), transfer.Info{
 		ID: tid, Dir: history.DirOut, Name: name, PeerName: peerName, PeerFP: target.FP,
-		Files: transfer.Files(m), Total: m.Total, State: transfer.StateWaiting,
+		Files: transfer.Files(m), Total: m.Total, State: transfer.StateWaiting, Encrypted: true,
 	}, nil)
 	id := n.identity()
 	go func() {

@@ -33,7 +33,7 @@ func (s *Server) handlePeers(w http.ResponseWriter, _ *http.Request) {
 	for _, p := range peers {
 		out = append(out, map[string]any{
 			"name": p.Name, "fp": p.Fingerprint, "addr": p.Addr,
-			"os": p.OS, "version": p.Version, "via": p.Via,
+			"os": p.OS, "version": p.Version, "via": p.Via, "proto": p.Proto,
 		})
 	}
 	writeJSON(w, out)
@@ -86,7 +86,7 @@ func (s *Server) resolveTarget(peer string) (transfer.Target, string, error) {
 func (s *Server) startOutgoing(parent context.Context, tid, peerName string, t transfer.Target, m protocol.Manifest, abort func()) context.Context {
 	return s.xfers.Start(parent, transfer.Info{
 		ID: tid, Dir: history.DirOut, Name: transfer.Label(m), PeerName: peerName, PeerFP: t.FP,
-		Files: transfer.Files(m), Total: m.Total, State: transfer.StateWaiting,
+		Files: transfer.Files(m), Total: m.Total, State: transfer.StateWaiting, Encrypted: true,
 	}, abort)
 }
 
@@ -147,8 +147,9 @@ const relayManifestField = "manifest"
 // fingerprint (as the UI's peer list carries it) or a host:port; names and
 // prefixes are refused, since names are unauthenticated. The body is
 // multipart: first the "manifest" field, then one file part per listed file,
-// in order. One bare file goes out as kind:file, anything else as a tar
-// (kind:multi) built on the fly from the parts; nothing is staged.
+// in order. One bare file goes out as kind:file, anything else as
+// kind:multi; the parts are encrypted on the fly into the peer body
+// (protocol v2), nothing is staged.
 func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
 	peer := r.URL.Query().Get("peer")
 	if !discovery.IsFingerprint(peer) && !transfer.IsHostPort(peer) {
@@ -202,7 +203,7 @@ func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
 	}
 	// The send outlives neither this request nor its body: it stops if the
 	// browser goes away, or on POST /api/cancel, which also stops the read of
-	// the browser upload (the tar writer may be blocked in it).
+	// the browser upload (the body writer may be blocked in it).
 	rc := http.NewResponseController(w)
 	ctx := s.startOutgoing(r.Context(), tid, peerName, target, m, func() { _ = rc.SetReadDeadline(time.Now()) })
 	err = transfer.SendManifest(ctx, s.id, target, m, open, s.progressFn(tid, name, "out"))

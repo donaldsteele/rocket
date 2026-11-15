@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"archive/tar"
 	"bytes"
 	"crypto/rand"
 	"encoding/json"
@@ -177,68 +176,6 @@ func TestFolderProgressEvents(t *testing.T) {
 	}
 }
 
-// TestRecvRejectsHostileTar sends archives that do not match an accepted
-// manifest straight to /api/recv: each gets 400 and nothing is written in
-// or beside the download folder.
-func TestRecvRejectsHostileTar(t *testing.T) {
-	m := protocol.Manifest{Kind: protocol.KindMulti, Entries: []protocol.Entry{
-		{Path: "d", Mode: protocol.ModeDir | 0o755}, {Path: "d/a.txt", Size: 5, Mode: 0o644},
-	}, Total: 5}
-	type ent struct {
-		name string
-		typ  byte
-		data string
-		link string
-	}
-	mk := func(es ...ent) []byte {
-		var buf bytes.Buffer
-		tw := tar.NewWriter(&buf)
-		for _, e := range es {
-			_ = tw.WriteHeader(&tar.Header{Name: e.name, Typeflag: e.typ, Size: int64(len(e.data)), Mode: 0o644, Linkname: e.link})
-			_, _ = io.WriteString(tw, e.data)
-		}
-		_ = tw.Close()
-		return buf.Bytes()
-	}
-	dir, reg := byte(tar.TypeDir), byte(tar.TypeReg)
-	cases := map[string][]byte{
-		"dotdot":  mk(ent{name: "d/", typ: dir}, ent{name: "../../a.txt", typ: reg, data: "hello"}),
-		"abs":     mk(ent{name: "d/", typ: dir}, ent{name: "/tmp/a.txt", typ: reg, data: "hello"}),
-		"symlink": mk(ent{name: "d/", typ: dir}, ent{name: "d/a.txt", typ: tar.TypeSymlink, link: "../../../etc/passwd"}),
-		"extra":   mk(ent{name: "d/", typ: dir}, ent{name: "d/a.txt", typ: reg, data: "hello"}, ent{name: "../x", typ: reg, data: "x"}),
-		"size":    mk(ent{name: "d/", typ: dir}, ent{name: "d/a.txt", typ: reg, data: "hello!"}),
-	}
-	a, b := trustedPair(t)
-	for name, body := range cases {
-		o, err := protocol.NewOffer(a.id, "alice", b.id.Fingerprint(), m, time.Now())
-		if err != nil {
-			t.Fatal(err)
-		}
-		code, txt, reply := postOffer(t, b, o)
-		if code != 200 || !reply.Accepted {
-			t.Fatalf("%s: multi offer from trusted sender: %d %s", name, code, txt)
-		}
-		resp, err := http.Post(b.ts.URL+"/api/recv?token="+reply.Token, "application/x-tar", bytes.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		msg, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode != 400 {
-			t.Errorf("%s: %d %s", name, resp.StatusCode, msg)
-		}
-		if d := b.downloads(); len(d) != 0 {
-			t.Fatalf("%s: left in downloads: %v", name, d)
-		}
-	}
-	parent, _ := os.ReadDir(filepath.Dir(b.cfg.DownloadDir))
-	for _, e := range parent {
-		if e.Name() != "data" && e.Name() != "downloads" {
-			t.Fatalf("written beside downloads: %s", e.Name())
-		}
-	}
-}
-
 // TestRelayMultiFile drives a browser-style relay: one multipart body (the
 // manifest field, then files with folder-relative names) on Alice's loopback
 // API, streamed on to Bob as a tar without staging.
@@ -318,8 +255,10 @@ func waitEventData(t *testing.T, ch chan Event, typ, transferID string) map[stri
 }
 
 // TestRelayAbortMidStream: the second relayed part is not the announced file,
-// so the sender aborts mid-tar; the relay reports the real cause and the
-// receiver removes what it had written.
+// so the sender aborts mid-body; the relay reports the real cause and the
+// receiver removes what it had written. The first file is larger than one
+// encrypted frame (64 KiB), so the receiver is already writing when the
+// body stops.
 func TestRelayAbortMidStream(t *testing.T) {
 	a, b := trustedPair(t)
 	events := b.srv.hub.subscribe()
@@ -328,10 +267,10 @@ func TestRelayAbortMidStream(t *testing.T) {
 	mw := multipart.NewWriter(&buf)
 	mf, _ := mw.CreateFormField("manifest")
 	_ = json.NewEncoder(mf).Encode(map[string]any{"files": []transfer.BrowserFile{
-		{Name: "set/one.txt", Size: 3}, {Name: "set/two.txt", Size: 3},
+		{Name: "set/one.txt", Size: 100 << 10}, {Name: "set/two.txt", Size: 3},
 	}})
 	w, _ := mw.CreateFormFile("file", "set/one.txt")
-	_, _ = io.WriteString(w, "111")
+	_, _ = w.Write(bytes.Repeat([]byte("1"), 100<<10))
 	w, _ = mw.CreateFormFile("file", "set/evil.exe")
 	_, _ = io.WriteString(w, "222")
 	_ = mw.Close()
@@ -348,20 +287,29 @@ func TestRelayAbortMidStream(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(msg), "two.txt") {
 		t.Fatalf("relay with a wrong part: %d %s", resp.StatusCode, msg)
 	}
-	// The receiver sees the cut-off body as an error and cleans up.
+	// The receiver sees the body cut off when the sender drops the
+	// connection, which it cannot tell from the sender cancelling: it
+	// reports the transfer cancelled by the peer and cleans up. (Under
+	// protocol 1 the tar reader hid the cause and reported an error.)
 	timeout := time.After(10 * time.Second)
 	for {
 		select {
 		case ev := <-events:
-			if ev.Type != "error" {
+			if ev.Type == "error" {
+				t.Fatalf("error event %v", ev.Data)
+			}
+			if ev.Type != "cancelled" {
 				continue
+			}
+			if m, _ := ev.Data.(map[string]any); m["by"] != "peer" || m["dir"] != "in" {
+				t.Fatalf("cancelled event %v", m)
 			}
 			if d := b.downloads(); len(d) != 0 {
 				t.Fatalf("left in downloads: %v", d)
 			}
 			return
 		case <-timeout:
-			t.Fatal("receiver reported no error")
+			t.Fatal("receiver reported nothing")
 		}
 	}
 }

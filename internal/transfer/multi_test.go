@@ -1,10 +1,7 @@
 package transfer
 
 import (
-	"archive/tar"
-	"bytes"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,124 +128,6 @@ func TestBrowserManifest(t *testing.T) {
 	m, _ = BrowserManifest([]BrowserFile{{Name: "one.txt", Size: 1}}, true)
 	if m.Kind != protocol.KindFile {
 		t.Fatalf("one bare file is kind %s", m.Kind)
-	}
-}
-
-// tarOf streams a plan through writeTar into memory.
-func tarOf(t *testing.T, p *Plan) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	err := writeTar(&buf, p.Manifest, func(i int, _ protocol.Entry) (io.ReadCloser, error) {
-		return os.Open(p.Sources[i])
-	}, newTracker(nil, p.Manifest.Total, Files(p.Manifest)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
-func TestTarRoundTrip(t *testing.T) {
-	src := t.TempDir()
-	files := map[string]string{"a.txt": "alpha", "sub/b.bin": strings.Repeat("z", 70000), "zero": "", "ü/文件.txt": "unicode"}
-	mkTree(t, filepath.Join(src, "proj"), files, "empty/nested")
-	p, err := PlanPaths([]string{filepath.Join(src, "proj")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := tarOf(t, p)
-
-	dl := t.TempDir()
-	var last Progress
-	res, err := ReceiveTar(dl, p.Manifest, bytes.NewReader(body), func(pr Progress) { last = pr })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Paths) != 1 || res.Paths[0] != filepath.Join(dl, "proj") || res.Files != 4 || res.Bytes != p.Manifest.Total {
-		t.Fatalf("result %+v", res)
-	}
-	if last.Sent != p.Manifest.Total || last.Files != 4 || last.FileIndex != 4 {
-		t.Fatalf("last progress %+v", last)
-	}
-	for rel, want := range files {
-		got, err := os.ReadFile(filepath.Join(dl, "proj", filepath.FromSlash(rel)))
-		if err != nil || string(got) != want {
-			t.Fatalf("%s: %v (%d bytes)", rel, err, len(got))
-		}
-	}
-	if st, err := os.Stat(filepath.Join(dl, "proj", "empty", "nested")); err != nil || !st.IsDir() {
-		t.Fatalf("empty dir: %v", err)
-	}
-
-	// The same folder again lands beside the first, never inside it.
-	res, err = ReceiveTar(dl, p.Manifest, bytes.NewReader(body), nil)
-	if err != nil || res.Paths[0] != filepath.Join(dl, "proj (1)") {
-		t.Fatalf("second receive: %+v %v", res, err)
-	}
-	assertNoPartsTree(t, dl)
-}
-
-type tarEntry struct {
-	name string
-	typ  byte
-	data string
-	link string
-}
-
-func rawTar(entries ...tarEntry) []byte {
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for _, e := range entries {
-		_ = tw.WriteHeader(&tar.Header{Name: e.name, Typeflag: e.typ, Size: int64(len(e.data)), Mode: 0o644, Linkname: e.link})
-		if e.typ == tar.TypeReg {
-			_, _ = io.WriteString(tw, e.data)
-		}
-	}
-	_ = tw.Close()
-	return buf.Bytes()
-}
-
-// TestReceiveTarRejectsHostileArchives feeds archives that do not match an
-// accepted manifest {d/, d/a.txt (5 bytes)}: each must fail with ErrArchive or
-// ErrSize and leave the download folder (and its parent) untouched.
-func TestReceiveTarRejectsHostileArchives(t *testing.T) {
-	m := protocol.Manifest{Kind: protocol.KindMulti, Entries: []protocol.Entry{
-		{Path: "d", Mode: protocol.ModeDir | 0o755}, {Path: "d/a.txt", Size: 5, Mode: 0o644},
-	}, Total: 5}
-	dir := byte(tar.TypeDir)
-	reg := byte(tar.TypeReg)
-	cases := map[string][]byte{
-		"traversal name":   rawTar(tarEntry{name: "d/", typ: dir}, tarEntry{name: "d/../../a.txt", typ: reg, data: "hello"}),
-		"absolute name":    rawTar(tarEntry{name: "/d/", typ: dir}, tarEntry{name: "/d/a.txt", typ: reg, data: "hello"}),
-		"backslash name":   rawTar(tarEntry{name: "d/", typ: dir}, tarEntry{name: `d\..\..\a.txt`, typ: reg, data: "hello"}),
-		"symlink":          rawTar(tarEntry{name: "d/", typ: dir}, tarEntry{name: "d/a.txt", typ: tar.TypeSymlink, link: "/etc/passwd"}),
-		"hard link":        rawTar(tarEntry{name: "d/", typ: dir}, tarEntry{name: "d/a.txt", typ: tar.TypeLink, link: "../../x"}),
-		"device":           rawTar(tarEntry{name: "d/", typ: dir}, tarEntry{name: "d/a.txt", typ: tar.TypeChar}),
-		"dir for file":     rawTar(tarEntry{name: "d/", typ: dir}, tarEntry{name: "d/a.txt/", typ: dir}),
-		"size mismatch":    rawTar(tarEntry{name: "d/", typ: dir}, tarEntry{name: "d/a.txt", typ: reg, data: "hello world"}),
-		"missing entry":    rawTar(tarEntry{name: "d/", typ: dir}),
-		"extra entry":      rawTar(tarEntry{name: "d/", typ: dir}, tarEntry{name: "d/a.txt", typ: reg, data: "hello"}, tarEntry{name: "d/b.txt", typ: reg, data: "x"}),
-		"wrong order":      rawTar(tarEntry{name: "d/a.txt", typ: reg, data: "hello"}, tarEntry{name: "d/", typ: dir}),
-		"truncated":        rawTar(tarEntry{name: "d/", typ: dir}, tarEntry{name: "d/a.txt", typ: reg, data: "hello"})[:1024+2],
-		"not a tar at all": []byte(strings.Repeat("garbage!", 200)),
-	}
-	for name, body := range cases {
-		t.Run(name, func(t *testing.T) {
-			parent := t.TempDir()
-			dl := filepath.Join(parent, "downloads")
-			if err := os.Mkdir(dl, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			_, err := ReceiveTar(dl, m, bytes.NewReader(body), nil)
-			if !errors.Is(err, ErrArchive) && !errors.Is(err, ErrSize) {
-				t.Fatalf("err = %v", err)
-			}
-			if left, _ := os.ReadDir(dl); len(left) != 0 {
-				t.Fatalf("left in downloads: %v", left)
-			}
-			if left, _ := os.ReadDir(parent); len(left) != 1 {
-				t.Fatalf("written beside downloads: %v", left)
-			}
-		})
 	}
 }
 

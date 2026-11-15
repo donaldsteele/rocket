@@ -26,7 +26,7 @@ func fixture(t *testing.T) (*node.Identity, *node.Identity, *Verifier, *Offer) {
 	snd, rcv := newID(t, "alice"), newID(t, "bob")
 	v := NewVerifier(rcv.Fingerprint())
 	v.Now = func() time.Time { return t0 }
-	o, err := NewOffer(snd, snd.Name, rcv.Fingerprint(), FileManifest("report.pdf", 1234, 0o644), t0)
+	o, _, err := NewOffer(snd, snd.Name, rcv.Fingerprint(), FileManifest("report.pdf", 1234, 0o644), t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestVerifyForgedKeyWithoutPrivateKey(t *testing.T) {
 func TestVerifyWrongReceiver(t *testing.T) {
 	snd, _, v, _ := fixture(t)
 	other := newID(t, "carol")
-	o, err := NewOffer(snd, snd.Name, other.Fingerprint(), FileManifest("a.txt", 1, 0o644), t0)
+	o, _, err := NewOffer(snd, snd.Name, other.Fingerprint(), FileManifest("a.txt", 1, 0o644), t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestVerifyWrongReceiver(t *testing.T) {
 func TestVerifyStale(t *testing.T) {
 	for _, d := range []time.Duration{-6 * time.Minute, 6 * time.Minute, -24 * time.Hour} {
 		snd, rcv, v, _ := fixture(t)
-		o, err := NewOffer(snd, snd.Name, rcv.Fingerprint(), FileManifest("a.txt", 1, 0o644), t0.Add(d))
+		o, _, err := NewOffer(snd, snd.Name, rcv.Fingerprint(), FileManifest("a.txt", 1, 0o644), t0.Add(d))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -92,7 +92,7 @@ func TestVerifyStale(t *testing.T) {
 	}
 	// Inside the window is fine.
 	snd, rcv, v, _ := fixture(t)
-	o, _ := NewOffer(snd, snd.Name, rcv.Fingerprint(), FileManifest("a.txt", 1, 0o644), t0.Add(-4*time.Minute))
+	o, _, _ := NewOffer(snd, snd.Name, rcv.Fingerprint(), FileManifest("a.txt", 1, 0o644), t0.Add(-4*time.Minute))
 	if _, err := v.Verify(o); err != nil {
 		t.Fatalf("ts 4m old rejected: %v", err)
 	}
@@ -131,12 +131,14 @@ func TestVerifyTamperedManifest(t *testing.T) {
 
 func TestVerifyProtoAndNonce(t *testing.T) {
 	_, _, v, o := fixture(t)
-	o.Proto = 2
-	if _, err := v.Verify(o); !errors.Is(err, ErrProto) {
-		t.Fatalf("proto 2: got %v", err)
+	for _, p := range []int{0, 1, 3} {
+		o.Proto = p
+		if _, err := v.Verify(o); !errors.Is(err, ErrProto) {
+			t.Fatalf("proto %d: got %v", p, err)
+		}
 	}
 	snd, rcv, v, _ := fixture(t)
-	o, _ = NewOffer(snd, snd.Name, rcv.Fingerprint(), FileManifest("a", 1, 0), t0)
+	o, _, _ = NewOffer(snd, snd.Name, rcv.Fingerprint(), FileManifest("a", 1, 0), t0)
 	o.Nonce = "short"
 	_ = o.SignWith(snd)
 	if _, err := v.Verify(o); !errors.Is(err, ErrNonce) {
@@ -155,14 +157,14 @@ func TestVerifyProtoAndNonce(t *testing.T) {
 }
 
 func TestSigningBytesFormat(t *testing.T) {
-	o := &Offer{ReceiverFP: "rrrr", SenderFP: "ssss", TS: 1700000000, Nonce: "nnnn",
+	o := &Offer{ReceiverFP: "rrrr", SenderFP: "ssss", TS: 1700000000, Nonce: "nnnn", Eph: "eeee",
 		Manifest: FileManifest("a.txt", 3, 0o644)}
 	b, err := SigningBytes(o)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mh, _ := o.Manifest.Hash()
-	want := "rocket-offer-v1\nrrrr\nssss\n1700000000\nnnnn\n" + mh
+	want := "rocket-offer-v2\nrrrr\nssss\n1700000000\nnnnn\neeee\n" + mh
 	if string(b) != want {
 		t.Fatalf("signing bytes:\n%q\nwant\n%q", b, want)
 	}
@@ -179,7 +181,7 @@ func TestSigningBytesFormat(t *testing.T) {
 
 func TestCheckHello(t *testing.T) {
 	id := newID(t, "bob")
-	h := Hello{Proto: 1, Name: "bob", FP: id.Fingerprint(), Pub: id.PublicKeyB64()}
+	h := Hello{Proto: 2, Name: "bob", FP: id.Fingerprint(), Pub: id.PublicKeyB64()}
 	if _, err := CheckHello(h, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -193,9 +195,19 @@ func TestCheckHello(t *testing.T) {
 	if _, err := CheckHello(h, ""); !errors.Is(err, ErrFingerprint) {
 		t.Fatalf("forged hello fp: %v", err)
 	}
-	h.FP, h.Proto = id.Fingerprint(), 2
-	if _, err := CheckHello(h, ""); !errors.Is(err, ErrProto) {
-		t.Fatalf("hello proto 2: %v", err)
+	// A 1.0 peer (protocol 1) is refused with the update message.
+	h.FP, h.Proto = id.Fingerprint(), 1
+	_, err := CheckHello(h, "")
+	if !errors.Is(err, ErrProto) || err.Error() != "bob runs an older rocket (protocol 1); update it to 1.1 or later" {
+		t.Fatalf("hello proto 1: %v", err)
+	}
+	h.Proto, h.Name = 0, "‮mallory\n"
+	if _, err := CheckHello(h, ""); err == nil || err.Error() != "mallory runs an older rocket (protocol 1); update it to 1.1 or later" {
+		t.Fatalf("hello without proto: %v", err)
+	}
+	h.Proto, h.Name = 3, ""
+	if _, err := CheckHello(h, ""); !errors.Is(err, ErrProto) || !strings.Contains(err.Error(), "newer rocket (protocol 3)") {
+		t.Fatalf("hello proto 3: %v", err)
 	}
 }
 
@@ -271,7 +283,7 @@ func TestManifestValidate(t *testing.T) {
 func TestOfferWithTraversalRejected(t *testing.T) {
 	snd, rcv, v, _ := fixture(t)
 	m := Manifest{Kind: KindMulti, Entries: []Entry{{Path: "../../evil", Size: 1}}, Total: 1}
-	o, err := NewOffer(snd, snd.Name, rcv.Fingerprint(), m, t0)
+	o, _, err := NewOffer(snd, snd.Name, rcv.Fingerprint(), m, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +339,7 @@ func TestVerifyFloodCannotFlushNonce(t *testing.T) {
 	}
 	busy := false
 	for i := 0; i < 20; i++ {
-		o, err := NewOffer(newID(t, "flood"), "flood", recvFP, m, t0)
+		o, _, err := NewOffer(newID(t, "flood"), "flood", recvFP, m, t0)
 		if err != nil {
 			t.Fatal(err)
 		}

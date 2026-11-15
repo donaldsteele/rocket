@@ -253,7 +253,7 @@ class Receiver(
             setAttribute("fp", node.fingerprint())
             setAttribute("ver", node.version())
             setAttribute("os", Rocketcore.OS)
-            setAttribute("proto", "1")
+            setAttribute("proto", Rocketcore.ProtoVersion.toString())
         }
         val l = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(si: NsdServiceInfo) {

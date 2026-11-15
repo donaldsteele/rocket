@@ -2,9 +2,11 @@
 // gomobile bind into android/app/libs/rocketcore.aar (scripts/build-android.*;
 // Java package io.github.donaldsteele.rocket.core.rocketcore). The app's
 // Kotlin code does the UI and Android integration; everything on the wire
-// (protocol v1: signing, verification, manifests, tar streaming, limits, path
-// safety, HTTP send and receive, trust store, history) is rocket's Go code,
-// the same as desktop rocket's.
+// (protocol v2: signing, verification, manifests, encrypted bodies, limits,
+// path safety, HTTP send and receive, trust store, history) is rocket's Go
+// code, the same as desktop rocket's. Every transfer between rocket apps is
+// encrypted; ProtoVersion is the protocol this core speaks, and a peer that
+// announces another version cannot be sent to.
 //
 // Only gomobile-safe types cross the boundary: string, bool, int, int64,
 // []byte, error, the interfaces below and *Node. Lists and records cross as
@@ -26,9 +28,12 @@
 //
 //	StartDiscovery(PeerListener) error  listen for beacons; OnPeers(json) on every change
 //	StopDiscovery()
-//	ObserveMDNS(name, fp, host, port, ver, os)  feed an NsdManager result in (merged by fp)
+//	ObserveMDNS(name, fp, host, port, ver, os, proto)  feed an NsdManager result in
+//	                                    (merged by fp; proto is the TXT value, "" = 1)
 //	ForgetMDNS(fp)
-//	PeersJSON() string                  [{name, fp, addr, os, version, via}], by name
+//	PeersJSON() string                  [{name, fp, addr, os, version, via, proto}], by name
+//	ProtoVersion                        the protocol this core speaks (2); advertise it
+//	                                    as the NSD TXT record proto
 //
 // # Sending
 //

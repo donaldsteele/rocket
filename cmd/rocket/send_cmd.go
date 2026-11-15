@@ -86,7 +86,7 @@ func runSend(args []string) int {
 	fmt.Println()
 	recordSend(rs.cfg.DataDir, history.Entry{
 		Dir: history.DirOut, Name: transfer.Label(plan.Manifest), PeerName: peerName, PeerFP: t.FP,
-		Files: transfer.Files(plan.Manifest), Bytes: plan.Manifest.Total, Started: started,
+		Files: transfer.Files(plan.Manifest), Bytes: plan.Manifest.Total, Started: started, Encrypted: true,
 	}, err)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

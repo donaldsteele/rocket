@@ -42,7 +42,7 @@ func trustedPair(t *testing.T) (*testHost, *testHost) {
 
 func fileOffer(t *testing.T, a, b *testHost, name string, size int64, ts time.Time) *protocol.Offer {
 	t.Helper()
-	o, err := protocol.NewOffer(a.id, a.id.Name, b.id.Fingerprint(), protocol.FileManifest(name, size, 0o644), ts)
+	o, _, err := protocol.NewOffer(a.id, a.id.Name, b.id.Fingerprint(), protocol.FileManifest(name, size, 0o644), ts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestOfferTraversalRejected(t *testing.T) {
 		{Kind: protocol.KindMulti, Entries: []protocol.Entry{{Path: "C:/Windows/evil", Size: 1}}, Total: 1},
 	}
 	for _, m := range manifests {
-		o, err := protocol.NewOffer(a.id, "alice", b.id.Fingerprint(), m, time.Now())
+		o, _, err := protocol.NewOffer(a.id, "alice", b.id.Fingerprint(), m, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}

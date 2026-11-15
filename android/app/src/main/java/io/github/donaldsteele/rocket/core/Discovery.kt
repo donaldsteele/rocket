@@ -52,7 +52,15 @@ class Discovery(context: Context, private val node: Node, private val ownService
     /** Resolved mDNS sightings by service name, re-reported until lost. */
     private val sightings = HashMap<String, Sighting>()
 
-    private data class Sighting(val name: String, val fp: String, val host: String, val port: Int, val ver: String, val os: String)
+    private data class Sighting(
+        val name: String,
+        val fp: String,
+        val host: String,
+        val port: Int,
+        val ver: String,
+        val os: String,
+        val proto: String,
+    )
 
     private val peerListener = object : PeerListener {
         override fun onPeers(peersJSON: String) = goCallback("onPeers", Unit) {
@@ -175,13 +183,13 @@ class Discovery(context: Context, private val node: Node, private val ownService
         val fp = attr("fp")
         if (fp == node.fingerprint()) return
         val host = preferredHost(addresses(si)) ?: return
-        val s = Sighting(si.serviceName, fp, host, si.port, attr("ver"), attr("os"))
+        val s = Sighting(si.serviceName, fp, host, si.port, attr("ver"), attr("os"), attr("proto"))
         sightings[s.name] = s
         observe(s)
     }
 
     private fun observe(s: Sighting) {
-        node.observeMDNS(s.name, s.fp, s.host, s.port.toLong(), s.ver, s.os)
+        node.observeMDNS(s.name, s.fp, s.host, s.port.toLong(), s.ver, s.os, s.proto)
     }
 
     private fun addresses(si: NsdServiceInfo): List<InetAddress> =

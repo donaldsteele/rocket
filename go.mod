@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/brutella/dnssd v1.2.14
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	golang.org/x/crypto v0.58.0
 )
 
 require (

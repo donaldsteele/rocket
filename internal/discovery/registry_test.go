@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -9,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/donaldsteele/rocket/internal/protocol"
 )
 
 // fakeClock is a settable clock for the registry.
@@ -245,8 +248,18 @@ func TestRegistryBounded(t *testing.T) {
 func TestBeaconPeer(t *testing.T) {
 	src := &net.UDPAddr{IP: net.ParseIP("192.168.1.30"), Port: 29006}
 	p, ok := beaconPeer([]byte(`{"name":"desk","fp":"abcdefabcdefabcd","port":29005,"ver":"1.0.0","os":"windows"}`), src)
-	if !ok || p.Addr != "192.168.1.30:29005" || p.Name != "desk" || p.OS != "windows" || p.Version != "1.0.0" {
+	if !ok || p.Addr != "192.168.1.30:29005" || p.Name != "desk" || p.OS != "windows" || p.Version != "1.0.0" || p.Proto != 1 {
 		t.Fatalf("beaconPeer = %+v %v", p, ok)
+	}
+	// A 1.1 beacon carries "proto":2; nonsense counts as 1.
+	for pkt, want := range map[string]int{
+		`{"fp":"abcdefabcdefabcd","port":29005,"proto":2}`:  2,
+		`{"fp":"abcdefabcdefabcd","port":29005,"proto":0}`:  1,
+		`{"fp":"abcdefabcdefabcd","port":29005,"proto":-1}`: 1,
+	} {
+		if p, ok := beaconPeer([]byte(pkt), src); !ok || p.Proto != want {
+			t.Errorf("beaconPeer(%s) = %+v %v, want proto %d", pkt, p, ok, want)
+		}
 	}
 	for _, bad := range []string{
 		`not json`, `{"name":"x"}`, `{"fp":"abcdefabcdefabcd","port":0}`, `{"fp":"abcdefabcdefabcd","port":70000}`,
@@ -255,5 +268,26 @@ func TestBeaconPeer(t *testing.T) {
 		if _, ok := beaconPeer([]byte(bad), src); ok {
 			t.Errorf("beaconPeer(%s) accepted", bad)
 		}
+	}
+}
+
+// TestSelfProto: this host announces the protocol it speaks, and a peer's
+// version survives merging (the beacon's wins, mDNS fills a gap).
+func TestSelfProto(t *testing.T) {
+	r := New(Self{Name: "me", Fingerprint: selfFP}, 29006)
+	if r.Self().Proto != protocol.Version {
+		t.Fatalf("self proto %d", r.Self().Proto)
+	}
+	if b, _ := json.Marshal(r.Self()); !strings.Contains(string(b), `"proto":2`) {
+		t.Fatalf("beacon payload %s", b)
+	}
+	r.Observe(ViaMDNS, Peer{Name: "old", Fingerprint: "abcdefabcdefabcd", Addr: "10.0.0.2:29005", Proto: 2})
+	r.Observe(ViaBeacon, Peer{Name: "old", Fingerprint: "abcdefabcdefabcd", Addr: "10.0.0.2:29005"})
+	if p := onlyPeer(t, r); p.Proto != 2 {
+		t.Fatalf("merged proto %d", p.Proto)
+	}
+	r.Observe(ViaBeacon, Peer{Name: "old", Fingerprint: "abcdefabcdefabcd", Addr: "10.0.0.2:29005", Proto: 1})
+	if p := onlyPeer(t, r); p.Proto != 1 {
+		t.Fatalf("merged proto %d, want the beacon's 1", p.Proto)
 	}
 }

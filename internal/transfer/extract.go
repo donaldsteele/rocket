@@ -1,7 +1,6 @@
 package transfer
 
 import (
-	"archive/tar"
 	"errors"
 	"fmt"
 	"io"
@@ -13,10 +12,9 @@ import (
 	"github.com/donaldsteele/rocket/internal/protocol"
 )
 
-// ErrArchive is wrapped when a multi-file body does not match its manifest:
-// wrong names, types, sizes, order or count, or an entry type rocket never
-// writes (symlinks, hard links, devices).
-var ErrArchive = errors.New("archive does not match the offer")
+// ErrArchive is wrapped when the entries written do not match the manifest:
+// out of order, missing, or a name that clashes with another entry.
+var ErrArchive = errors.New("body does not match the offer")
 
 // Result describes a finished multi-file receive.
 type Result struct {
@@ -190,7 +188,9 @@ func (x *Extractor) writeFile(e protocol.Entry, dest string, unique bool, src io
 	x.tr.file(e.Path)
 	n, err := io.CopyN(trackWriter{w: f, t: x.tr}, src, e.Size)
 	if err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		// Only a plain end of input means the body was short; a wrapped
+		// error (a cut-off stream) keeps its identity.
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			return fail(fmt.Errorf("%w: %s: got %d of %d bytes", ErrSize, e.Path, n, e.Size))
 		}
 		return fail(err)
@@ -231,58 +231,4 @@ type EntryWriter interface {
 	Finish() (Result, error)
 	// Abort removes everything written so far.
 	Abort()
-}
-
-// ReceiveTar extracts a kind:multi body: a tar archive whose entries must
-// match m exactly, in order (same names, folder or regular-file type, same
-// sizes, same count). Any other entry type, a mismatch, a short body or an
-// extra entry aborts the receive and removes everything written. m must
-// already be validated.
-func ReceiveTar(dir string, m protocol.Manifest, src io.Reader, progress ProgressFn) (Result, error) {
-	return ExtractTar(NewExtractor(dir, m, progress), m, src)
-}
-
-// ExtractTar is ReceiveTar writing through x, which was prepared for m.
-func ExtractTar(x EntryWriter, m protocol.Manifest, src io.Reader) (Result, error) {
-	fail := func(err error) (Result, error) {
-		x.Abort()
-		return Result{}, err
-	}
-	tr := tar.NewReader(src)
-	for i, e := range m.Entries {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return fail(fmt.Errorf("%w: archive ended after %d of %d entries", ErrArchive, i, len(m.Entries)))
-		}
-		if err != nil {
-			return fail(fmt.Errorf("%w: %v", ErrArchive, err))
-		}
-		if err := matchHeader(hdr, e); err != nil {
-			return fail(fmt.Errorf("%w: entry %d: %v", ErrArchive, i+1, err))
-		}
-		if err := x.Write(i, tr); err != nil {
-			return fail(err)
-		}
-	}
-	if _, err := tr.Next(); err != io.EOF {
-		return fail(fmt.Errorf("%w: more entries than offered", ErrArchive))
-	}
-	return x.Finish()
-}
-
-// matchHeader checks one tar header against its manifest entry.
-func matchHeader(h *tar.Header, e protocol.Entry) error {
-	if e.Mode&protocol.ModeDir != 0 {
-		if h.Typeflag != tar.TypeDir || strings.TrimSuffix(h.Name, "/") != e.Path {
-			return fmt.Errorf("got %q (type %q), offer says folder %q", h.Name, h.Typeflag, e.Path)
-		}
-		return nil
-	}
-	if h.Typeflag != tar.TypeReg || h.Name != e.Path {
-		return fmt.Errorf("got %q (type %q), offer says file %q", h.Name, h.Typeflag, e.Path)
-	}
-	if h.Size != e.Size {
-		return fmt.Errorf("%q is %d bytes, offer says %d", e.Path, h.Size, e.Size)
-	}
-	return nil
 }

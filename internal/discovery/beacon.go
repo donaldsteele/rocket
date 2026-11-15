@@ -6,6 +6,8 @@ import (
 	"net"
 	"strconv"
 	"time"
+
+	"github.com/donaldsteele/rocket/internal/protocol"
 )
 
 // The UDP beacon: each host periodically broadcasts a JSON Self on the beacon
@@ -49,10 +51,13 @@ func (r *Registry) Listen(ctx context.Context) error {
 
 func (r *Registry) announce(ctx context.Context) { Announce(ctx, r.beaconPort, r.self) }
 
-// Announce broadcasts self on the UDP beacon port, at once and then every
+// Announce broadcasts self (a zero Proto is protocol.Version) on the UDP beacon port, at once and then every
 // two seconds, until ctx is cancelled. It returns at once if it cannot open
 // a socket.
 func Announce(ctx context.Context, port int, self Self) {
+	if self.Proto == 0 {
+		self.Proto = protocol.Version
+	}
 	bcast := &net.UDPAddr{IP: net.IPv4bcast, Port: port}
 	out, err := net.DialUDP("udp4", nil, bcast)
 	if err != nil {
@@ -103,6 +108,6 @@ func beaconPeer(pkt []byte, src *net.UDPAddr) (Peer, bool) {
 	return Peer{
 		Name: s.Name, Fingerprint: s.Fingerprint,
 		Addr:     net.JoinHostPort(src.IP.String(), strconv.Itoa(s.HTTPPort)),
-		HTTPPort: s.HTTPPort, Version: s.Version, OS: s.OS,
+		HTTPPort: s.HTTPPort, Version: s.Version, OS: s.OS, Proto: protoOrOld(s.Proto),
 	}, true
 }

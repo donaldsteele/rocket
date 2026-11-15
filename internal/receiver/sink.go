@@ -1,9 +1,9 @@
 package receiver
 
 import (
-	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/donaldsteele/rocket/internal/protocol"
@@ -18,9 +18,9 @@ type Sink interface {
 }
 
 // Output stores the entries of one transfer, in manifest order. The receiver
-// has already checked the body against the manifest (tar headers, sizes,
-// order); Write must still read exactly an entry's size and check that
-// nothing follows. On any failure the receiver calls Abort, which must
+// hands each entry its bytes in manifest order, after authenticating them;
+// Write must still read exactly an entry's size and check that nothing
+// follows. On any failure the receiver calls Abort, which must
 // remove everything this transfer stored.
 type Output interface {
 	transfer.EntryWriter
@@ -83,9 +83,15 @@ func (f *fsFile) Finish() (transfer.Result, error) {
 	return transfer.Result{Paths: []string{f.dest}, Files: 1, Bytes: f.m.Entries[0].Size}, nil
 }
 
-// Abort does nothing: ReceiveFile removes its part file itself when it
-// fails, and nothing can fail after it succeeded.
-func (f *fsFile) Abort() {}
+// Abort removes the file once it is complete (ReceiveFile removes its part
+// file itself when it fails): the body can still fail after the file's last
+// byte, at its authenticated end.
+func (f *fsFile) Abort() {
+	if f.dest != "" {
+		os.Remove(f.dest)
+		f.dest = ""
+	}
+}
 
 func (f *fsFile) Location() string { return f.dir }
 
@@ -230,7 +236,9 @@ func (o *filesOutput) Location() string { return o.files.Location() }
 func copyExact(w io.Writer, src io.Reader, e protocol.Entry) error {
 	n, err := io.CopyN(w, src, e.Size)
 	if err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		// Only a plain end of input means the body was short; a wrapped
+		// error (a cut-off stream) keeps its identity.
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			return fmt.Errorf("%w: %s: got %d of %d bytes", transfer.ErrSize, e.Path, n, e.Size)
 		}
 		return err

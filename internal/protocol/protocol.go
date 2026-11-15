@@ -1,13 +1,17 @@
 // Package protocol is the single source of truth for rocket's peer wire
-// protocol, version 1: the hello and offer messages, the canonical bytes an
-// offer signature covers, signature and freshness checks, the replay (nonce)
-// cache, and manifest validation.
+// protocol, version 2: the hello, offer and reply messages, the canonical
+// bytes the offer and reply signatures cover, signature and freshness
+// checks, the replay (nonce) cache, manifest validation, and the body key
+// (BodyKey; the stream itself is in package securestream).
 //
 // A transfer is a two-phase push. The sender fetches GET /api/hello to learn
-// the receiver's fingerprint and public key, then POSTs a signed Offer to
-// /api/offer. The receiver verifies the offer (Verifier.Verify), prompts its
-// person unless the sender is trusted, and replies with an OfferReply holding
-// a one-shot upload token for POST /api/recv.
+// the receiver's fingerprint and public key, then POSTs a signed Offer with
+// a fresh ephemeral X25519 key to /api/offer. The receiver verifies the offer
+// (Verifier.Verify), prompts its person unless the sender is trusted, and
+// replies with an OfferReply signed by its own key (SignReply), holding its
+// own ephemeral key and a one-shot upload token for POST /api/recv. Both
+// sides derive the body key from the two ephemeral keys (BodyKey), and the
+// body travels as a securestream.
 package protocol
 
 import (
@@ -16,9 +20,12 @@ import (
 )
 
 // Version is the protocol version carried in every hello and offer.
-const Version = 1
+const Version = 2
 
-// Limits and windows from the v1 contract.
+// Proto is another name for Version.
+const Proto = Version
+
+// Limits and windows of the protocol.
 const (
 	MaxOfferBytes  = 1 << 20         // offer request body cap
 	MaxEntries     = 10000           // manifest entries
@@ -35,8 +42,8 @@ const (
 
 // Manifest kinds.
 const (
-	KindFile  = "file"  // one file, raw body on /api/recv
-	KindMulti = "multi" // several files/dirs, tar body on /api/recv
+	KindFile  = "file"  // one file
+	KindMulti = "multi" // several files and folders
 )
 
 // ModeDir marks a directory entry in Entry.Mode (same bit as io/fs.ModeDir).
@@ -78,16 +85,33 @@ type Offer struct {
 	ReceiverFP string   `json:"receiver_fp"`
 	TS         int64    `json:"ts"` // unix seconds
 	Nonce      string   `json:"nonce"`
+	Eph        string   `json:"eph"` // base64 ephemeral X25519 public key, fresh per offer
 	Manifest   Manifest `json:"manifest"`
 	Sig        string   `json:"sig"` // base64 ed25519 signature of SigningBytes
 }
 
-// OfferReply is the receiver's answer to an offer.
+// OfferReply is the receiver's answer to an offer. A peer reply (POST
+// /api/offer) is always signed by the receiver (SignReply); Eph is set when
+// it is accepted, Resume only when the receiver kept a partial transfer that
+// this offer may continue. The browser drop flow (POST /drop/offer) uses the
+// same shape without Eph, Resume and Sig.
 type OfferReply struct {
-	Accepted   bool   `json:"accepted"`
-	Token      string `json:"token,omitempty"` // one-shot token for /api/recv
-	TransferID string `json:"transfer_id,omitempty"`
-	Reason     string `json:"reason,omitempty"` // ReasonDeclined, ReasonTimedOut, ...
+	Accepted   bool         `json:"accepted"`
+	TransferID string       `json:"transfer_id,omitempty"`
+	Token      string       `json:"token,omitempty"`  // one-shot token for /api/recv
+	Eph        string       `json:"eph,omitempty"`    // base64 ephemeral X25519 public key of the receiver
+	Reason     string       `json:"reason,omitempty"` // ReasonDeclined, ReasonTimedOut, ...
+	Resume     *ResumePoint `json:"resume,omitempty"`
+	Sig        string       `json:"sig,omitempty"` // base64 ed25519 signature of ReplySigningBytes
+}
+
+// ResumePoint is where a body may start instead of the beginning: byte
+// Offset of manifest entry Entry. SHA256 is the lowercase hex SHA-256 of
+// bytes [0, Offset) of that entry as the receiver holds them.
+type ResumePoint struct {
+	Entry  uint32 `json:"entry"`
+	Offset uint64 `json:"offset"`
+	SHA256 string `json:"sha256"`
 }
 
 // OfferReply reasons for a refusal.
@@ -109,4 +133,10 @@ var (
 	ErrBusy          = errors.New("too many recent offers; try again in a few minutes")
 	ErrSignature     = errors.New("bad offer signature")
 	ErrManifest      = errors.New("invalid manifest")
+	ErrEph           = errors.New("bad ephemeral key")
+	ErrReply         = errors.New("the receiver's reply is not validly signed")
 )
+
+// OldSenderMsg is the body of the 426 answer to an offer of an older
+// protocol.
+const OldSenderMsg = "this device runs rocket 1.1 or later; update the sender"

@@ -148,16 +148,23 @@ func TestFilesSinkSizeMismatch(t *testing.T) {
 	}
 }
 
-// TestFilesSinkThroughExtractTar: the tar checks run before the sink sees
-// anything of a bad entry.
-func TestFilesSinkThroughExtractTar(t *testing.T) {
+// TestFilesSinkThroughReceiveBody: a bad start header fails before the sink
+// sees anything, and a body that goes wrong after a file was committed
+// removes that file too.
+func TestFilesSinkThroughReceiveBody(t *testing.T) {
 	m := protocol.Manifest{Kind: protocol.KindMulti, Entries: []protocol.Entry{
 		{Path: "d", Mode: protocol.ModeDir | 0o755},
 		{Path: "d/a", Size: 3, Mode: 0o644},
 	}, Total: 3}
 	files := newMemFiles()
-	_, err := transfer.ExtractTar(begin(t, files, m), m, io.LimitReader(strings.NewReader("not a tar archive at all"), 1<<20))
-	if !errors.Is(err, transfer.ErrArchive) || !files.aborted || len(files.ops) != 0 {
+	_, err := transfer.ReceiveBody(begin(t, files, m), m, strings.NewReader("not a start header at all"))
+	if !errors.Is(err, transfer.ErrStart) || !files.aborted || len(files.ops) != 0 {
+		t.Fatalf("err %v aborted %v ops %q", err, files.aborted, files.ops)
+	}
+	h := transfer.Start{}.Header()
+	files = newMemFiles()
+	_, err = transfer.ReceiveBody(begin(t, files, m), m, io.MultiReader(bytes.NewReader(h[:]), strings.NewReader("abc+")))
+	if !errors.Is(err, transfer.ErrSize) || !files.aborted || !slices.Contains(files.ops, "commit d/a") {
 		t.Fatalf("err %v aborted %v ops %q", err, files.aborted, files.ops)
 	}
 }

@@ -43,7 +43,7 @@ func FileManifest(name string, size int64, mode uint32) Manifest {
 	return Manifest{Kind: KindFile, Entries: []Entry{{Path: name, Size: size, Mode: mode & 0o777}}, Total: size}
 }
 
-// Validate checks a manifest against the v1 rules: a known kind, 1 to
+// Validate checks a manifest against the protocol rules: a known kind, 1 to
 // MaxEntries entries (exactly one non-directory entry with a bare name for
 // kind:file), every path valid (ValidatePath), no duplicate paths (compared
 // case-insensitively, since receivers may be on Windows or macOS), no file

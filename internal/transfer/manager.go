@@ -37,6 +37,7 @@ type Info struct {
 	FileIndex int       `json:"file_index"`
 	State     string    `json:"state"`
 	Started   time.Time `json:"started"`
+	Encrypted bool      `json:"encrypted"` // a peer transfer (encrypted body), not a browser drop
 }
 
 // Manager tracks the transfers in flight in both directions: their state and

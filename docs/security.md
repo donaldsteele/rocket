@@ -13,8 +13,14 @@ it protects against, what it does not, and why. The wire details are in
   itself off as a trusted sender without its private key.
 - The full UI and every control API answer **only on this computer**. Other
   computers see the peer protocol and the drop page, nothing else.
-- Traffic is **plain HTTP**. Someone who can watch your network can see what
-  is sent and could change it in transit. Use rocket on networks you trust.
+- **File contents are encrypted** between rocket apps (desktop and Android,
+  rocket 1.1 and later) with keys made fresh for every transfer, and checked
+  so a change in transit is caught and the transfer thrown away. File
+  **names, sizes, folder layout and device names are not encrypted**, and
+  the browser drop page is not encrypted at all. See
+  [What the network can still see](#what-the-network-can-still-see).
+- rocket 1.1 does not talk to rocket 1.0 in either direction; it says which
+  side needs updating.
 - AI agents connected over MCP can list peers and send files. They can never
   accept a transfer, trust or revoke a sender, change settings or quit.
 - The Android app uses the same Go code for the protocol, listens only while
@@ -68,6 +74,38 @@ The prompt shows the sender's name, fingerprint, address, file count, total
 size and the first few names. Names come from the other computer: treat them
 as claims, and compare the fingerprint when it matters.
 
+### Someone watches or changes a transfer on the network
+
+Every file body between rocket apps travels encrypted and authenticated
+(protocol v2, [protocol.md](protocol.md#body-key)):
+
+- The sender puts a fresh X25519 key in its signed offer; the receiver
+  answers with its own fresh X25519 key in a reply signed with its ed25519
+  key. The sender checks that signature against the key of the fingerprint it
+  chose to send to, so a machine in the middle cannot swap in its own key
+  without the receiver's private key. The receiver knows the sender's key is
+  genuine because the offer is signed.
+- Both sides derive the body key with HKDF-SHA256 from the X25519 result,
+  the hash of the signed offer and the transfer ID, so every transfer has its
+  own key. The ephemeral private keys live only in memory for one transfer:
+  someone who records a transfer and later steals `node.key` still cannot
+  decrypt it.
+- The body is ChaCha20-Poly1305 in frames of 64 KiB with a counter and a
+  "last frame" flag in each nonce. A changed, reordered, repeated or dropped
+  frame, a body cut short, or anything added after the end fails, and the
+  receiver removes everything that transfer wrote.
+- The crypto is Go's standard library (`crypto/ecdh`, `crypto/hkdf`,
+  `crypto/ed25519`) and `golang.org/x/crypto/chacha20poly1305`; rocket
+  adds no primitives of its own. Known-answer vectors computed outside rocket,
+  tamper and truncation tests and a fuzz test on the reader pin the format.
+
+Encryption protects the transfer to the device whose fingerprint you send
+to. If you send to a bare `host:port` (rocket send, or a typed address), the
+transfer is encrypted to whoever answers on that address; pick peers from the
+list, or compare the fingerprint, when it matters. A fingerprint is 64 bits
+of a SHA-256 hash: making a different key with the same fingerprint would
+take about 2^64 attempts.
+
 ### Someone pretends to be a sender you trust (spoofing)
 
 Every peer offer is signed with the sender's ed25519 key. The receiver checks:
@@ -75,8 +113,8 @@ Every peer offer is signed with the sender's ed25519 key. The receiver checks:
 - the fingerprint is derived from the public key in the offer,
 - the offer names this receiver's fingerprint (so an offer meant for another
   host cannot be redirected here),
-- the signature covers the receiver, sender, timestamp, nonce and a hash of the
-  full file list,
+- the signature covers the receiver, sender, timestamp, nonce, the sender's
+  ephemeral encryption key and a hash of the full file list,
 - the key matches the key pinned when you chose "Always accept from this host".
 
 A trusted fingerprint presented with a different key gets a normal prompt.
@@ -95,6 +133,9 @@ someone floods it, new offers get "busy" (503) for a few minutes instead, so a
 flood can delay transfers but cannot make a replay possible. Offers are also
 rate-limited per IP address. Upload tokens are one-shot, expire after 10
 minutes and are only accepted from the IP address that made the offer.
+Replies are signed over a hash of the offer they answer, so an old reply
+cannot be passed off as the answer to a new offer, and a captured body is
+useless with any other transfer's key.
 
 Keep the clocks of your computers roughly right (within 5 minutes); network
 time does this for you on most systems.
@@ -104,8 +145,9 @@ time does this for you on most systems.
 The file list is checked before anything is asked or written: paths must be
 relative and clean, with no `..`, no absolute, drive or UNC paths, no
 backslashes, colons, NUL or control characters, no duplicates (case-blind) and
-no file that is also a folder. The tar stream must match the list exactly;
-symlinks, hard links and devices are refused. Each top-level item gets a fresh
+no file that is also a folder. The body carries only file bytes, in the
+order and sizes of the signed list, so it cannot add entries, links or
+devices. Each top-level item gets a fresh
 name in the download folder, everything below it is joined and re-checked
 under that folder, and Windows reserved names (CON, NUL, COM1, COM¹, ...),
 trailing dots and spaces, control characters and invisible format characters
@@ -130,9 +172,12 @@ on, that browser can drop without asking again. rocket stores only a SHA-256
 hash of each cookie token. To stop remembered browsers, turn auto-accept off
 in Settings.
 
-The cookie is sent over plain HTTP, so someone watching the network could copy
-it and drop files as that browser. They still could not read anything from
-your computer.
+The drop page is **not encrypted**: browsers only allow the Web Crypto API
+on secure (HTTPS) pages, and rocket serves plain HTTP. Files dropped from a
+browser, and the cookie, cross the network in clear, so someone watching
+could read or change them, or copy the cookie and drop files as that browser.
+They still could not read anything from your computer. History marks drops
+as not encrypted.
 
 ### An AI agent goes too far
 
@@ -173,8 +218,9 @@ limits, manifest and path checks. The differences:
   the app's private storage. Backups and device-to-device transfers leave them
   out (`allowBackup="false"`, data extraction rules), so another device cannot
   inherit this phone's key; a reinstall or a new phone gets a new fingerprint.
-- **Plain HTTP** is allowed by the app's network security config, for the same
-  reason as on the desktop (below).
+- **Cleartext HTTP** is allowed by the app's network security config,
+  because rocket's transport is plain HTTP on the LAN; the file bodies inside
+  it are encrypted exactly as on the desktop.
 - **Release APK.** `rocket-android.apk` is signed with the project's release
   key, which is kept offline and never in the repository or CI (CI builds an
   unsigned debug APK). Check the download against `SHA256SUMS`, and if you
@@ -186,25 +232,31 @@ limits, manifest and path checks. The differences:
   signed with any other certificate). Android refuses to install an update signed with any other key over the
   installed app.
 
-## Not protected: plain HTTP
+## What the network can still see
 
-rocket does not encrypt traffic. Anyone who can see the packets (shared Wi-Fi
-without client isolation, a compromised router, a mirrored switch port) can:
+rocket's transport is plain HTTP. Encryption covers the **contents of files**
+sent between rocket apps. Anyone who can see the packets (shared Wi-Fi
+without client isolation, a compromised router, a mirrored switch port) can
+still:
 
-- read the files being sent and the file names,
-- see which hosts send to which,
-- change a file in transit: the signature covers the file list and sizes, not
-  the file contents,
-- copy a drop cookie.
+- see file and folder **names, sizes and the folder layout** (the offer is
+  signed, not encrypted),
+- see **device names, fingerprints and versions** (discovery and hello are
+  public), and which hosts send to which, when and how much,
+- read and change files dropped from a **browser** (the drop page is not
+  encrypted), and copy a drop cookie,
+- block or cut off a transfer (it then fails; nothing partial is kept as a
+  finished file).
 
-They cannot make your computer accept an offer from a trusted sender without
-that sender's private key, and they cannot reach the local control API.
+They cannot read or undetectably change the contents of a transfer between
+rocket apps, make your computer accept an offer from a trusted sender without
+that sender's private key, or reach the local control API.
 
-HTTPS with a local certificate authority was considered and left out of 1.0:
-it adds a certificate step on every host and phone, and the main risk on a home
-or office network is an unwanted sender, which the signed, pinned offers
-address. If you need confidentiality, send over a network you control or
-encrypt the files first.
+HTTPS with a local certificate authority was considered and left out: it
+adds a certificate step on every host and phone. Signed offers and replies
+with per-transfer keys give the same protection for file contents without
+it. If names and sizes must stay private too, put the files in an encrypted
+archive first.
 
 ## Other limits
 

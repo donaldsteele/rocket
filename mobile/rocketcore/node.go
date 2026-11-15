@@ -14,12 +14,18 @@ import (
 	"github.com/donaldsteele/rocket/internal/history"
 	"github.com/donaldsteele/rocket/internal/node"
 	"github.com/donaldsteele/rocket/internal/peers"
+	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/receiver"
 	"github.com/donaldsteele/rocket/internal/transfer"
 )
 
 // OS is what an Android host reports in hello, beacons and mDNS TXT.
 const OS = "android"
+
+// ProtoVersion is the wire protocol version this core speaks, announced in
+// hello, beacons and the mDNS TXT record "proto". Peers announcing another
+// version need an update before they can be sent to.
+const ProtoVersion = protocol.Version
 
 // DefaultName is the device name used when none is given.
 const DefaultName = "Android"
