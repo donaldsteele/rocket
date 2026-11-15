@@ -12,6 +12,8 @@ package transfer
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +23,8 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/donaldsteele/rocket/internal/node"
@@ -64,9 +68,18 @@ func SendPaths(ctx context.Context, id *node.Identity, t Target, paths []string,
 
 // SendPlan sends a plan built by PlanPaths.
 func SendPlan(ctx context.Context, id *node.Identity, t Target, p *Plan, progress ProgressFn) error {
-	return SendManifest(ctx, id, t, p.Manifest, func(i int, _ protocol.Entry) (io.ReadCloser, error) {
-		return os.Open(p.Sources[i])
-	}, progress)
+	return SendPlanOpts(ctx, id, t, p, progress, SendOptions{})
+}
+
+// SendPlanOpts is SendPlan with options (see SendManifestOpts). A plan's
+// files can be opened again, so it may retry and resume.
+func SendPlanOpts(ctx context.Context, id *node.Identity, t Target, p *Plan, progress ProgressFn, opts SendOptions) error {
+	return SendManifestOpts(ctx, id, t, p.Manifest, p.Open, progress, opts)
+}
+
+// Open opens the local file behind manifest entry i (an OpenFunc).
+func (p *Plan) Open(i int, _ protocol.Entry) (io.ReadCloser, error) {
+	return os.Open(p.Sources[i])
 }
 
 // SendReader offers one file of exactly size bytes named name, waits for
@@ -86,72 +99,210 @@ func SendReader(ctx context.Context, id *node.Identity, t Target, name string, s
 // a signed offer for m with a fresh ephemeral key, the receiver's signed
 // reply (verified against the key from its hello), then the body: the
 // content (open supplies each file) after a start header, as a securestream
-// under the key both sides derive. Nothing is staged.
+// under the key both sides derive. Nothing is staged. It makes one attempt
+// and ignores resume points (see SendManifestOpts).
 func SendManifest(ctx context.Context, id *node.Identity, t Target, m protocol.Manifest, open OpenFunc, progress ProgressFn) error {
+	return SendManifestOpts(ctx, id, t, m, open, progress, SendOptions{})
+}
+
+// RetryDelays are the waits before each of the sender's five retries after
+// an accepted transfer broke for a network reason.
+var RetryDelays = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second}
+
+// StallTimeout is how long an upload may move no byte at all before its
+// connection counts as lost.
+const StallTimeout = 60 * time.Second
+
+// stallCheck is how often the stall watchdog looks.
+const stallCheck = 2 * time.Second
+
+// cancelNoticeTimeout bounds a cancel notice round trip.
+const cancelNoticeTimeout = 3 * time.Second
+
+// SendOptions tunes SendManifestOpts.
+type SendOptions struct {
+	// Retry makes the send resumable. open may then be called more than
+	// once for a file: to check a resume point and on every attempt. A
+	// resume point the receiver offers is used when the SHA-256 of the
+	// local file's prefix matches it (otherwise the body starts over), and
+	// when the transfer breaks for a network reason after the receiver
+	// accepted it, it is offered again (new offer, new keys) after each of
+	// Delays. When the last retry fails too, the error wraps
+	// ErrInterrupted. Without Retry a send makes one attempt and starts at
+	// the beginning.
+	Retry bool
+	// Delays are the waits before each retry; nil means RetryDelays.
+	Delays []time.Duration
+	// OnRetry is told before each wait: retry n of max, after err.
+	OnRetry func(n, max int, delay time.Duration, err error)
+	// OnAccepted is told of every accepted attempt: the receiver's
+	// fingerprint and its transfer ID, which a later cancel notice names.
+	OnAccepted func(receiverFP, remoteID string)
+}
+
+// remote names the receiver's side of an accepted attempt.
+type remote struct{ fp, id string }
+
+// SendManifestOpts is SendManifest with options. However it ends, an
+// accepted transfer is never left half-done on the receiver except after a
+// network failure it can resume: a cancel here (ctx), a failure reading
+// the local files, and a network failure of a send without Retry are
+// followed by a signed cancel notice (NotifyCancel), sent before the body
+// is cut off where possible, so the receiver removes what it stored.
+func SendManifestOpts(ctx context.Context, id *node.Identity, t Target, m protocol.Manifest, open OpenFunc, progress ProgressFn, opts SendOptions) error {
 	if err := m.Validate(); err != nil {
 		return err
 	}
+	delays := opts.Delays
+	if delays == nil {
+		delays = RetryDelays
+	}
+	var last remote // the latest accepted attempt
+	for n := 0; ; n++ {
+		r, err := sendAttempt(ctx, id, t, m, open, progress, opts)
+		if r.id != "" {
+			last = r
+		} else if ctx.Err() != nil {
+			// Stopped before this attempt was accepted: the receiver may
+			// still keep what an earlier attempt stored.
+			notifyCancel(id, t.Addr, last)
+		}
+		if err == nil {
+			return nil
+		}
+		if !opts.Retry || last.id == "" || ctx.Err() != nil || !IsNetwork(err) {
+			return err
+		}
+		if n == len(delays) {
+			return fmt.Errorf("%w: %v (gave up after %d retries)", ErrInterrupted, err, len(delays))
+		}
+		if opts.OnRetry != nil {
+			opts.OnRetry(n+1, len(delays), delays[n], err)
+		}
+		wait := time.NewTimer(delays[n])
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			notifyCancel(id, t.Addr, last)
+			return fmt.Errorf("send stopped: %w", ctx.Err())
+		case <-wait.C:
+		}
+	}
+}
+
+// errStalled is the cause of an upload stopped by the stall watchdog.
+var errStalled = errors.New("stalled")
+
+// sendAttempt makes one attempt: hello, offer, reply, body. r names the
+// receiver's side once the offer was accepted.
+func sendAttempt(ctx context.Context, id *node.Identity, t Target, m protocol.Manifest, open OpenFunc, progress ProgressFn, opts SendOptions) (r remote, err error) {
 	hello, err := Hello(ctx, t.Addr)
 	if err != nil {
-		return err
+		return r, err
 	}
 	pub, err := protocol.CheckHello(hello, t.FP)
 	if errors.Is(err, protocol.ErrProto) {
-		return err // names the peer and says what to update
+		return r, err // names the peer and says what to update
 	}
 	if err != nil {
-		return fmt.Errorf("peer %s: %w", t.Addr, err)
+		return r, fmt.Errorf("peer %s: %w", t.Addr, err)
 	}
 	offer, eph, err := protocol.NewOffer(id, id.Name, hello.FP, m, time.Now())
 	if err != nil {
-		return err
+		return r, err
 	}
 	offerSB, err := protocol.SigningBytes(offer)
 	if err != nil {
-		return err
+		return r, err
 	}
 	reply, err := postOffer(ctx, t.Addr, offer)
 	if err != nil {
-		return err
+		return r, err
 	}
 	if err := protocol.VerifyReply(pub, offerSB, &reply); err != nil {
-		return fmt.Errorf("peer %s: %w", t.Addr, err)
+		return r, fmt.Errorf("peer %s: %w", t.Addr, err)
 	}
 	if !reply.Accepted {
 		if reply.Reason == protocol.ReasonTimedOut {
-			return fmt.Errorf("%w (%s)", ErrTimedOut, t.Addr)
+			return r, fmt.Errorf("%w (%s)", ErrTimedOut, t.Addr)
 		}
 		if reply.Reason == "" {
 			reply.Reason = "declined"
 		}
-		return fmt.Errorf("%w: %s", ErrDeclined, reply.Reason)
+		return r, fmt.Errorf("%w: %s", ErrDeclined, reply.Reason)
 	}
+	r = remote{fp: hello.FP, id: reply.TransferID}
+	if opts.OnAccepted != nil {
+		opts.OnAccepted(r.fp, r.id)
+	}
+	var once sync.Once
+	abandon := func() { once.Do(func() { notifyCancel(id, t.Addr, r) }) }
 	key, err := protocol.BodyKey(eph, reply.Eph, offer, reply.TransferID)
 	if err != nil {
-		return fmt.Errorf("peer %s: %w", t.Addr, err)
+		abandon()
+		return r, fmt.Errorf("peer %s: %w", t.Addr, err)
 	}
 	start := Start{}
+	if opts.Retry && reply.Resume != nil {
+		start = resumeStart(m, reply.Resume, open)
+	}
+	sent, done := Before(m, start)
+	tr := newTracker(progress, m.Total, Files(m)).from(sent, done)
+
+	// The upload has its own context so that a cancel here first tells the
+	// receiver (the cancel notice) and only then cuts the body off: the
+	// receiver then knows not to keep what it stored.
+	upCtx, upCancel := context.WithCancelCause(context.WithoutCancel(ctx))
+	defer upCancel(nil)
+	stopWatch := context.AfterFunc(ctx, func() {
+		abandon()
+		upCancel(context.Canceled)
+	})
+	defer stopWatch()
 
 	// The body is produced by a goroutine into a pipe. Only that goroutine
 	// touches the sources (open, read, close); the HTTP transport only reads
 	// the pipe, which is safe even when it keeps reading after Do has
 	// returned.
-	tr := newTracker(progress, m.Total, Files(m))
 	pr, pw := io.Pipe()
 	defer pr.Close()
+	var lastMove atomic.Int64 // unix nanoseconds of the last byte taken by the transport; 0 once the body is written
+	lastMove.Store(time.Now().UnixNano())
 	writeDone := make(chan error, 1)
 	go func() {
-		err := writeSealed(pw, key, m, start, open, tr)
+		err := writeSealed(stallWriter{w: pw, last: &lastMove}, key, m, start, open, tr)
+		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
+			abandon() // a local failure: tell the receiver before the body is cut off
+		}
+		lastMove.Store(0)
 		pw.CloseWithError(err)
 		writeDone <- err
 	}()
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+	go func() {
+		tick := time.NewTicker(stallCheck)
+		defer tick.Stop()
+		for {
+			select {
+			case <-watchDone:
+				return
+			case <-tick.C:
+				if t := lastMove.Load(); t != 0 && time.Since(time.Unix(0, t)) > StallTimeout {
+					upCancel(errStalled)
+					return
+				}
+			}
+		}
+	}()
 
 	u := fmt.Sprintf("http://%s/api/recv?token=%s", t.Addr, url.QueryEscape(reply.Token))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, pr)
+	req, err := http.NewRequestWithContext(upCtx, http.MethodPost, u, pr)
 	if err != nil {
 		pr.Close()
 		<-writeDone
-		return err
+		abandon()
+		return r, err
 	}
 	req.ContentLength = SealedBodySize(m, start)
 	req.Header.Set("Content-Type", BodyType)
@@ -165,20 +316,105 @@ func SendManifest(ctx context.Context, id *node.Identity, t Target, m protocol.M
 		defer resp.Body.Close()
 	}
 	switch {
+	case ctx.Err() != nil && (err != nil || werr != nil || resp.StatusCode != http.StatusOK):
+		return r, fmt.Errorf("send stopped: %w", ctx.Err())
 	case err == nil && resp.StatusCode == http.StatusGone:
-		return fmt.Errorf("%w by the receiver", ErrCancelled)
-	case ctx.Err() != nil && (err != nil || werr != nil):
-		return fmt.Errorf("send stopped: %w", ctx.Err())
+		return r, fmt.Errorf("%w by the receiver", ErrCancelled)
 	case werr != nil:
 		// A failure while reading local files is the real cause; report it
 		// rather than the aborted request it caused.
-		return werr
+		return r, werr
+	case err != nil && context.Cause(upCtx) == errStalled:
+		err = fmt.Errorf("%w: nothing moved for %s", ErrConnLost, StallTimeout)
+		if !opts.Retry {
+			abandon()
+		}
+		return r, err
 	case err != nil:
-		return err
+		if !opts.Retry && IsNetwork(err) {
+			abandon()
+		}
+		return r, err
 	case resp.StatusCode != http.StatusOK:
-		return fmt.Errorf("upload failed: %s: %s", resp.Status, readMsg(resp.Body))
+		return r, fmt.Errorf("upload failed: %s: %s", resp.Status, readMsg(resp.Body))
 	}
 	tr.finish()
+	return r, nil
+}
+
+// stallWriter records when the transport last took bytes.
+type stallWriter struct {
+	w    io.Writer
+	last *atomic.Int64
+}
+
+func (s stallWriter) Write(p []byte) (int, error) {
+	n, err := s.w.Write(p)
+	if n > 0 {
+		s.last.Store(time.Now().UnixNano())
+	}
+	return n, err
+}
+
+// resumeStart returns the receiver's resume point rp when it fits m and
+// the SHA-256 of the local file's first rp.Offset bytes matches rp.SHA256,
+// else the beginning. Files before the point are trusted as they are: their
+// sizes match the manifest, and the receiver authenticated their content
+// when it got them.
+func resumeStart(m protocol.Manifest, rp *protocol.ResumePoint, open OpenFunc) Start {
+	s := Start{Entry: rp.Entry, Offset: rp.Offset}
+	if s == (Start{}) || !validStart(m, s) {
+		return Start{}
+	}
+	i := int(s.Entry)
+	rc, err := open(i, m.Entries[i])
+	if err != nil {
+		return Start{}
+	}
+	defer rc.Close()
+	h := sha256.New()
+	if n, err := io.CopyN(h, rc, int64(s.Offset)); err != nil || n != int64(s.Offset) {
+		return Start{}
+	}
+	if hex.EncodeToString(h.Sum(nil)) != rp.SHA256 {
+		return Start{}
+	}
+	return s
+}
+
+// notifyCancel sends a cancel notice for the accepted attempt r, if any,
+// ignoring the outcome (best effort).
+func notifyCancel(id *node.Identity, addr string, r remote) {
+	if r.id != "" {
+		_ = NotifyCancel(context.Background(), id, addr, r.fp, r.id)
+	}
+}
+
+// NotifyCancel tells the receiver at addr (fingerprint receiverFP) that
+// this sender gave up its transfer remoteID: POST /api/recv/cancel with a
+// signed protocol.CancelNotice. The receiver stops the transfer if it is
+// still running and removes whatever it stored or kept of it. It takes at
+// most a few seconds.
+func NotifyCancel(ctx context.Context, id protocol.Signer, addr, receiverFP, remoteID string) error {
+	ctx, cancel := context.WithTimeout(ctx, cancelNoticeTimeout)
+	defer cancel()
+	b, err := json.Marshal(protocol.SignCancel(id, receiverFP, remoteID))
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/api/recv/cancel", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("cancel notice: %s: %s", resp.Status, readMsg(resp.Body))
+	}
 	return nil
 }
 

@@ -3,11 +3,16 @@ package transfer
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
+	"net/url"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/donaldsteele/rocket/internal/history"
+	"github.com/donaldsteele/rocket/internal/protocol/securestream"
 )
 
 // ErrCancelled is wrapped when a transfer was cancelled, here or (reported by
@@ -17,10 +22,53 @@ var ErrCancelled = errors.New("transfer cancelled")
 // ErrTimedOut is wrapped when the receiver did not answer the offer in time.
 var ErrTimedOut = errors.New("the receiver did not answer in time")
 
+// ErrInterrupted is wrapped when an accepted transfer broke for a network
+// reason and is left resumable: on the sender after its last retry, on the
+// receiver when it kept what it had stored.
+var ErrInterrupted = errors.New("transfer interrupted")
+
+// ErrConnLost is wrapped when the connection carrying a body went away (the
+// request ended without a cancel on this side).
+var ErrConnLost = errors.New("connection lost")
+
+// IsNetwork reports whether err is a network failure: the connection was
+// refused, reset, closed, timed out or lost, or a body was cut short. A
+// cancel, a refusal by the other side, a bad body and a local file error
+// are not.
+func IsNetwork(err error) bool {
+	switch {
+	case err == nil, errors.Is(err, ErrCancelled), errors.Is(err, context.Canceled):
+		return false
+	case errors.Is(err, ErrInterrupted), errors.Is(err, ErrConnLost), errors.Is(err, securestream.ErrTruncated),
+		errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF), errors.Is(err, net.ErrClosed),
+		errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.ECONNABORTED), errors.Is(err, syscall.ECONNREFUSED),
+		errors.Is(err, syscall.EPIPE), errors.Is(err, syscall.ETIMEDOUT), errors.Is(err, syscall.EHOSTUNREACH),
+		errors.Is(err, syscall.ENETUNREACH), errors.Is(err, syscall.ENETDOWN):
+		return true
+	}
+	// *url.Error wraps whatever a client request hit, so look inside it.
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		if ue.Timeout() && !errors.Is(err, context.DeadlineExceeded) {
+			return true
+		}
+		err = ue.Err
+	}
+	var op *net.OpError
+	if errors.As(err, &op) {
+		return true
+	}
+	var to interface{ Timeout() bool }
+	return errors.As(err, &to) && to.Timeout() && !errors.Is(err, context.DeadlineExceeded)
+}
+
 // Transfer states.
 const (
 	StateWaiting = "waiting" // offer sent, waiting for the receiver's decision
 	StateActive  = "active"  // bytes moving
+	// StateReconnecting: the connection broke; the sender waits to offer
+	// the transfer again (Attempt of Attempts).
+	StateReconnecting = "reconnecting"
 )
 
 // Info is the live view of one transfer, as GET /api/transfers shows it.
@@ -38,6 +86,10 @@ type Info struct {
 	State     string    `json:"state"`
 	Started   time.Time `json:"started"`
 	Encrypted bool      `json:"encrypted"` // a peer transfer (encrypted body), not a browser drop
+	// Attempt and Attempts count the sender's retries after a network
+	// failure (state reconnecting: "Reconnecting 2/5"); 0 before any.
+	Attempt  int `json:"attempt,omitempty"`
+	Attempts int `json:"attempts,omitempty"`
 }
 
 // Manager tracks the transfers in flight in both directions: their state and
@@ -112,6 +164,32 @@ func (mg *Manager) Cancel(id string) bool {
 	return true
 }
 
+// Stop stops a transfer like Cancel, except that it does not count as
+// cancelled here: the other end asked for it. It reports whether the
+// transfer was known.
+func (mg *Manager) Stop(id string) bool {
+	mg.mu.Lock()
+	t := mg.m[id]
+	mg.mu.Unlock()
+	if t == nil {
+		return false
+	}
+	t.cancel()
+	if t.abort != nil {
+		t.abort()
+	}
+	return true
+}
+
+// Retrying marks transfer id as reconnecting: retry attempt of attempts.
+func (mg *Manager) Retrying(id string, attempt, attempts int) {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	if t := mg.m[id]; t != nil {
+		t.info.State, t.info.Attempt, t.info.Attempts = StateReconnecting, attempt, attempts
+	}
+}
+
 // Cancelled reports whether Cancel was called for id.
 func (mg *Manager) Cancelled(id string) bool {
 	mg.mu.Lock()
@@ -159,7 +237,7 @@ func (mg *Manager) Len() int {
 }
 
 // Outcome classifies how a transfer ended for the history: ok, declined,
-// timeout, cancelled or error.
+// timeout, cancelled, interrupted or error.
 func Outcome(err error) history.Result {
 	switch {
 	case err == nil:
@@ -170,6 +248,8 @@ func Outcome(err error) history.Result {
 		return history.ResultTimeout
 	case errors.Is(err, ErrDeclined):
 		return history.ResultDeclined
+	case errors.Is(err, ErrInterrupted):
+		return history.ResultInterrupted
 	default:
 		return history.ResultError
 	}

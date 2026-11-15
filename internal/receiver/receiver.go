@@ -87,11 +87,18 @@ type Upload struct {
 	Manifest   protocol.Manifest
 	SenderName string
 	SenderFP   string
+	SenderPub  string // peer only: the sender's key (base64), proven by its signed offer
 	IP         string
 	Drop       bool     // desktop browser drop (POST /drop/upload) vs peer (POST /api/recv)
 	Names      []string // drop only: base name the browser gave each file, in order
 	key        []byte   // peer only: the body key of this transfer
-	expires    time.Time
+	// peer only: the resume point offered in the reply, and the kept
+	// transfer it continues.
+	resume  *protocol.ResumePoint
+	keptID  string
+	mh      string        // peer only: the manifest hash
+	done    chan struct{} // closed when its receive has ended
+	expires time.Time
 }
 
 // ErrTooMany is returned when no further offer may wait for a decision.
@@ -116,6 +123,11 @@ type Config struct {
 	// OfferReadTimeout bounds an offer body's arrival; 0 means
 	// DefaultOfferReadTimeout.
 	OfferReadTimeout time.Duration
+	// Kept holds the transfers kept for a resume (docs/protocol.md
+	// "Resume"); nil keeps nothing: a transfer broken by a network failure
+	// is removed like any other failure. It needs a Sink whose Outputs are
+	// Keepers to keep anything.
+	Kept *KeptStore
 }
 
 // Receiver holds the receive state: offers waiting for a decision and
@@ -124,9 +136,11 @@ type Receiver struct {
 	cfg      Config
 	verifier *protocol.Verifier
 
-	mu      sync.Mutex
-	pending map[string]*Pending // keyed by transfer ID
-	uploads map[string]*Upload  // keyed by one-shot upload token
+	mu         sync.Mutex
+	pending    map[string]*Pending // keyed by transfer ID
+	uploads    map[string]*Upload  // keyed by one-shot upload token
+	active     map[string]*Upload  // peer bodies being received, keyed by transfer ID
+	peerCancel map[string]bool     // transfer IDs the sender cancelled with a notice
 }
 
 // New builds a receiver. Identity, Trust, Ledger (with Transfers), Decider
@@ -145,24 +159,27 @@ func New(cfg Config) *Receiver {
 		cfg.Hello = func() (string, string) { return "dev", "" }
 	}
 	return &Receiver{
-		cfg:      cfg,
-		verifier: protocol.NewVerifier(cfg.Identity.Fingerprint()),
-		pending:  map[string]*Pending{},
-		uploads:  map[string]*Upload{},
+		cfg:        cfg,
+		verifier:   protocol.NewVerifier(cfg.Identity.Fingerprint()),
+		pending:    map[string]*Pending{},
+		uploads:    map[string]*Upload{},
+		active:     map[string]*Upload{},
+		peerCancel: map[string]bool{},
 	}
 }
 
 // Ledger returns the ledger the receiver records its transfers in.
 func (rx *Receiver) Ledger() *Ledger { return rx.cfg.Ledger }
 
-// Handler serves only the peer protocol: GET /api/hello, POST /api/offer and
-// POST /api/recv. Desktop rocket mounts the three handlers in its own route
-// table instead.
+// Handler serves only the peer protocol: GET /api/hello, POST /api/offer,
+// POST /api/recv and POST /api/recv/cancel. Desktop rocket mounts the
+// handlers in its own route table instead.
 func (rx *Receiver) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/hello", rx.HandleHello)
 	mux.HandleFunc("POST /api/offer", rx.HandleOffer)
 	mux.HandleFunc("POST /api/recv", rx.HandleRecv)
+	mux.HandleFunc("POST /api/recv/cancel", rx.HandleCancelNotice)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
@@ -317,34 +334,68 @@ func (rx *Receiver) TakeUpload(token string, drop bool, ip string) *Upload {
 // --- incoming transfers ---
 
 // StartIncoming registers an accepted upload with the transfer manager and
-// makes r.Body cancellable: cancelling the transfer stops the body read at
-// once (a past read deadline on the connection wakes a blocked read) and
-// every later read fails, so the receive aborts and removes its partial
-// files.
+// makes r.Body cancellable: cancelling the transfer (here, or by the
+// sender's cancel notice) stops the body read at once (a past read deadline
+// on the connection wakes a blocked read) and every later read fails with
+// transfer.ErrCancelled, so the receive aborts and removes its partial
+// files. A connection that goes away by itself fails reads with
+// transfer.ErrConnLost instead, and one that moves nothing for
+// transfer.StallTimeout times out: both are network failures.
 func (rx *Receiver) StartIncoming(w http.ResponseWriter, r *http.Request, up *Upload, label string) {
 	rc := http.NewResponseController(w)
+	tid := up.TransferID
 	ctx := rx.cfg.Ledger.Transfers.Start(r.Context(), transfer.Info{
-		ID: up.TransferID, Dir: history.DirIn, Name: label, PeerName: up.SenderName, PeerFP: up.SenderFP,
+		ID: tid, Dir: history.DirIn, Name: label, PeerName: up.SenderName, PeerFP: up.SenderFP,
 		Files: transfer.Files(up.Manifest), Total: up.Manifest.Total, Encrypted: !up.Drop,
 	}, func() { _ = rc.SetReadDeadline(time.Now()) })
-	r.Body = &ctxBody{ctx: ctx, rc: r.Body}
+	r.Body = &ctxBody{ctx: ctx, rc: r.Body, ctl: rc, stopped: func() bool {
+		return rx.cfg.Ledger.Transfers.Cancelled(tid) || rx.cancelledByPeer(tid)
+	}}
 }
 
-// ctxBody fails reads once its context is done.
+// ctxBody fails reads once its context is done, and keeps a read deadline
+// transfer.StallTimeout ahead while data comes in.
 type ctxBody struct {
-	ctx context.Context
-	rc  io.ReadCloser
+	ctx     context.Context
+	rc      io.ReadCloser
+	ctl     *http.ResponseController
+	stopped func() bool // the transfer was stopped on purpose (a cancel)
+	armed   time.Time   // when the read deadline was last moved
 }
 
 func (b *ctxBody) Read(p []byte) (int, error) {
-	if err := b.ctx.Err(); err != nil {
+	if b.ctx.Err() != nil && b.stopped() {
 		return 0, transfer.ErrCancelled
+	}
+	if b.ctl != nil && time.Since(b.armed) > time.Second {
+		b.armed = time.Now()
+		if b.ctl.SetReadDeadline(b.armed.Add(transfer.StallTimeout)) == nil && b.ctx.Err() != nil {
+			_ = b.ctl.SetReadDeadline(time.Now()) // a cancel came in meanwhile
+		}
 	}
 	n, err := b.rc.Read(p)
 	if err != nil && b.ctx.Err() != nil {
-		return n, transfer.ErrCancelled
+		if b.stopped() {
+			return n, transfer.ErrCancelled
+		}
+		return n, fmt.Errorf("%w: %w", transfer.ErrConnLost, err)
 	}
 	return n, err
+}
+
+// disarm clears the read deadline once the body has been read.
+func (b *ctxBody) disarm() {
+	if b.ctl != nil {
+		_ = b.ctl.SetReadDeadline(time.Time{})
+	}
+}
+
+// cancelledByPeer reports whether the sender cancelled transfer tid with a
+// notice.
+func (rx *Receiver) cancelledByPeer(tid string) bool {
+	rx.mu.Lock()
+	defer rx.mu.Unlock()
+	return rx.peerCancel[tid]
 }
 
 func (b *ctxBody) Close() error { return b.rc.Close() }
@@ -446,6 +497,9 @@ func RecvCode(err error) int {
 	if errors.As(err, &mbe) {
 		return http.StatusBadRequest
 	}
+	if errors.Is(err, errKeptGone) {
+		return http.StatusConflict
+	}
 	return http.StatusInternalServerError
 }
 
@@ -499,10 +553,16 @@ func (rx *Receiver) HandleOffer(w http.ResponseWriter, r *http.Request) {
 	}
 	// Trust-on-first-use with proof of key possession: a sender whose
 	// fingerprint is trusted AND whose key matches the pinned key skips the
-	// prompt, unless auto-accept is switched off. (The key is proven by
-	// Verify below; until then this only picks the path.)
-	autoOK := rx.cfg.AutoAccept() && rx.cfg.Trust.IsTrusted(o.SenderFP, o.SenderPub)
-	if !autoOK {
+	// prompt, unless auto-accept is switched off. So does an offer that
+	// continues a transfer the person already accepted: same sender key,
+	// same manifest, kept after a network failure, or still being received
+	// over a connection this side has not yet seen break. (The key is
+	// proven by Verify below; until then this only picks the path.)
+	mh, _ := o.Manifest.Hash()
+	resumable := rx.cfg.Kept != nil && mh != "" &&
+		(rx.activeFor(o.SenderPub, mh) != nil || rx.cfg.Kept.Find(o.SenderFP, o.SenderPub, mh) != nil)
+	trusted := rx.cfg.AutoAccept() && rx.cfg.Trust.IsTrusted(o.SenderFP, o.SenderPub)
+	if !resumable && !trusted {
 		if err := rx.PendingRoom(ip); err != nil {
 			http.Error(w, err.Error(), http.StatusTooManyRequests)
 			return
@@ -521,6 +581,14 @@ func (rx *Receiver) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "offer rejected: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	var kept *Kept
+	if resumable {
+		// The sender only offers the same files again when it lost its
+		// connection: let the old receive see the break and keep what it
+		// stored, then continue that.
+		rx.settleActive(o.SenderPub, mh)
+		kept = rx.cfg.Kept.Find(o.SenderFP, o.SenderPub, mh)
+	}
 
 	// This side's ephemeral key and the body key are made before anyone is
 	// asked, so an offer whose key cannot be used fails at once.
@@ -536,7 +604,7 @@ func (rx *Receiver) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := CleanLabel(o.SenderName, o.SenderFP)
-	up := &Upload{TransferID: tid, Manifest: o.Manifest, SenderName: name, SenderFP: o.SenderFP, IP: ip, key: key}
+	up := &Upload{TransferID: tid, Manifest: o.Manifest, SenderName: name, SenderFP: o.SenderFP, SenderPub: o.SenderPub, IP: ip, key: key, mh: mh}
 	answer := func(reply protocol.OfferReply) {
 		reply.TransferID = tid
 		if reply.Accepted {
@@ -546,7 +614,14 @@ func (rx *Receiver) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, reply)
 	}
 
-	if autoOK {
+	if kept != nil {
+		p := kept.Point
+		up.resume, up.keptID = &p, kept.ID
+		rx.cfg.Kept.Offered(kept.ID, tid)
+		answer(protocol.OfferReply{Accepted: true, Resume: &p})
+		return
+	}
+	if trusted {
 		answer(protocol.OfferReply{Accepted: true})
 		return
 	}
@@ -579,47 +654,345 @@ func (rx *Receiver) HandleOffer(w http.ResponseWriter, r *http.Request) {
 // HandleRecv streams an accepted upload into the Sink. The one-shot token
 // must come from the offering IP. The body is a securestream under the key
 // agreed for this transfer (protocol v2): a start header, which must be the
-// beginning of the transfer, then every file's bytes in manifest order,
-// checked against the signed manifest. Content-Length, when given, must be
-// exactly the sealed size. Any failure, including a frame that fails
-// authentication, removes everything stored. The receive is registered with
-// the transfer manager: cancelling it stops the read, removes what was
-// stored and answers the sender 410 Gone.
+// beginning of the transfer or the resume point offered in the reply, then
+// every file's bytes from there in manifest order, checked against the
+// signed manifest. Content-Length, when given, must be exactly the sealed
+// size for that start. The receive is registered with the transfer
+// manager: cancelling it stops the read, removes what was stored and
+// answers the sender 410 Gone.
+//
+// When the body breaks for a network reason (the connection is lost, reset
+// or stalls, or the stream is cut short) and Config.Kept is set, what was
+// stored is kept for a resume (KeptStore); history says "interrupted". Any
+// other failure, including a frame that fails authentication, removes
+// everything stored, an earlier attempt's included.
 func (rx *Receiver) HandleRecv(w http.ResponseWriter, r *http.Request) {
 	up := rx.TakeUpload(r.URL.Query().Get("token"), false, RemoteIP(r))
 	if up == nil || up.key == nil {
 		http.Error(w, "invalid, expired or used token", http.StatusForbidden)
 		return
 	}
-	label := transfer.Label(up.Manifest)
-	want := transfer.SealedBodySize(up.Manifest, transfer.Start{})
-	r.Body = http.MaxBytesReader(w, r.Body, want)
-	rx.StartIncoming(w, r, up, label)
-	progress := rx.cfg.Ledger.Progress(up.TransferID, label, "in")
-	out, err := rx.cfg.Sink.Begin(up.TransferID, up.Manifest, progress)
-	if err != nil {
-		rx.failIncoming(w, r, up, err)
-		return
+	tid, m := up.TransferID, up.Manifest
+	label := transfer.Label(m)
+	full := transfer.SealedBodySize(m, transfer.Start{})
+	resumeSize := int64(-1)
+	var resumeAt transfer.Start
+	if up.resume != nil {
+		resumeAt = transfer.Start{Entry: up.resume.Entry, Offset: up.resume.Offset}
+		resumeSize = transfer.SealedBodySize(m, resumeAt)
 	}
-	if r.ContentLength >= 0 && r.ContentLength != want {
-		out.Abort()
-		rx.failIncoming(w, r, up, fmt.Errorf("%w: content length %d, the offer needs %d", transfer.ErrSize, r.ContentLength, want))
+	r.Body = http.MaxBytesReader(w, r.Body, full) // a resumed body is never longer
+	rx.StartIncoming(w, r, up, label)
+	cb, _ := r.Body.(*ctxBody)
+	up.done = make(chan struct{})
+	rx.mu.Lock()
+	rx.active[tid] = up
+	rx.mu.Unlock()
+	defer func() {
+		rx.mu.Lock()
+		delete(rx.active, tid)
+		delete(rx.peerCancel, tid)
+		rx.mu.Unlock()
+		close(up.done)
+	}()
+
+	// failEarly ends a receive that stored nothing yet. A kept transfer it
+	// was to continue stays kept after a network failure and is dropped
+	// after any other.
+	failEarly := func(err error) {
+		if up.keptID != "" && !transfer.IsNetwork(err) {
+			rx.discardKept(up.keptID, "the sender's next attempt failed")
+		}
+		rx.failIncoming(w, r, up, rx.stopErr(tid, err))
+	}
+	if r.ContentLength >= 0 && r.ContentLength != full && r.ContentLength != resumeSize {
+		failEarly(fmt.Errorf("%w: content length %d, the offer needs %d", transfer.ErrSize, r.ContentLength, full))
 		return
 	}
 	body, err := securestream.NewReader(r.Body, up.key)
 	if err != nil {
-		out.Abort()
-		rx.failIncoming(w, r, up, err)
+		failEarly(err)
 		return
 	}
-	res, err := transfer.ReceiveBody(out, up.Manifest, body)
+	s, err := transfer.ReadStart(body)
+	if err == nil {
+		err = transfer.CheckStart(s, up.resume)
+	}
+	if err == nil && r.ContentLength >= 0 && r.ContentLength != transfer.SealedBodySize(m, s) {
+		err = fmt.Errorf("%w: content length %d does not fit the start point", transfer.ErrSize, r.ContentLength)
+	}
 	if err != nil {
-		rx.failIncoming(w, r, up, err)
+		failEarly(err)
 		return
 	}
-	rx.cfg.Ledger.End(up.TransferID, nil)
+
+	progress := rx.cfg.Ledger.Progress(tid, label, "in")
+	var kept *Kept
+	var out Output
+	from := 0
+	if up.keptID != "" && s == resumeAt && s != (transfer.Start{}) {
+		// Continue what an earlier attempt kept.
+		if kept, err = rx.cfg.Kept.Claim(up.keptID, *up.resume); err == nil {
+			defer rx.cfg.Kept.Release(kept.ID)
+			from = kept.Next
+			out, err = rx.cfg.Kept.sink.Resume(tid, m, kept.Sink, progress)
+		}
+		if err != nil {
+			rx.discardKept(up.keptID, "it could not be continued")
+			rx.failIncoming(w, r, up, rx.stopErr(tid, fmt.Errorf("%w: %v", errKeptGone, err)))
+			return
+		}
+	} else {
+		if up.keptID != "" {
+			// The sender starts over (its file changed): drop what was kept.
+			rx.discardKept(up.keptID, "the sender started over")
+		}
+		if out, err = rx.cfg.Sink.Begin(tid, m, progress); err != nil {
+			rx.failIncoming(w, r, up, rx.stopErr(tid, err))
+			return
+		}
+	}
+	res, err := transfer.ReceiveFrom(out, m, from, s, body)
+	if err != nil {
+		rx.endBroken(w, r, up, out, kept, err)
+		return
+	}
+	if cb != nil {
+		cb.disarm()
+	}
+	if kept != nil {
+		rx.cfg.Kept.Remove(kept.ID)
+		rx.publishKeptGone(kept.ID, "completed")
+	}
+	rx.cfg.Ledger.End(tid, nil)
 	rx.Done(up, label, out.Location(), res)
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+// stopErr is err, or a cancel by the sender when it sent a cancel notice
+// for transfer tid.
+func (rx *Receiver) stopErr(tid string, err error) error {
+	if rx.cancelledByPeer(tid) && !rx.cfg.Ledger.Transfers.Cancelled(tid) {
+		return fmt.Errorf("%w by the sender", transfer.ErrCancelled)
+	}
+	return err
+}
+
+// endBroken ends a receive whose body failed after out began storing. A
+// cancel (here or by the sender) removes everything; a network failure
+// keeps what out stored when it can (a Keeper, with Config.Kept set);
+// anything else removes everything.
+func (rx *Receiver) endBroken(w http.ResponseWriter, r *http.Request, up *Upload, out Output, prev *Kept, err error) {
+	tid := up.TransferID
+	stopped := rx.cfg.Ledger.Transfers.Cancelled(tid) || rx.cancelledByPeer(tid)
+	if keeper, ok := out.(Keeper); ok && !stopped && rx.cfg.Kept != nil && transfer.IsNetwork(err) {
+		ko, kerr := keeper.Keep()
+		if kerr == nil {
+			k, kerr := rx.cfg.Kept.Keep(prev, up, ko, out.Location())
+			if kerr == nil {
+				err = fmt.Errorf("%w: %v; what arrived is kept for %s so the sender can resume", transfer.ErrInterrupted, err, resumeKeepFor)
+				rx.failIncoming(w, r, up, err)
+				rx.cfg.Ledger.Publish(Event{Type: "kept", Data: k.view()})
+				return
+			}
+			// The record could not be written; Keep already removed what
+			// was stored.
+			if prev != nil {
+				rx.cfg.Kept.Remove(prev.ID)
+				rx.publishKeptGone(prev.ID, "it could not be kept")
+			}
+			rx.failIncoming(w, r, up, err)
+			return
+		}
+	}
+	out.Abort()
+	if prev != nil {
+		rx.cfg.Kept.Remove(prev.ID) // Abort removed what it kept
+		rx.publishKeptGone(prev.ID, "the transfer failed")
+	}
+	rx.failIncoming(w, r, up, rx.stopErr(tid, err))
+}
+
+// resumeKeepFor is how long a kept transfer waits, for messages.
+const resumeKeepFor = "24 hours"
+
+// HandleCancelNotice handles POST /api/recv/cancel: the sender gave up a
+// transfer it had sent an accepted offer for (protocol.CancelNotice, signed
+// with the key of that offer). A transfer still being received stops and
+// removes what it stored (history: cancelled by the sender); an unused
+// upload token is dropped; a kept transfer is discarded with what it kept.
+// Answers: 200, 400 for a malformed notice, 403 for a bad signature, 404
+// when nothing of that transfer is left.
+func (rx *Receiver) HandleCancelNotice(w http.ResponseWriter, r *http.Request) {
+	if !rx.cfg.AllowOffer(RemoteIP(r)) {
+		http.Error(w, "too many requests; slow down", http.StatusTooManyRequests)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	decoded := LimitOfferRead(w, rx.cfg.OfferReadTimeout)
+	var c protocol.CancelNotice
+	if err := json.NewDecoder(r.Body).Decode(&c); err != nil || !protocol.ValidID(c.TransferID) {
+		http.Error(w, "bad cancel notice", http.StatusBadRequest)
+		return
+	}
+	decoded()
+	self := rx.cfg.Identity.Fingerprint()
+	verify := func(pubB64 string) bool {
+		pub, err := node.DecodePublicKey(pubB64)
+		return err == nil && protocol.VerifyCancel(pub, self, &c) == nil
+	}
+	tid := c.TransferID
+
+	rx.mu.Lock()
+	act := rx.active[tid]
+	var token string
+	var pend *Upload
+	for k, u := range rx.uploads {
+		if u.TransferID == tid && !u.Drop {
+			token, pend = k, u
+			break
+		}
+	}
+	rx.mu.Unlock()
+	switch {
+	case act != nil:
+		if !verify(act.SenderPub) {
+			http.Error(w, "bad cancel notice", http.StatusForbidden)
+			return
+		}
+		rx.mu.Lock()
+		rx.peerCancel[tid] = true
+		rx.mu.Unlock()
+		rx.cfg.Ledger.Transfers.Stop(tid)
+	case pend != nil:
+		if !verify(pend.SenderPub) {
+			http.Error(w, "bad cancel notice", http.StatusForbidden)
+			return
+		}
+		rx.mu.Lock()
+		delete(rx.uploads, token)
+		rx.mu.Unlock()
+		if pend.keptID != "" {
+			rx.discardKept(pend.keptID, "cancelled by the sender")
+		}
+	default:
+		var k *Kept
+		if rx.cfg.Kept != nil {
+			k = rx.cfg.Kept.ByTransfer(tid)
+		}
+		if k == nil {
+			http.Error(w, "no such transfer", http.StatusNotFound)
+			return
+		}
+		if !verify(k.SenderPub) {
+			http.Error(w, "bad cancel notice", http.StatusForbidden)
+			return
+		}
+		rx.discardKept(k.ID, "cancelled by the sender")
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// --- kept transfers ---
+
+// settleIdle is how long a receive of the same files must stand still
+// before a new offer of them stops it; settleWait bounds the wait for it
+// to end.
+const (
+	settleIdle = 3 * time.Second
+	settleWait = 10 * time.Second
+)
+
+// activeFor returns the peer receive in progress from sender key pub of
+// the manifest with hash mh, if any.
+func (rx *Receiver) activeFor(pub, mh string) *Upload {
+	rx.mu.Lock()
+	defer rx.mu.Unlock()
+	for _, up := range rx.active {
+		if up.SenderPub == pub && up.mh == mh {
+			return up
+		}
+	}
+	return nil
+}
+
+// settleActive lets a receive from sender key pub of the manifest with
+// hash mh end before a new offer of the same files is answered, so that
+// what it stored is kept and can be continued. A sender offers the same
+// files again only after it lost its connection, but this side may not
+// have seen the break yet: the receive gets settleIdle to end by itself,
+// and is then stopped as a lost connection if it moved no byte meanwhile.
+// One that still moves (the same files sent twice at once) is left alone.
+func (rx *Receiver) settleActive(pub, mh string) {
+	up := rx.activeFor(pub, mh)
+	if up == nil {
+		return
+	}
+	before := rx.sentOf(up.TransferID)
+	idle := time.NewTimer(settleIdle)
+	defer idle.Stop()
+	select {
+	case <-up.done:
+		return
+	case <-idle.C:
+	}
+	if rx.sentOf(up.TransferID) != before {
+		return
+	}
+	rx.cfg.Ledger.Transfers.Stop(up.TransferID)
+	wait := time.NewTimer(settleWait)
+	defer wait.Stop()
+	select {
+	case <-up.done:
+	case <-wait.C:
+	}
+}
+
+// sentOf is how many bytes transfer id has stored so far.
+func (rx *Receiver) sentOf(id string) int64 {
+	for _, t := range rx.cfg.Ledger.Transfers.List() {
+		if t.ID == id {
+			return t.Sent
+		}
+	}
+	return -1
+}
+
+// discardKept discards kept transfer id and reports it.
+func (rx *Receiver) discardKept(id, reason string) bool {
+	if rx.cfg.Kept == nil || !rx.cfg.Kept.Discard(id) {
+		return false
+	}
+	rx.publishKeptGone(id, reason)
+	return true
+}
+
+func (rx *Receiver) publishKeptGone(id, reason string) {
+	rx.cfg.Ledger.Publish(Event{Type: "kept_gone", Data: map[string]any{"id": id, "reason": reason}})
+}
+
+// KeptList lists the transfers kept for a resume, most recent first.
+func (rx *Receiver) KeptList() []KeptView {
+	if rx.cfg.Kept == nil {
+		return []KeptView{}
+	}
+	return rx.cfg.Kept.List()
+}
+
+// DiscardKept removes kept transfer id and what it kept (the person's
+// Discard). It reports false when there is no such kept transfer, or a
+// transfer is continuing it right now.
+func (rx *Receiver) DiscardKept(id string) bool { return rx.discardKept(id, "discarded") }
+
+// Sweep removes the kept transfers whose time is up, with what they kept.
+// Run it at start-up and every resume.SweepEvery.
+func (rx *Receiver) Sweep() {
+	if rx.cfg.Kept == nil {
+		return
+	}
+	for _, id := range rx.cfg.Kept.Sweep() {
+		rx.publishKeptGone(id, "expired")
+	}
 }
 
 // --- helpers ---

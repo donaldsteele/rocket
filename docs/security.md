@@ -41,11 +41,11 @@ Every HTTP route is listed once in a table (`internal/httpapi/server.go`) as
 either **LAN** or **local**:
 
 - **LAN** (any host): `GET /api/hello`, `POST /api/offer`, `POST /api/recv`,
-  the drop page and `POST /drop/offer`, `POST /drop/upload`, plus the static
-  files the drop page needs.
+  `POST /api/recv/cancel`, the drop page and `POST /drop/offer`,
+  `POST /drop/upload`, plus the static files the drop page needs.
 - **Local** (this computer only): the full UI, `GET /api/events`, peers,
   incoming offers, transfers, history, settings, trusted senders, accept, send,
-  relay, cancel and quit.
+  relay, cancel, resumable transfers with resume and discard, and quit.
 
 A local route answers **403** unless all of these hold:
 
@@ -105,6 +105,32 @@ transfer is encrypted to whoever answers on that address; pick peers from the
 list, or compare the fingerprint, when it matters. A fingerprint is 64 bits
 of a SHA-256 hash: making a different key with the same fingerprint would
 take about 2^64 attempts.
+
+### Someone interferes with an interrupted transfer (resume)
+
+When an accepted transfer breaks for a network reason, the receiver keeps
+what arrived for 24 hours and the sender offers the same files again; only
+the missing bytes are sent ([protocol.md](protocol.md#resume)).
+
+- Only bytes that passed authentication are kept, so a cut connection can
+  never leave altered content behind.
+- A kept transfer is continued without asking only by an offer signed with
+  the **same sender key** for the **same file list** (manifest hash). Anyone
+  else, or other files, gets the normal prompt. The resume point travels in
+  the signed reply, and the body may start only there or at the beginning,
+  so nobody can make the receiver write at an offset it did not offer.
+- The sender hashes the part of its own file that the receiver says it
+  holds and starts over when that does not match, so a file changed in the
+  meantime is not stitched together from old and new bytes.
+- A cancel on either side, a decline, a body that fails authentication or
+  does not match the offer never leaves anything kept. When the sender
+  gives up (cancel, a failure reading its files), it sends a cancel notice
+  signed with its key; a notice signed by anyone else is refused.
+- Kept data is visible: the part files stay in the download folder, the UI
+  lists kept transfers with a Discard button, and they are removed after
+  24 hours (swept at start-up and every hour). Someone who can cut your
+  connection can make rocket keep part files for up to a day, but no more
+  than you agreed to receive.
 
 ### Someone pretends to be a sender you trust (spoofing)
 
@@ -200,7 +226,8 @@ limits, manifest and path checks. The differences:
   tab, in a foreground service with an ongoing notification. Sending and
   discovery work with receiving off.
 - **Only the LAN surface.** The phone serves `GET /api/hello`,
-  `POST /api/offer` and `POST /api/recv`. There is no drop page, no control
+  `POST /api/offer`, `POST /api/recv` and `POST /api/recv/cancel`. There is
+  no drop page, no control
   API and no UI over HTTP; the app itself is the UI. It listens on TCP 29005,
   or another free port when that is taken (announced in the beacon and NSD).
 - **Offers.** Each offer raises a notification (Accept, Decline) and a sheet
@@ -245,8 +272,9 @@ still:
   public), and which hosts send to which, when and how much,
 - read and change files dropped from a **browser** (the drop page is not
   encrypted), and copy a drop cookie,
-- block or cut off a transfer (it then fails; nothing partial is kept as a
-  finished file).
+- block or cut off a transfer (the sender retries; the receiver keeps the
+  authenticated part as a `.rocket-part` file for up to 24 hours so the
+  transfer can resume, and never as a finished file).
 
 They cannot read or undetectably change the contents of a transfer between
 rocket apps, make your computer accept an offer from a trusted sender without
@@ -260,14 +288,17 @@ archive first.
 
 ## Other limits
 
-- **No resume.** An interrupted transfer starts again from the beginning.
+- **Resume needs both ends.** Browser drops and uploads relayed from the
+  browser UI do not resume, and the Android app does not keep a broken
+  receive yet (the sender's retry starts that transfer over).
 - **Unsigned binaries.** Release zips are not code-signed or notarized. Check
   them against `SHA256SUMS` from the release page. (The Android APK is signed;
   see [Android](#android).)
 - **Firewall.** rocket needs TCP 29005 and UDP 29006 (and UDP 5353 for mDNS)
   open on private networks. Do not open them on public networks.
 - **Your data folder** (`node.key`, `trusted.json`, `drop_tokens.json`,
-  `settings.json`, `history.jsonl`) is protected only by your user account's
+  `settings.json`, `history.jsonl`, and the `resume` and `outgoing` records
+  of interrupted transfers) is protected only by your user account's
   file permissions. Anyone who can read `node.key` can act as this host.
 
 ## Reporting a problem

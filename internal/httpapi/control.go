@@ -11,6 +11,7 @@ import (
 	"github.com/donaldsteele/rocket/internal/discovery"
 	"github.com/donaldsteele/rocket/internal/history"
 	"github.com/donaldsteele/rocket/internal/protocol"
+	"github.com/donaldsteele/rocket/internal/receiver"
 	"github.com/donaldsteele/rocket/internal/transfer"
 )
 
@@ -113,14 +114,93 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	tid := s.startSend(plan, target, peerName, body.Paths)
+	writeJSON(w, map[string]any{"ok": true, "transfer_id": tid, "files": transfer.Files(plan.Manifest), "total": plan.Manifest.Total})
+}
+
+// startSend sends plan (built from paths) to target in the background and
+// returns its transfer ID. After a network failure it retries and resumes;
+// when it gives up it is kept in the outbox for POST /api/resume.
+func (s *Server) startSend(plan *transfer.Plan, target transfer.Target, peerName string, paths []string) string {
 	tid := randToken()
-	name := transfer.Label(plan.Manifest)
 	ctx := s.startOutgoing(context.Background(), tid, peerName, target, plan.Manifest, nil)
 	go func() {
-		err := transfer.SendPlan(ctx, s.id, target, plan, s.progressFn(tid, name, "out"))
-		s.publishSent(tid, name, target, plan.Manifest, err)
+		_ = s.ledger.Send(ctx, s.id, receiver.Outgoing{
+			ID: tid, PeerName: peerName, Target: target, Manifest: plan.Manifest, Open: plan.Open,
+			Resumable: true, Delays: s.retryDelays, Outbox: s.outbox, Paths: paths,
+		})
 	}()
+	return tid
+}
+
+// handleResumable lists what can be resumed: GET /api/resumable gives
+// {"outgoing": [interrupted sends], "incoming": [transfers kept here]}.
+func (s *Server) handleResumable(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, map[string]any{"outgoing": s.outbox.List(), "incoming": s.rx.KeptList()})
+}
+
+// handleResume sends an interrupted send again: POST /api/resume
+// {transfer_id}. The files are listed again from the paths it was given;
+// when they are unchanged the receiver continues where it stopped. The peer
+// is looked up by fingerprint first (it may have a new address). It answers
+// {ok, transfer_id} with the new transfer's ID.
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	id, ok := transferIDBody(w, r)
+	if !ok {
+		return
+	}
+	rec, ok := s.outbox.Get(id)
+	if !ok {
+		http.Error(w, "nothing to resume with that id", http.StatusNotFound)
+		return
+	}
+	plan, err := transfer.PlanPaths(rec.Paths)
+	if err != nil {
+		http.Error(w, "cannot send these files again: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	target := transfer.Target{Addr: rec.Addr, FP: rec.PeerFP}
+	if p, found := s.reg.Find(rec.PeerFP); rec.PeerFP != "" && found {
+		target.Addr = p.Addr
+	}
+	_ = s.outbox.Remove(id)
+	tid := s.startSend(plan, target, rec.PeerName, rec.Paths)
 	writeJSON(w, map[string]any{"ok": true, "transfer_id": tid, "files": transfer.Files(plan.Manifest), "total": plan.Manifest.Total})
+}
+
+// handleDiscard forgets something resumable: POST /api/discard
+// {transfer_id}. An interrupted send is dropped (and its receiver told to
+// drop what it kept); a transfer kept here is removed with its files.
+func (s *Server) handleDiscard(w http.ResponseWriter, r *http.Request) {
+	id, ok := transferIDBody(w, r)
+	if !ok {
+		return
+	}
+	if rec, found := s.outbox.Get(id); found {
+		if err := receiver.DiscardOutgoing(s.outbox, s.id, rec); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
+	if !s.rx.DiscardKept(id) {
+		http.Error(w, "nothing to discard with that id", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// transferIDBody reads {transfer_id} from a control request.
+func transferIDBody(w http.ResponseWriter, r *http.Request) (string, bool) {
+	var body struct {
+		TransferID string `json:"transfer_id"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil || !protocol.ValidID(body.TransferID) {
+		http.Error(w, "need transfer_id", http.StatusBadRequest)
+		return "", false
+	}
+	return body.TransferID, true
 }
 
 // publishSent ends an outgoing transfer: history, then "sent" on success

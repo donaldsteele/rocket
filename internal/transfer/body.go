@@ -123,6 +123,9 @@ func writeBody(w io.Writer, m protocol.Manifest, s Start, open OpenFunc, tr *tra
 		skip := int64(0)
 		if uint32(i) == s.Entry {
 			skip = int64(s.Offset)
+			if skip > 0 && skip == e.Size {
+				continue // the receiver has all of it
+			}
 		}
 		if err := writeEntry(w, i, e, skip, open, tr); err != nil {
 			return err
@@ -158,40 +161,90 @@ func writeEntry(w io.Writer, i int, e protocol.Entry, skip int64, open OpenFunc,
 }
 
 // ReceiveBody stores a decrypted protocol v2 body through x, which was
-// prepared for m: the start header must be the beginning of the transfer
-// (resuming at another point is not supported by this receive path), then
-// every file's bytes in manifest order, and nothing after them. src must
-// return io.EOF only at an authenticated end (a securestream.Reader does).
-// Any failure aborts x, which removes everything stored. m must already be
-// validated.
+// prepared for m: the start header must be the beginning of the transfer,
+// then every file's bytes in manifest order, and nothing after them. src
+// must return io.EOF only at an authenticated end (a securestream.Reader
+// does). Any failure aborts x, which removes everything stored. m must
+// already be validated.
 func ReceiveBody(x EntryWriter, m protocol.Manifest, src io.Reader) (Result, error) {
-	fail := func(err error) (Result, error) {
+	s, err := ReadStart(src)
+	if err == nil {
+		err = CheckStart(s, nil)
+	}
+	if err != nil {
 		x.Abort()
 		return Result{}, err
 	}
-	s, err := ReadStart(src)
+	res, err := ReceiveFrom(x, m, 0, s, src)
 	if err != nil {
-		return fail(err)
+		x.Abort()
 	}
-	if err := CheckStart(s, nil); err != nil {
-		return fail(err)
+	return res, err
+}
+
+// ReceiveFrom stores the rest of a decrypted body, after its start header
+// s, through x, beginning with entry from: entries before it were stored by
+// an earlier attempt that x continues. Between from and s.Entry there may
+// only be folders; entry s.Entry gives only its bytes from s.Offset on (x
+// holds the bytes before). Then nothing may follow. It does not abort x on
+// failure: the caller decides whether to abort or keep what was stored.
+func ReceiveFrom(x EntryWriter, m protocol.Manifest, from int, s Start, src io.Reader) (Result, error) {
+	if from < 0 || from > len(m.Entries) || !validStart(m, s) {
+		return Result{}, fmt.Errorf("%w: entry %d offset %d", ErrStart, s.Entry, s.Offset)
 	}
-	for i, e := range m.Entries {
+	if s != (Start{}) {
+		e := int(s.Entry)
+		// Behind from, the start can only be the end of a complete file.
+		if e < from && s.Offset != uint64(m.Entries[e].Size) {
+			return Result{}, fmt.Errorf("%w: entry %d offset %d", ErrStart, s.Entry, s.Offset)
+		}
+		for i := from; i < e; i++ {
+			if m.Entries[i].Mode&protocol.ModeDir == 0 {
+				return Result{}, fmt.Errorf("%w: entry %d offset %d", ErrStart, s.Entry, s.Offset)
+			}
+		}
+	}
+	for i := from; i < len(m.Entries); i++ {
+		e := m.Entries[i]
 		var r io.Reader = strings.NewReader("")
 		if e.Mode&protocol.ModeDir == 0 {
-			r = io.LimitReader(src, e.Size)
+			n := e.Size
+			if uint32(i) == s.Entry {
+				n -= int64(s.Offset)
+			}
+			r = io.LimitReader(src, n)
 		}
 		if err := x.Write(i, r); err != nil {
-			return fail(err)
+			return Result{}, err
 		}
 	}
 	var one [1]byte
 	n, err := io.ReadFull(src, one[:])
 	switch {
 	case n > 0:
-		return fail(fmt.Errorf("%w: more data than offered", ErrSize))
+		return Result{}, fmt.Errorf("%w: more data than offered", ErrSize)
 	case err != io.EOF:
-		return fail(err)
+		return Result{}, err
 	}
 	return x.Finish()
+}
+
+// Before returns the bytes of m's files before s, and how many of its
+// files are complete before s.
+func Before(m protocol.Manifest, s Start) (bytes int64, files int) {
+	for i, e := range m.Entries {
+		if e.Mode&protocol.ModeDir != 0 || uint32(i) > s.Entry {
+			continue
+		}
+		if uint32(i) == s.Entry {
+			bytes += int64(s.Offset)
+			if s.Offset == uint64(e.Size) && s != (Start{}) {
+				files++
+			}
+			continue
+		}
+		bytes += e.Size
+		files++
+	}
+	return bytes, files
 }

@@ -1,9 +1,9 @@
 package receiver
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/donaldsteele/rocket/internal/protocol"
@@ -34,7 +34,9 @@ type Output interface {
 // each top-level item gets a fresh name ("photos", then "photos (1)"),
 // names are sanitized, files are written as "<name>.rocket-part" and renamed
 // when complete, and a failed transfer removes what it wrote (see
-// transfer.ReceiveFile and transfer.Extractor).
+// transfer.Extractor). It is a ResumableSink: a transfer broken by a network
+// failure can leave its folders, finished files and part file in place,
+// described by a transfer.ExtractorState, to be continued later.
 type FSSink struct {
 	// Dir returns the download folder, read once per transfer.
 	Dir func() string
@@ -43,57 +45,59 @@ type FSSink struct {
 // Begin implements Sink.
 func (s FSSink) Begin(_ string, m protocol.Manifest, progress transfer.ProgressFn) (Output, error) {
 	dir := s.Dir()
-	if m.Kind == protocol.KindFile {
-		return &fsFile{dir: dir, m: m, progress: progress}, nil
-	}
-	return fsTree{Extractor: transfer.NewExtractor(dir, m, progress), dir: dir}, nil
+	return fsOut{Extractor: transfer.NewExtractor(dir, m, progress), dir: dir}, nil
 }
 
-// fsTree writes a kind:multi transfer with a transfer.Extractor.
-type fsTree struct {
+// Resume implements ResumableSink.
+func (FSSink) Resume(_ string, m protocol.Manifest, state json.RawMessage, progress transfer.ProgressFn) (Output, error) {
+	var st transfer.ExtractorState
+	if err := json.Unmarshal(state, &st); err != nil {
+		return nil, err
+	}
+	x, err := transfer.ResumeExtractor(st, m, progress)
+	if err != nil {
+		return nil, err
+	}
+	return fsOut{Extractor: x, dir: st.Dir}, nil
+}
+
+// Check implements ResumableSink.
+func (FSSink) Check(state json.RawMessage) error {
+	var st transfer.ExtractorState
+	if err := json.Unmarshal(state, &st); err != nil {
+		return err
+	}
+	return transfer.CheckExtractorState(st)
+}
+
+// Discard implements ResumableSink.
+func (FSSink) Discard(state json.RawMessage) {
+	var st transfer.ExtractorState
+	if json.Unmarshal(state, &st) == nil {
+		transfer.DiscardExtractor(st)
+	}
+}
+
+// fsOut writes a transfer with a transfer.Extractor.
+type fsOut struct {
 	*transfer.Extractor
 	dir string
 }
 
-func (t fsTree) Location() string { return t.dir }
+func (o fsOut) Location() string { return o.dir }
 
-// fsFile writes the one file of a kind:file transfer with
-// transfer.ReceiveFile.
-type fsFile struct {
-	dir      string
-	m        protocol.Manifest
-	progress transfer.ProgressFn
-	dest     string
-}
-
-func (f *fsFile) Write(i int, src io.Reader) error {
-	if i != 0 || f.dest != "" {
-		return fmt.Errorf("%w: entry %d out of order", transfer.ErrArchive, i)
+// Keep implements Keeper.
+func (o fsOut) Keep() (KeptOutput, error) {
+	st, pt, err := o.Extractor.Keep()
+	if err != nil {
+		return KeptOutput{}, err
 	}
-	e := f.m.Entries[0]
-	dest, err := transfer.ReceiveFile(f.dir, e.Path, e.Size, src, f.progress)
-	f.dest = dest
-	return err
-}
-
-func (f *fsFile) Finish() (transfer.Result, error) {
-	if f.dest == "" {
-		return transfer.Result{}, fmt.Errorf("%w: got 0 of 1 entries", transfer.ErrArchive)
+	b, err := json.Marshal(st)
+	if err != nil {
+		return KeptOutput{}, err
 	}
-	return transfer.Result{Paths: []string{f.dest}, Files: 1, Bytes: f.m.Entries[0].Size}, nil
+	return KeptOutput{Next: st.Next, Point: pt, Done: st.Sent, State: b}, nil
 }
-
-// Abort removes the file once it is complete (ReceiveFile removes its part
-// file itself when it fails): the body can still fail after the file's last
-// byte, at its authenticated end.
-func (f *fsFile) Abort() {
-	if f.dest != "" {
-		os.Remove(f.dest)
-		f.dest = ""
-	}
-}
-
-func (f *fsFile) Location() string { return f.dir }
 
 // Files stores one transfer's folders and files one at a time, by relative
 // path: the shape a platform without a plain download folder (Android's

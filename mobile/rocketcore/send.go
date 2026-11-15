@@ -83,6 +83,13 @@ func (n *Node) SendNamed(addr, fp, shown string, src Source, l ProgressListener)
 		}
 		return "", fmt.Errorf("%q is not a host:port address", addr)
 	}
+	return n.startSend(target, peerName, src, l)
+}
+
+// startSend builds the manifest of src and sends it to target in the
+// background; l gets the transfer's events. After a network failure the
+// send retries and resumes; when it gives up it is kept for Resume.
+func (n *Node) startSend(target transfer.Target, peerName string, src Source, l ProgressListener) (string, error) {
 	items := make([]transfer.RelItem, src.Count())
 	for i := range items {
 		it := transfer.RelItem{Path: src.Path(i), Dir: src.IsDir(i)}
@@ -115,6 +122,7 @@ func (n *Node) SendNamed(addr, fp, shown string, src Source, l ProgressListener)
 	name := transfer.Label(m)
 	n.mu.Lock()
 	n.sends[tid] = l
+	delays := n.retryDelays
 	n.mu.Unlock()
 	ctx := n.ledger.Transfers.Start(context.Background(), transfer.Info{
 		ID: tid, Dir: history.DirOut, Name: name, PeerName: peerName, PeerFP: target.FP,
@@ -122,16 +130,40 @@ func (n *Node) SendNamed(addr, fp, shown string, src Source, l ProgressListener)
 	}, nil)
 	id := n.identity()
 	go func() {
-		err := transfer.SendManifest(ctx, id, target, m, open, n.ledger.Progress(tid, name, "out"))
-		if _, err = n.ledger.End(tid, err); err == nil {
-			n.ledger.Publish(receiver.Event{Type: "sent", Data: map[string]any{
-				"transfer_id": tid, "name": name, "to": target.Addr, "files": transfer.Files(m), "bytes": m.Total,
-			}})
-		}
+		_ = n.ledger.Send(ctx, id, receiver.Outgoing{
+			ID: tid, PeerName: peerName, Target: target, Manifest: m, Open: open,
+			Resumable: true, Delays: delays, Outbox: n.outbox,
+		})
 		n.mu.Lock()
 		delete(n.sends, tid)
 		n.mu.Unlock()
 	}()
+	return tid, nil
+}
+
+// Resume sends interrupted send id again, to the same peer (looked up by
+// fingerprint first, as its address may have changed), with src: the same
+// files, which the app opens again (from the content URIs it kept, or
+// picked again). When the files are unchanged, the receiver continues
+// where it stopped; otherwise they go again from the start. It returns the
+// new transfer's ID; l gets its events.
+func (n *Node) Resume(id string, src Source, l ProgressListener) (string, error) {
+	if src == nil || l == nil {
+		return "", errors.New("nothing to send or no listener")
+	}
+	rec, ok := n.outbox.Get(id)
+	if !ok {
+		return "", errors.New("nothing to resume with that id")
+	}
+	target := transfer.Target{Addr: rec.Addr, FP: rec.PeerFP}
+	if p, found := n.registry().Find(rec.PeerFP); rec.PeerFP != "" && found {
+		target.Addr = p.Addr
+	}
+	tid, err := n.startSend(target, rec.PeerName, src, l)
+	if err != nil {
+		return "", err
+	}
+	_ = n.outbox.Remove(id)
 	return tid, nil
 }
 

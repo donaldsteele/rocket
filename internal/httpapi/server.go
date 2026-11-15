@@ -6,11 +6,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/donaldsteele/rocket/internal/config"
 	"github.com/donaldsteele/rocket/internal/discovery"
@@ -19,6 +21,7 @@ import (
 	"github.com/donaldsteele/rocket/internal/peers"
 	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/receiver"
+	"github.com/donaldsteele/rocket/internal/resume"
 	"github.com/donaldsteele/rocket/internal/transfer"
 )
 
@@ -40,6 +43,11 @@ type Server struct {
 	offers   *rateLimiter // offers per remote IP (/api/offer, /drop/offer)
 	ledger   *receiver.Ledger
 	rx       *receiver.Receiver
+	kept     *receiver.KeptStore // received transfers kept for a resume (<data-dir>/resume)
+	outbox   *resume.Outbox      // sends that gave up after their retries (<data-dir>/outgoing)
+	// retryDelays are the waits between a send's retries; nil means
+	// transfer.RetryDelays (tests shorten them).
+	retryDelays []time.Duration
 	// Version is reported by /api/hello and /api/self.
 	Version string
 	// OS is reported by /api/hello.
@@ -100,6 +108,13 @@ func New(cfg *config.Config, id *node.Identity, trust *peers.Store, reg *discove
 		quit:     make(chan struct{}),
 	}
 	s.ledger = &receiver.Ledger{Transfers: s.xfers, History: hist, Events: s.hub.publish}
+	sink := receiver.FSSink{Dir: s.downloadDir}
+	if s.kept, err = receiver.OpenKept(cfg.DataDir, sink); err != nil {
+		return nil, err
+	}
+	if s.outbox, err = resume.OpenOutbox(cfg.DataDir); err != nil {
+		return nil, err
+	}
 	s.rx = receiver.New(receiver.Config{
 		Identity: id,
 		Trust:    trust,
@@ -107,17 +122,41 @@ func New(cfg *config.Config, id *node.Identity, trust *peers.Store, reg *discove
 		// The UI learns of an offer from the "offer" event and answers with
 		// POST /api/accept.
 		Decider:          receiver.DeciderFunc(func(o IncomingOffer) { s.hub.publish(Event{Type: "offer", Data: o}) }),
-		Sink:             receiver.FSSink{Dir: s.downloadDir},
+		Sink:             sink,
 		Hello:            func() (string, string) { return s.Version, s.OS },
 		AutoAccept:       s.autoAccept,
 		AllowOffer:       func(ip string) bool { return s.offers.Allow(ip) },
 		OfferReadTimeout: offerReadTimeout,
+		Kept:             s.kept,
 	})
+	s.sweep() // what expired while rocket was not running
 	return s, nil
 }
 
 // Quit returns a channel closed when the UI requests shutdown.
 func (s *Server) Quit() <-chan struct{} { return s.quit }
+
+// sweep removes the kept transfers and interrupted sends whose 24 hours
+// are up (with what they kept).
+func (s *Server) sweep() {
+	s.rx.Sweep()
+	s.outbox.Sweep()
+}
+
+// RunSweeper sweeps expired kept transfers and interrupted sends every
+// resume.SweepEvery until ctx ends (New already swept once).
+func (s *Server) RunSweeper(ctx context.Context) {
+	tick := time.NewTicker(resume.SweepEvery)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			s.sweep()
+		}
+	}
+}
 
 // routes is the single routing table. Every route is LAN (any host) or Local
 // (loopback + Host allowlist + CSRF on non-GET); the static tree classifies
@@ -128,6 +167,7 @@ func (s *Server) routes() []route {
 		{"GET /api/hello", surfaceLAN, s.rx.HandleHello},
 		{"POST /api/offer", surfaceLAN, s.rx.HandleOffer},
 		{"POST /api/recv", surfaceLAN, s.rx.HandleRecv},
+		{"POST /api/recv/cancel", surfaceLAN, s.rx.HandleCancelNotice},
 		// LAN surface: browser drop flow.
 		{"POST /drop/offer", surfaceLAN, s.handleDropOffer},
 		{"POST /drop/upload", surfaceLAN, s.handleDropUpload},
@@ -142,6 +182,9 @@ func (s *Server) routes() []route {
 		{"POST /api/relay", surfaceLocal, s.handleRelay},
 		{"GET /api/transfers", surfaceLocal, s.handleTransfers},
 		{"POST /api/cancel", surfaceLocal, s.handleCancel},
+		{"GET /api/resumable", surfaceLocal, s.handleResumable},
+		{"POST /api/resume", surfaceLocal, s.handleResume},
+		{"POST /api/discard", surfaceLocal, s.handleDiscard},
 		{"GET /api/history", surfaceLocal, s.handleHistory},
 		{"POST /api/history/clear", surfaceLocal, s.handleHistoryClear},
 		{"GET /api/settings", surfaceLocal, s.handleGetSettings},

@@ -80,7 +80,8 @@ type receiving struct {
 }
 
 // StartReceiver serves the peer protocol (GET /api/hello, POST /api/offer,
-// POST /api/recv; nothing else) on TCP port, or on a free port when port is
+// POST /api/recv, POST /api/recv/cancel; nothing else) on TCP port, or on a
+// free port when port is
 // taken or 0, and announces this host on the beacon. It returns the port it
 // listens on, which NSD must advertise. Offers go to d, accepted transfers
 // to s, and the receiver's events to l, until StopReceiver.

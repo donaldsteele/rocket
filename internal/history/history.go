@@ -39,6 +39,9 @@ const (
 	ResultCancelled Result = "cancelled"
 	ResultError     Result = "error"
 	ResultTimeout   Result = "timeout"
+	// ResultInterrupted: an accepted peer transfer broke for a network reason
+	// (after the sender's retries). It can be resumed for 24 hours.
+	ResultInterrupted Result = "interrupted"
 )
 
 // Entry is one finished transfer.

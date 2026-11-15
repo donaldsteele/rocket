@@ -48,12 +48,35 @@
 //	    "" falls back to the discovered name, then to addr. Discovery may
 //	    have dropped the peer while the person was picking files.
 //	Cancel(transferID) bool             stop a send or receive, or decline a waiting offer
-//	TransfersJSON() string              transfers in flight
+//	TransfersJSON() string              transfers in flight (state "reconnecting" with
+//	                                    attempt/attempts while a broken send waits to retry)
+//
+// # Resume
+//
+// A send that breaks for a network reason after the receiver accepted it is
+// offered again after 2, 5, 10, 20 and 30 seconds ("retrying" events
+// {transfer_id, attempt, attempts, delay_ms, error}); the receiver continues
+// where it stopped when the files are unchanged. When the last retry fails
+// the send ends with an "error" event whose result is "interrupted", and is
+// kept for 24 hours:
+//
+//	ResumableJSON() string              {"outgoing": [{transfer_id, name, peer_name, peer_fp,
+//	                                    addr, files, bytes, error, interrupted, expires}],
+//	                                    "incoming": []} (GET /api/resumable's shape)
+//	Resume(transferID, Source, ProgressListener) (newTransferID, error)
+//	    send it again with the same files (the app keeps their content URIs,
+//	    or asks for them again)
+//	Discard(transferID) error           forget it and tell the receiver to drop what it kept
+//
+// Receiving on Android keeps nothing of a broken transfer yet (the Sink
+// cannot continue a file): it is removed as before, and the sender's retry
+// is a new offer.
 //
 // # Receiving
 //
 //	StartReceiver(port, Decider, Sink, EventListener) (boundPort, error)
-//	    serve GET /api/hello, POST /api/offer and POST /api/recv on port (a
+//	    serve GET /api/hello, POST /api/offer, POST /api/recv and POST
+//	    /api/recv/cancel (a sender's cancel notice) on port (a
 //	    free port when it is taken; 0 picks one) and announce on the beacon.
 //	    Decider.Ask(offerJSON) shows an offer; answer with Answer. Every
 //	    other event (offer_gone, progress, done, error, cancelled) goes to

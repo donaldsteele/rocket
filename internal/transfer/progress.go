@@ -34,6 +34,13 @@ func newTracker(fn ProgressFn, total int64, files int) *tracker {
 	return &tracker{fn: fn, p: Progress{Total: total, Files: files}}
 }
 
+// from starts the count at a resume point: sent bytes and done files
+// already moved in an earlier attempt.
+func (t *tracker) from(sent int64, done int) *tracker {
+	t.p.Sent, t.p.FileIndex = sent, done
+	return t
+}
+
 // file marks the start of the next file.
 func (t *tracker) file(path string) {
 	t.p.File = path

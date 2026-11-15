@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/donaldsteele/rocket/internal/config"
 	"github.com/donaldsteele/rocket/internal/discovery"
@@ -16,6 +17,7 @@ import (
 	"github.com/donaldsteele/rocket/internal/peers"
 	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/receiver"
+	"github.com/donaldsteele/rocket/internal/resume"
 	"github.com/donaldsteele/rocket/internal/transfer"
 )
 
@@ -47,14 +49,16 @@ type Node struct {
 	hist     *history.Store
 	settings *config.SettingsStore
 	ledger   *receiver.Ledger
+	outbox   *resume.Outbox // sends that gave up after their retries
 
-	mu         sync.Mutex
-	beaconPort int
-	reg        *discovery.Registry // made on first use (registryLocked)
-	disc       *discovering
-	recv       *receiving
-	sends      map[string]ProgressListener // running sends, by transfer ID
-	events     EventListener               // the receiver's, while it runs
+	mu          sync.Mutex
+	retryDelays []time.Duration // nil: transfer.RetryDelays (tests shorten them)
+	beaconPort  int
+	reg         *discovery.Registry // made on first use (registryLocked)
+	disc        *discovering
+	recv        *receiving
+	sends       map[string]ProgressListener // running sends, by transfer ID
+	events      EventListener               // the receiver's, while it runs
 }
 
 // NewNode opens (creating on first run) the identity, trust store, history
@@ -83,11 +87,16 @@ func NewNode(dataDir, name, version string) (*Node, error) {
 	// A damaged settings.json falls back to the defaults; the next save
 	// replaces it.
 	settings, _ := config.OpenSettings(dataDir)
+	outbox, err := resume.OpenOutbox(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	outbox.Sweep()
 	if version == "" {
 		version = "dev"
 	}
 	n := &Node{
-		version: version, trust: trust, hist: hist, settings: settings,
+		version: version, trust: trust, hist: hist, settings: settings, outbox: outbox,
 		beaconPort: DefaultBeaconPort,
 		sends:      map[string]ProgressListener{},
 	}
@@ -173,6 +182,28 @@ func (n *Node) Revoke(fp string) error {
 		return errors.New("not a trusted sender")
 	}
 	return n.trust.Revoke(fp)
+}
+
+// ResumableJSON lists what can be resumed, in the shape of desktop rocket's
+// GET /api/resumable: {"outgoing": [interrupted sends: {transfer_id, name,
+// peer_name, peer_fp, addr, files, bytes, error, interrupted, expires,
+// ...}], "incoming": [transfers kept on this device]}. Resume or Discard an
+// outgoing one by its transfer_id. This core keeps no incoming transfers
+// yet (the app's MediaStore sink cannot continue a file), so "incoming" is
+// empty.
+func (n *Node) ResumableJSON() string {
+	n.outbox.Sweep()
+	return toJSON(map[string]any{"outgoing": n.outbox.List(), "incoming": []receiver.KeptView{}})
+}
+
+// Discard forgets interrupted send id and tells its receiver, if it can be
+// reached, to drop what it kept.
+func (n *Node) Discard(id string) error {
+	rec, ok := n.outbox.Get(id)
+	if !ok {
+		return errors.New("nothing to discard with that id")
+	}
+	return receiver.DiscardOutgoing(n.outbox, n.identity(), rec)
 }
 
 // TransfersJSON lists the transfers in flight, oldest first.

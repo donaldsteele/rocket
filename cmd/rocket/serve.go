@@ -135,6 +135,7 @@ func (rs *runtimeState) serve(openBrowser bool) int {
 		}
 	}()
 	stopMDNS := rs.startMDNS(ctx, true, os.Stdout)
+	go srv.RunSweeper(ctx) // expired kept transfers and interrupted sends
 
 	fmt.Printf("rocket %s\n", buildinfo.Version)
 	fmt.Printf("  name:        %s\n", rs.id.Name)

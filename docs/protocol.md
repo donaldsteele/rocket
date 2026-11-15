@@ -113,6 +113,12 @@ sender                                   receiver
                     ◀──────────────────  {"ok": true}
 ```
 
+If the connection breaks after the offer was accepted, the receiver keeps
+what arrived and the sender offers the same files again; the reply then
+carries a resume point and only the missing bytes are sent (see
+[Resume](#resume)). A sender that gives up a transfer tells the receiver
+with a signed cancel notice (`POST /api/recv/cancel`), so nothing is kept.
+
 A host can be addressed by its full fingerprint, by name or fingerprint prefix
 (all from discovery), or directly as `host:port`. A full 16-hex fingerprint
 matches only the peer with exactly that fingerprint, never a name (names are
@@ -235,9 +241,11 @@ up, so a flood of offers can delay offers but never make a replay possible.
 
 A sender is **trusted** when its fingerprint is in the trust store **and** its
 public key equals the pinned key. If it is trusted and *auto-accept trusted
-senders* is on (the default), the offer is accepted at once. Otherwise the
-person is asked (UI, tray badge, phone notification) and the request
-long-polls for up to 2 minutes.
+senders* is on (the default), the offer is accepted at once. An offer that
+continues a kept transfer (same sender key, same manifest hash; see
+[Resume](#resume)) is also accepted at once, whatever the setting: the
+person already accepted it. Otherwise the person is asked (UI, tray badge,
+phone notification) and the request long-polls for up to 2 minutes.
 
 "Always accept from this host" pins `{fingerprint, name, pub, approved_at}`
 in `trusted.json`.
@@ -303,9 +311,10 @@ protects two bodies.
 - The token is one-shot, valid for 10 minutes, and only from the IP that made
   the offer. Otherwise: **403**.
 - The body is the plaintext below, encrypted as a securestream under the
-  body key. `Content-Length`, when sent, must be exactly the sealed size
-  (rocket always sends it); a chunked body is accepted too. The body may be
-  at most that size.
+  body key. `Content-Length`, when sent, must be exactly the sealed size of
+  the body for its start point: the whole transfer, or from the offered
+  resume point (rocket always sends it); a chunked body is accepted too. The
+  body may be at most the sealed size of the whole transfer.
 
 ### Plaintext
 
@@ -356,17 +365,171 @@ is written into or over. Windows reserved names (including `COM¹`-style
 superscript forms), trailing dots and spaces, control characters and invisible
 format characters (bidi overrides, zero-width spaces) are sanitized, and a name
 longer than 235 bytes is shortened (keeping its extension) so the part file
-and a ` (n)` suffix still fit the 255-byte name limit. On any failure,
-including a bad frame or a bad end after the last file was complete, or on
-cancel, everything the transfer created is removed.
+and a ` (n)` suffix still fit the 255-byte name limit. On a cancel (by
+either side) and on any failure other than a network failure, including a
+bad frame or a bad end after the last file was complete, everything the
+transfer created is removed, including what an earlier attempt kept. After
+a network failure the receiver keeps what arrived (see [Resume](#resume)).
 
 Answers: **200** `{"ok":true}`; **400** when the body does not match the offer
 (sizes, start point) or the stream is bad (authentication, truncation,
-oversized frame, trailing data); **410** when the receiving person
-cancelled; **500** on a disk error. The 410 may arrive while the sender is
+oversized frame, trailing data); **409** when the kept part a resume point
+referred to is gone (discarded or being continued by another upload);
+**410** when the receiving person cancelled, or the sender sent a cancel
+notice; **500** on a disk error. The 410 may arrive while the sender is
 still writing the body; it carries `Connection: close`, the receiver drops
 the rest of the body for up to 2 s and then closes the connection, so the
 sender should stop writing once it has the answer.
+
+## Resume
+
+A transfer that breaks for a **network reason** after the receiver accepted
+it is continued instead of starting over.
+
+### What counts as a network failure
+
+The connection is refused, reset, closed or lost, a read or write times out,
+or the body ends before its final frame (truncation). Both sides also treat
+**60 seconds without a single byte moving** as a lost connection (the sender
+watches what its upload writes, the receiver keeps a read deadline 60 s
+ahead while data comes in), so a silent network drop is noticed too.
+
+A cancel by either side, a decline, a frame that fails authentication, a
+body that does not match the offer, a disk error and a failure reading the
+sender's own files are **not** network failures: nothing is kept.
+
+### Receiver: kept transfers
+
+When a peer upload breaks for a network reason, the receiver keeps what it
+stored, in place in the download folder: the folders made, the files
+already complete (renamed to their final names) and the `.rocket-part` file
+of the file in flight. Every byte kept was authenticated before it was
+written. A record in `<data-dir>/resume/<id>.json` (mode 0600) holds the
+sender's fingerprint and its public key at the time, the manifest and its
+hash, the paths created, how many entries are complete, how many bytes of
+the current one are stored, and the resume point with its hash. History
+records the attempt as `"result": "interrupted"`.
+
+A kept transfer lives **24 hours** from its last interruption. Expired ones
+are removed with everything they kept, at start-up and every hour. It is
+also removed when the transfer completes, when the person discards it, when
+the sender sends a cancel notice, and when a later attempt fails for a
+non-network reason or starts over.
+
+The resume point the receiver offers is: the part file of the entry in
+flight at its current length; or, when no file was in flight, the next
+file entry at offset 0; or, when every file is complete and only the end of
+the body is missing, the last file at its end. Its `sha256` is the SHA-256
+of bytes `[0, offset)` of that entry as the receiver holds them.
+
+### Receiver: answering an offer
+
+An offer whose sender key (`sender_pub`, exactly) and manifest hash match a
+live kept transfer, after its signature checks out, is accepted at once
+with `resume` in the signed reply. Any other sender, or other files, gets
+the normal decision; a decline leaves the kept transfer alone.
+
+If an upload from the same sender key of the same manifest is still being
+received when such an offer arrives (this side has not seen the old
+connection break), the receiver waits up to 3 s for it to end. If it moved
+no byte in that time it is stopped as a lost connection and kept; then the
+offer is answered with its resume point. An upload that is still moving is
+left alone and the offer is handled normally.
+
+### Body start
+
+The body of an accepted resume offer starts with either the offered resume
+point or `(0,0)`:
+
+- At the resume point, the receiver continues: complete entries are taken
+  as they are, the part file is cut to `offset` and the rest appended.
+- At `(0,0)`, the receiver discards what it kept and writes everything
+  afresh (the sender's file changed).
+- Anything else is refused (400) and the kept transfer is dropped.
+
+### Sender
+
+- **Resume point check.** The sender hashes bytes `[0, offset)` of its own
+  file for the offered entry. When the hash matches, the body starts at the
+  resume point; otherwise at `(0,0)`. Files before the point are trusted as
+  they are: their sizes match the manifest and the receiver authenticated
+  their content when it got them.
+- **Retries.** On a network failure after an accepted offer, the sender
+  offers the same manifest again (new hello, new offer with a new nonce and
+  `eph`, so new keys) after **2, 5, 10, 20 and 30 seconds**. Meanwhile the
+  transfer shows as `reconnecting` with `attempt`/`attempts` ("Reconnecting
+  2/5"), and a `retrying` event goes out. A retry that is declined, or fails
+  for any other reason, ends the send.
+- **Interrupted.** When the fifth retry fails too, the send ends with
+  `"result": "interrupted"` and is kept for 24 hours in
+  `<data-dir>/outgoing/<id>.json` with what is needed to send it again: the
+  peer, the manifest hash, and on the desktop the local paths. The person
+  can then **Resume** (the files are listed again; unchanged files continue
+  where they stopped) or **Discard** it.
+- Sends whose content cannot be read twice (a browser upload relayed by the
+  desktop UI) make one attempt and ignore resume points; when they fail
+  they send a cancel notice so the receiver keeps nothing.
+
+The Android app sends the same way, keeping the content URIs for Resume.
+Receiving on Android keeps nothing yet: a broken receive is removed, and the
+sender's retry is a new offer.
+
+## POST /api/recv/cancel
+
+The sender tells the receiver that it gave up a transfer it had an
+accepted offer for, so that the receiver removes what it stored or kept:
+
+```json
+{"transfer_id":"<the receiver's transfer_id>","sender_fp":"fedcba9876543210","sig":"<base64>"}
+```
+
+`sig` is ed25519 by the sender's key over exactly these bytes (the **cancel
+signing bytes**):
+
+```
+"rocket-cancel-v2\n" + receiver_fp + "\n" + sender_fp + "\n" + transfer_id
+```
+
+The receiver checks it against the key of the offer that transfer belongs
+to. Then:
+
+- an upload still being received stops, removes everything it stored (an
+  earlier attempt's included) and is recorded as cancelled by the sender;
+- an accepted offer whose upload has not started loses its token;
+- a kept transfer that this transfer created or was offered to continue is
+  discarded with what it kept.
+
+Answers: **200** `{"ok":true}`; **400** for a malformed notice (at most
+4 KiB); **403** for a bad signature; **404** when nothing of that transfer is
+left; **429** when rate-limited like offers.
+
+rocket sends a cancel notice when the person cancels a send (during the
+body: before the body is cut off, so the receiver can tell a cancel from a
+broken connection; while reconnecting: for the last accepted attempt), when
+reading its own files fails, when a send that cannot retry hits a network
+failure, and when the person discards an interrupted send. It is best
+effort, at most 3 seconds: a receiver that cannot be reached removes its
+kept transfer after 24 hours.
+
+## Resume on the control surface
+
+The desktop's loopback-only control API (same rules as every local route:
+loopback, Host allowlist, `X-Rocket-CSRF: 1` on POST; see
+[security.md](security.md#two-surfaces-on-one-port)) has:
+
+| route | does |
+|-------|------|
+| `GET /api/resumable` | `{"outgoing": [interrupted sends], "incoming": [transfers kept here]}` |
+| `POST /api/resume {transfer_id}` | sends an interrupted send again; answers `{ok, transfer_id}` with the new transfer's ID |
+| `POST /api/discard {transfer_id}` | forgets an interrupted send (and sends its receiver a cancel notice) or removes a kept transfer with its files |
+
+An outgoing item is `{transfer_id, name, peer_name, peer_fp, addr, files,
+bytes, manifest_hash, paths, receiver_fp, remote_id, error, interrupted,
+expires}`; an incoming one `{id, name, sender_name, sender_fp, files,
+total, done, location, kept_at, expires}`. Events: `retrying`, `error` with
+`result: "interrupted"`, `kept` (an incoming item) and `kept_gone` `{id,
+reason}`. The Android core has the same as `ResumableJSON`, `Resume` and
+`Discard` (`mobile/rocketcore`).
 
 ## Test vectors
 
@@ -394,7 +557,13 @@ stream of header (0,0) + "hello"
 
 The full set (declined and resume replies, empty and multi-frame streams)
 is in `internal/protocol/v2_test.go` and
-`internal/protocol/securestream/securestream_test.go`.
+`internal/protocol/securestream/securestream_test.go`. The cancel notice for
+the same transfer ID, signed by the sender, is in
+`internal/protocol/cancel_test.go`:
+
+```
+cancel sig         Ko3tmrJdiGRo7Q3Gx0gYxI28Z7j0T7W+YNSsXsuvg+jnlHHrtPsFl5HtvJ/vdMDtXfIHdp29s+vgu+nDF92dBQ==
+```
 
 ## Browser drop (LAN guests)
 
@@ -437,3 +606,7 @@ entry has `"encrypted": true`.
 | drop cookie lifetime          | 30 days    |
 | plaintext per frame           | 64 KiB     |
 | ciphertext length per frame   | 16 .. 65552 bytes |
+| sender retries                | 5, after 2, 5, 10, 20, 30 s |
+| no byte moving (lost connection) | 60 seconds |
+| kept transfer / interrupted send | 24 hours, swept hourly |
+| cancel notice body            | 4 KiB      |
