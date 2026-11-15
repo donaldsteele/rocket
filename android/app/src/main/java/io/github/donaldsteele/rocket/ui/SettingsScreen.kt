@@ -16,6 +16,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.semantics.contentDescription
+import io.github.donaldsteele.rocket.core.TrustedSender
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -52,13 +60,18 @@ import io.github.donaldsteele.rocket.ui.theme.Rocket
 
 private const val PROJECT_URL = "https://github.com/donaldsteele/rocket"
 
-/** Device name, appearance, security note and about. */
+/** Device name, trusted senders, appearance, security note and about. */
 @Composable
 fun SettingsScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val core = context.core
     val name by core.name.collectAsStateWithLifecycle()
     val theme by core.theme.collectAsStateWithLifecycle()
+    val trusted by core.trusted.collectAsStateWithLifecycle()
+    val autoAccept by core.autoAccept.collectAsStateWithLifecycle()
+    val trustChanged by core.receiver.trustChanged.collectAsStateWithLifecycle()
+    var revoking by remember { mutableStateOf<TrustedSender?>(null) }
+    LaunchedEffect(trustChanged) { core.reloadTrusted() }
     var draft by rememberSaveable(name) { mutableStateOf(name) }
     val focus = LocalFocusManager.current
     val uri = LocalUriHandler.current
@@ -67,9 +80,28 @@ fun SettingsScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
     fun saveName() {
         focus.clearFocus()
         if (draft.trim() == name) return
-        core.setName(draft)
+        val announced = core.setName(draft)
         draft = core.name.value
-        onMessage("Others now see this phone as ${core.name.value}.")
+        onMessage(
+            if (announced) {
+                "Others now see this phone as ${core.name.value}."
+            } else {
+                "Saved. Receiving announces the new name once the current offer or receive is over and you turn it off and on."
+            },
+        )
+    }
+
+    revoking?.let { t ->
+        RevokeDialog(
+            t,
+            onConfirm = {
+                revoking = null
+                runCatching { core.revoke(t.fingerprint) }
+                    .onSuccess { onMessage("${t.name} is no longer trusted.") }
+                    .onFailure { onMessage("Could not revoke: ${it.message ?: it}") }
+            },
+            onDismiss = { revoking = null },
+        )
     }
 
     Column(
@@ -110,6 +142,64 @@ fun SettingsScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
                     style = MaterialTheme.typography.bodySmall,
                     color = c.fgMuted,
                 )
+            }
+        }
+
+        Panel {
+            Column {
+                SectionTitle(Lucide.ShieldCheck, "Trusted senders")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .toggleable(
+                            value = autoAccept,
+                            role = Role.Switch,
+                            onValueChange = { on ->
+                                runCatching { core.setAutoAccept(on) }
+                                    .onFailure { onMessage("Could not save the setting: ${it.message ?: it}") }
+                            },
+                        ),
+                ) {
+                    Text("Accept trusted senders without asking", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = autoAccept,
+                        onCheckedChange = null,
+                        colors = SwitchDefaults.colors(checkedTrackColor = c.accent, checkedThumbColor = c.accentFg),
+                    )
+                }
+                Text(
+                    "A sender becomes trusted when you choose \"Always accept from this device\". Its key is pinned: " +
+                        "another device using the same name is still asked. Turn this off to be asked every time.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.fgMuted,
+                )
+                Spacer(Modifier.height(8.dp))
+                if (trusted.isEmpty()) {
+                    Text("No trusted senders yet.", style = MaterialTheme.typography.bodyMedium, color = c.fgMuted)
+                }
+                trusted.forEach { t ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        Column(Modifier.weight(1f).semantics(mergeDescendants = true) {}) {
+                            Text(t.name, style = MaterialTheme.typography.bodyLarge)
+                            Text(t.fingerprint, fontFamily = Mono, fontSize = 12.sp, color = c.fgMuted)
+                            val since = formatWhen(t.approvedAt)
+                            if (since.isNotEmpty()) {
+                                Text("Trusted since $since", style = MaterialTheme.typography.bodySmall, color = c.fgMuted)
+                            }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        SecondaryAction(
+                            "Revoke",
+                            Lucide.X,
+                            onClick = { revoking = t },
+                            danger = true,
+                            modifier = Modifier.semantics { contentDescription = "Revoke ${t.name}" },
+                        )
+                    }
+                }
             }
         }
 
@@ -161,6 +251,22 @@ fun SettingsScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
             }
         }
     }
+}
+
+/** Confirms revoking a trusted sender. */
+@Composable
+private fun RevokeDialog(t: TrustedSender, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Revoke ${t.name}?") },
+        text = { Text("Its next offer asks you again. Fingerprint ${t.fingerprint}.") },
+        confirmButton = {
+            TextButton(onClick = onConfirm, modifier = Modifier.heightIn(min = 48.dp)) { Text("Revoke") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable

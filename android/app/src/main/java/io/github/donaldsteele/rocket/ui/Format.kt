@@ -1,5 +1,6 @@
 package io.github.donaldsteele.rocket.ui
 
+import io.github.donaldsteele.rocket.core.IncomingOffer
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -19,6 +20,12 @@ fun formatSize(n: Long): String {
 
 /** "photos (12 files)" or just "report.pdf", as desktop rocket says it. */
 fun countWhat(name: String, files: Int): String = if (files > 1) "$name ($files files)" else name
+
+/** What an offer brings, as desktop rocket says it: "report.pdf" or "12 files". */
+fun offerWhat(o: IncomingOffer): String = if (o.files > 1) "${o.files} files" else o.name.ifEmpty { "a file" }
+
+/** The first few names of an offer: "a.jpg, b.jpg, …". */
+fun namesLine(o: IncomingOffer): String = o.names.joinToString(", ") + if (o.names.size >= 5) ", …" else ""
 
 /** Whole percent of a in b, 0..100. */
 fun percent(a: Long, b: Long): Int = if (b > 0) (a.coerceAtLeast(0) * 100 / b).toInt().coerceIn(0, 100) else 0

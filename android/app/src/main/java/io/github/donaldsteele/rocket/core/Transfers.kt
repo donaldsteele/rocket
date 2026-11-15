@@ -47,6 +47,10 @@ data class Transfer(
     val error: String,
     /** False for a send that never got a transfer ID (it failed to start). */
     val cancellable: Boolean,
+    /** A receive (another device sends to this phone) rather than a send. */
+    val incoming: Boolean = false,
+    /** Where a finished receive was saved (a content URI or folder name). */
+    val savedTo: String = "",
 )
 
 /** Applies one event to a transfer. */
@@ -67,18 +71,48 @@ fun Transfer.withEvent(ev: TransferEvent): Transfer {
             sent = maxOf(sent, ev.bytes),
             total = maxOf(total, ev.bytes),
             state = TransferState.Done,
+            savedTo = ev.path.ifEmpty { savedTo },
         )
         is TransferEvent.Failed -> copy(name = n, state = TransferState.Failed, error = ev.error)
         is TransferEvent.Cancelled -> copy(
             name = n,
             state = TransferState.Cancelled,
-            error = if (ev.by == "peer") "Cancelled by the receiver" else "",
+            error = when {
+                ev.by != "peer" -> ""
+                incoming -> "Cancelled by the sender"
+                else -> "Cancelled by the receiver"
+            },
         )
     }
 }
 
 /**
- * The sends of this app session. A send is queued here ([enqueue]), started
+ * Applies an event of a receive to the transfer list. A receive not in the
+ * list yet goes on top, described by [info] when the core still has it.
+ */
+fun applyIncoming(list: List<Transfer>, ev: TransferEvent, info: TransferInfo?): List<Transfer> {
+    val i = list.indexOfFirst { it.id == ev.transferId }
+    if (i >= 0) return list.toMutableList().also { it[i] = it[i].withEvent(ev) }
+    val fresh = Transfer(
+        id = ev.transferId,
+        peerName = info?.peerName?.ifEmpty { null } ?: "another device",
+        name = info?.name?.ifEmpty { null } ?: ev.name,
+        sent = info?.sent ?: 0,
+        total = info?.total ?: 0,
+        file = "",
+        fileIndex = 0,
+        files = info?.files ?: 0,
+        state = TransferState.Sending,
+        error = "",
+        cancellable = true,
+        incoming = true,
+    )
+    return listOf(fresh.withEvent(ev)) + list
+}
+
+/**
+ * The transfers of this app session: sends, and receives the
+ * [Receiver] reports through [onIncoming]. A send is queued here ([enqueue]), started
  * by the transfer service ([start]) so it keeps running in the background,
  * and followed through the Go core's events.
  */
@@ -92,7 +126,7 @@ class Transfers(private val node: Node, private val opener: ItemOpener) {
 
     private val _list = MutableStateFlow<List<Transfer>>(emptyList())
 
-    /** Sends of this session, newest first. */
+    /** Sends and receives of this session, newest first. */
     val list: StateFlow<List<Transfer>> = _list.asStateFlow()
 
     private val _starting = MutableStateFlow(0)
@@ -107,7 +141,7 @@ class Transfers(private val node: Node, private val opener: ItemOpener) {
 
     private val _ended = MutableStateFlow(0)
 
-    /** Bumps whenever a send ends, so history can reload. */
+    /** Bumps whenever a transfer ends, so history can reload. */
     val ended: StateFlow<Int> = _ended.asStateFlow()
 
     /** Queues a send; pass the returned job ID to [start]. */
@@ -159,9 +193,19 @@ class Transfers(private val node: Node, private val opener: ItemOpener) {
 
     fun cancel(id: String): Boolean = node.cancel(id)
 
+    /** Cancels every send in flight (receives are left alone). */
     fun cancelAll() {
-        _list.value.filter { it.state.active && it.cancellable }.forEach { node.cancel(it.id) }
+        _list.value.filter { it.state.active && it.cancellable && !it.incoming }.forEach { node.cancel(it.id) }
     }
+
+    /** Records an event of a receive; info describes a receive seen for the first time. */
+    fun onIncoming(ev: TransferEvent, info: TransferInfo?) {
+        _list.update { applyIncoming(it, ev, info) }
+        if (ev !is TransferEvent.Progress) _ended.update { it + 1 }
+    }
+
+    /** Whether a receive is in flight. */
+    fun receiving(): Boolean = _list.value.any { it.incoming && it.state.active }
 
     /** Removes every send that has ended from the list. */
     fun clearFinished() {

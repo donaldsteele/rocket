@@ -8,6 +8,7 @@ import androidx.core.content.edit
 import io.github.donaldsteele.rocket.BuildConfig
 import io.github.donaldsteele.rocket.core.rocketcore.Node
 import io.github.donaldsteele.rocket.core.rocketcore.Rocketcore
+import io.github.donaldsteele.rocket.service.ReceiveService
 import io.github.donaldsteele.rocket.service.TransferService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,7 +20,8 @@ enum class ThemeMode { Dark, Light, System }
 
 /**
  * The app-wide state: the Go node (identity, trust store and history in the
- * app's private files folder), discovery, the sends, and a few preferences.
+ * app's private files folder), discovery, the receiver, the transfers, and
+ * a few preferences.
  */
 class Core(context: Context) {
     private val app = context.applicationContext
@@ -32,8 +34,9 @@ class Core(context: Context) {
     )
 
     val items = ContentItems(app.contentResolver)
-    val discovery = Discovery(app, node)
     val transfers = Transfers(node, items)
+    val receiver = Receiver(app, node, transfers)
+    val discovery = Discovery(app, node, ownService = { receiver.serviceName })
 
     private val _theme = MutableStateFlow(
         runCatching { ThemeMode.valueOf(prefs.getString(KEY_THEME, null) ?: "") }.getOrDefault(ThemeMode.Dark),
@@ -47,17 +50,67 @@ class Core(context: Context) {
 
     val fingerprint: String get() = node.fingerprint()
 
+    private val _trusted = MutableStateFlow<List<TrustedSender>>(emptyList())
+
+    /** Senders whose key is pinned, most recently approved first ([reloadTrusted]). */
+    val trusted: StateFlow<List<TrustedSender>> = _trusted.asStateFlow()
+
+    private val _autoAccept = MutableStateFlow(node.autoAccept())
+
+    /** Whether trusted senders skip the prompt. */
+    val autoAccept: StateFlow<Boolean> = _autoAccept.asStateFlow()
+
+    fun reloadTrusted() {
+        _trusted.value = runCatching { parseTrusted(node.trustedJSON()) }.getOrDefault(emptyList())
+    }
+
+    /** Forgets trusted sender fp: its next offer asks again. */
+    fun revoke(fp: String) {
+        node.revoke(fp)
+        reloadTrusted()
+    }
+
+    fun setAutoAccept(on: Boolean) {
+        node.setAutoAccept(on)
+        _autoAccept.value = node.autoAccept()
+    }
+
+    /**
+     * Whether the person has receiving on. Remembered, so the receiver
+     * comes back when the app is opened after the system stopped it.
+     */
+    var receiveWanted: Boolean
+        get() = prefs.getBoolean(KEY_RECEIVE, false)
+        set(v) = prefs.edit { putBoolean(KEY_RECEIVE, v) }
+
+    /** Turns receiving on (call from a visible activity). */
+    fun startReceiving(context: Context) {
+        receiveWanted = true
+        ReceiveService.start(context)
+    }
+
+    /** Turns receiving off; the receive service stops itself. */
+    fun stopReceiving() {
+        receiveWanted = false
+        receiver.stop()
+    }
+
     fun setTheme(mode: ThemeMode) {
         prefs.edit { putString(KEY_THEME, mode.name) }
         _theme.value = mode
     }
 
-    /** Renames this device (the core cleans the name up; "" means the default). */
-    fun setName(name: String) {
+    /**
+     * Renames this device (the core cleans the name up; "" means the
+     * default). A running receiver restarts to announce it, unless that
+     * would cut off an offer or a receive; returns false in that case.
+     */
+    fun setName(name: String): Boolean {
         node.setName(name.ifBlank { defaultDeviceName(app) })
         val cleaned = node.name()
         prefs.edit { putString(KEY_NAME, cleaned) }
         _name.value = cleaned
+        return receiver.state.value != ReceiverState.On || receiver.restartIfIdle()
     }
 
     /** Whether the notification permission question was asked already. */
@@ -85,6 +138,7 @@ class Core(context: Context) {
         const val KEY_NAME = "device_name"
         const val KEY_THEME = "theme"
         const val KEY_ASKED_NOTIFY = "asked_notifications"
+        const val KEY_RECEIVE = "receive_on"
 
         fun defaultDeviceName(ctx: Context): String =
             Settings.Global.getString(ctx.contentResolver, Settings.Global.DEVICE_NAME)?.takeIf { it.isNotBlank() }

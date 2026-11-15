@@ -34,7 +34,7 @@ import io.github.donaldsteele.rocket.core.TransferState
 import io.github.donaldsteele.rocket.ui.theme.Mono
 import io.github.donaldsteele.rocket.ui.theme.Rocket
 
-/** The sends of this session: progress, cancel, how each ended. */
+/** The sends and receives of this session: progress, cancel, how each ended. */
 @Composable
 fun TransfersScreen(modifier: Modifier = Modifier) {
     val transfers = LocalContext.current.core.transfers
@@ -50,7 +50,7 @@ fun TransfersScreen(modifier: Modifier = Modifier) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    "Sends since rocket started. Finished ones are also in History.",
+                    "Sends and receives since rocket started. Finished ones are also in History.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = c.fgMuted,
                     modifier = Modifier.weight(1f),
@@ -65,7 +65,7 @@ fun TransfersScreen(modifier: Modifier = Modifier) {
             item { Notice("Reading the files for ${if (starting == 1) "a send" else "$starting sends"}…", Tone.Info) }
         }
         if (list.isEmpty() && starting == 0) {
-            item { EmptyBox("No transfers yet. Send something from the Send tab or the share sheet.") }
+            item { EmptyBox("No transfers yet. Send something from the Send tab or the share sheet, or turn on receiving.") }
         }
         items(list, key = { it.id }) { t ->
             TransferCard(t, onCancel = { transfers.cancel(t.id) })
@@ -78,7 +78,11 @@ private fun TransferCard(t: Transfer, onCancel: () -> Unit) {
     val c = Rocket.colors
     val (icon, word, tone) = when (t.state) {
         TransferState.Waiting -> Triple(Lucide.Clock, "Waiting", Tone.Info)
-        TransferState.Sending -> Triple(Lucide.ArrowUp, "Sending", Tone.Info)
+        TransferState.Sending -> if (t.incoming) {
+            Triple(Lucide.ArrowDown, "Receiving", Tone.Info)
+        } else {
+            Triple(Lucide.ArrowUp, "Sending", Tone.Info)
+        }
         TransferState.Done -> Triple(Lucide.CircleCheck, "Done", Tone.Ok)
         TransferState.Failed -> Triple(Lucide.TriangleAlert, "Failed", Tone.Bad)
         TransferState.Cancelled -> Triple(Lucide.Square, "Cancelled", Tone.Warn)
@@ -86,11 +90,15 @@ private fun TransferCard(t: Transfer, onCancel: () -> Unit) {
     Panel {
         Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Lucide.ArrowUp, contentDescription = null, tint = c.link, modifier = Modifier.size(22.dp))
+                Icon(if (t.incoming) Lucide.ArrowDown else Lucide.ArrowUp, contentDescription = null, tint = c.link, modifier = Modifier.size(22.dp))
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f).semantics(mergeDescendants = true) {}) {
                     Text(countWhat(t.name, t.files), style = MaterialTheme.typography.titleMedium)
-                    Text("to ${t.peerName}", style = MaterialTheme.typography.bodySmall, color = c.fgMuted)
+                    Text(
+                        if (t.incoming) "from ${t.peerName}" else "to ${t.peerName}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.fgMuted,
+                    )
                 }
                 Spacer(Modifier.width(8.dp))
                 StatusChip(icon, word, tone)
@@ -129,7 +137,7 @@ private fun TransferCard(t: Transfer, onCancel: () -> Unit) {
                 }
             } else {
                 val line = when (t.state) {
-                    TransferState.Done -> "${formatSize(t.total)} sent"
+                    TransferState.Done -> doneLine(t)
                     else -> t.error
                 }
                 if (line.isNotEmpty()) {
@@ -140,6 +148,10 @@ private fun TransferCard(t: Transfer, onCancel: () -> Unit) {
         }
     }
 }
+
+/** "12.3 MB sent", or "12.3 MB received, saved in Download/rocket". */
+internal fun doneLine(t: Transfer, where: String = "Download/rocket"): String =
+    if (t.incoming) "${formatSize(t.total)} received, saved in $where" else "${formatSize(t.total)} sent"
 
 /** "12.3 MB of 40.0 MB · 2 of 5: beach.jpg" */
 internal fun progressLine(t: Transfer): String {

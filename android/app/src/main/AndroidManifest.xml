@@ -9,7 +9,14 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- The receiver serves other devices on the local network. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Android 8 and 9 save received files to Download/rocket through the
+         file system; later versions use MediaStore and need no permission. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <application
         android:name=".RocketApp"
@@ -59,5 +66,16 @@
             android:name=".service.TransferService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Runs the receiver while receiving is on. -->
+        <service
+            android:name=".service.ReceiveService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- Accept / Decline on an offer notification. -->
+        <receiver
+            android:name=".service.OfferActionReceiver"
+            android:exported="false" />
     </application>
 </manifest>

@@ -4,4 +4,10 @@
     <string name="share_label">Send with rocket</string>
     <string name="channel_transfers">Transfers</string>
     <string name="channel_transfers_desc">Progress of files being sent</string>
+    <string name="channel_receiver">Receiving</string>
+    <string name="channel_receiver_desc">Shows that this phone accepts offers, and receives in progress</string>
+    <string name="channel_offers">Incoming offers</string>
+    <string name="channel_offers_desc">Another device wants to send you files</string>
+    <string name="channel_received">Received files</string>
+    <string name="channel_received_desc">A receive has finished</string>
 </resources>

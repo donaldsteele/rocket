@@ -51,7 +51,7 @@ class TransferService : Service() {
             combine(transfers.list, transfers.starting) { list, starting -> list to starting }
                 .conflate()
                 .collect { (list, starting) ->
-                    val active = list.filter { it.state.active }
+                    val active = list.filter { it.state.active && !it.incoming }
                     if (active.isEmpty() && starting == 0) {
                         if (foreground) {
                             ServiceCompat.stopForeground(this@TransferService, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -94,7 +94,7 @@ class TransferService : Service() {
     }
 
     private fun goForeground() {
-        val list = core.transfers.list.value.filter { it.state.active }
+        val list = core.transfers.list.value.filter { it.state.active && !it.incoming }
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
         ServiceCompat.startForeground(this, NOTIFICATION_ID, build(list, core.transfers.starting.value), type)
         foreground = true

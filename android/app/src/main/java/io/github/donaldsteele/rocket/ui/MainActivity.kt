@@ -25,6 +25,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -36,6 +37,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.donaldsteele.rocket.core
+import io.github.donaldsteele.rocket.core.ReceiverState
 import io.github.donaldsteele.rocket.ui.theme.Rocket
 import io.github.donaldsteele.rocket.ui.theme.RocketTheme
 import io.github.donaldsteele.rocket.ui.theme.isDark
@@ -56,6 +58,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Receiving was on when the system stopped the app: turn it back on.
+        val c = core
+        if (c.receiveWanted && c.receiver.state.value == ReceiverState.Off) {
+            runCatching { c.startReceiving(this) }
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -66,9 +77,10 @@ class MainActivity : ComponentActivity() {
         /** Opens the given tab ([TAB_TRANSFERS], ...). */
         const val EXTRA_TAB = "tab"
         const val TAB_SEND = 0
-        const val TAB_TRANSFERS = 1
-        const val TAB_HISTORY = 2
-        const val TAB_SETTINGS = 3
+        const val TAB_RECEIVE = 1
+        const val TAB_TRANSFERS = 2
+        const val TAB_HISTORY = 3
+        const val TAB_SETTINGS = 4
     }
 }
 
@@ -90,6 +102,7 @@ private data class Tab(val title: String, val icon: ImageVector)
 
 private val tabs = listOf(
     Tab("Send", Lucide.Send),
+    Tab("Receive", Lucide.Download),
     Tab("Transfers", Lucide.ArrowUpDown),
     Tab("History", Lucide.History),
     Tab("Settings", Lucide.Settings),
@@ -104,6 +117,9 @@ private fun AppShell(requestedTab: Int, onTabShown: () -> Unit) {
     val transfers by core.transfers.list.collectAsStateWithLifecycle()
     val starting by core.transfers.starting.collectAsStateWithLifecycle()
     val active = transfers.count { it.state.active } + starting
+    val offers by core.receiver.offers.collectAsStateWithLifecycle()
+    // Offers whose sheet was swiped away; they stay in the Receive tab.
+    val hidden = remember { mutableStateListOf<String>() }
     val c = Rocket.colors
     val say: (String) -> Unit = { m -> scope.launch { snackbar.showSnackbar(m, withDismissAction = true) } }
 
@@ -126,14 +142,20 @@ private fun AppShell(requestedTab: Int, onTabShown: () -> Unit) {
         bottomBar = {
             NavigationBar(containerColor = c.bgElev) {
                 tabs.forEachIndexed { i, t ->
-                    val badge = i == MainActivity.TAB_TRANSFERS && active > 0
+                    val count = when (i) {
+                        MainActivity.TAB_TRANSFERS -> active
+                        MainActivity.TAB_RECEIVE -> offers.size
+                        else -> 0
+                    }
+                    val badge = count > 0
+                    val badgeWhat = if (i == MainActivity.TAB_RECEIVE) "waiting" else "in progress"
                     NavigationBarItem(
                         selected = tab == i,
                         onClick = { tab = i },
                         icon = {
                             if (badge) {
                                 BadgedBox(badge = {
-                                    Badge(containerColor = c.accent, contentColor = c.accentFg) { Text("$active") }
+                                    Badge(containerColor = c.accent, contentColor = c.accentFg) { Text("$count") }
                                 }) { Icon(t.icon, contentDescription = null) }
                             } else {
                                 Icon(t.icon, contentDescription = null)
@@ -141,7 +163,7 @@ private fun AppShell(requestedTab: Int, onTabShown: () -> Unit) {
                         },
                         label = { Text(t.title) },
                         modifier = if (badge) {
-                            Modifier.semantics { contentDescription = "${t.title}, $active in progress" }
+                            Modifier.semantics { contentDescription = "${t.title}, $count $badgeWhat" }
                         } else {
                             Modifier
                         },
@@ -160,9 +182,21 @@ private fun AppShell(requestedTab: Int, onTabShown: () -> Unit) {
         val m = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)
         when (tab) {
             MainActivity.TAB_SEND -> SendScreen(onMessage = say, modifier = m)
+            MainActivity.TAB_RECEIVE -> ReceiveScreen(onMessage = say, modifier = m)
             MainActivity.TAB_TRANSFERS -> TransfersScreen(modifier = m)
             MainActivity.TAB_HISTORY -> HistoryScreen(onMessage = say, modifier = m)
             else -> SettingsScreen(onMessage = say, modifier = m)
         }
+    }
+
+    // The Receive tab lists offers itself; elsewhere each one not
+    // swiped away comes up as a sheet, oldest first.
+    val sheetOffer = offers.firstOrNull { it.id !in hidden }
+    if (tab != MainActivity.TAB_RECEIVE && sheetOffer != null) {
+        OfferSheet(
+            sheetOffer,
+            onAnswer = { accept, trust -> answerOffer(core.receiver::answer, sheetOffer, accept, trust, say) },
+            onDismiss = { hidden += sheetOffer.id },
+        )
     }
 }

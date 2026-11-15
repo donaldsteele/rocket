@@ -22,9 +22,10 @@ const val SERVICE_TYPE = "_rocket._tcp"
  * Finds other rocket hosts: the Go core listens for UDP beacons, NsdManager
  * browses mDNS, and the core merges both by fingerprint into one peer list.
  * Runs while at least one screen holds it ([acquire]/[release], main thread),
- * with a Wi-Fi multicast lock held meanwhile.
+ * with a Wi-Fi multicast lock held meanwhile. This phone's own NSD service
+ * ([ownService], while receiving) is skipped.
  */
-class Discovery(context: Context, private val node: Node) {
+class Discovery(context: Context, private val node: Node, private val ownService: () -> String? = { null }) {
     private val app = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val nsd = app.getSystemService(NsdManager::class.java)
@@ -118,7 +119,7 @@ class Discovery(context: Context, private val node: Node) {
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
             override fun onServiceFound(info: NsdServiceInfo) {
                 main.post {
-                    if (running && queue.none { it.serviceName == info.serviceName }) {
+                    if (running && info.serviceName != ownService() && queue.none { it.serviceName == info.serviceName }) {
                         queue.addLast(info)
                         resolveNext()
                     }
@@ -171,8 +172,10 @@ class Discovery(context: Context, private val node: Node) {
     private fun record(si: NsdServiceInfo) {
         val txt = si.attributes.orEmpty()
         fun attr(k: String) = txt[k]?.toString(Charsets.UTF_8).orEmpty()
+        val fp = attr("fp")
+        if (fp == node.fingerprint()) return
         val host = preferredHost(addresses(si)) ?: return
-        val s = Sighting(si.serviceName, attr("fp"), host, si.port, attr("ver"), attr("os"))
+        val s = Sighting(si.serviceName, fp, host, si.port, attr("ver"), attr("os"))
         sightings[s.name] = s
         observe(s)
     }
