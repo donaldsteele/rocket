@@ -713,10 +713,21 @@ func (rx *Receiver) HandleRecv(w http.ResponseWriter, r *http.Request) {
 	rx.mu.Unlock()
 	defer func() {
 		rx.mu.Lock()
+		peerCancelled := rx.peerCancel[tid]
 		delete(rx.active, tid)
 		delete(rx.peerCancel, tid)
 		rx.mu.Unlock()
 		close(up.done)
+		// A cancel notice that came while this upload was ending (after it
+		// decided to keep what arrived) must still leave nothing behind.
+		// Kept.Release runs before this (deferred later), so the record is
+		// not busy any more.
+		if peerCancelled {
+			rx.discardKept(tid, "cancelled by the sender")
+			if up.keptID != "" {
+				rx.discardKept(up.keptID, "cancelled by the sender")
+			}
+		}
 	}()
 
 	// failEarly ends a receive that stored nothing yet. A kept transfer it
@@ -949,9 +960,20 @@ func (rx *Receiver) HandleCancelNotice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rx.mu.Lock()
-		rx.peerCancel[tid] = true
+		still := rx.active[tid] == act
+		if still {
+			rx.peerCancel[tid] = true // the upload's cleanup discards anything kept
+		}
 		rx.mu.Unlock()
-		rx.cfg.Ledger.Transfers.Stop(tid)
+		if still {
+			rx.cfg.Ledger.Transfers.Stop(tid)
+		} else {
+			// It ended meanwhile, possibly keeping what arrived.
+			rx.discardKept(tid, "cancelled by the sender")
+			if act.keptID != "" {
+				rx.discardKept(act.keptID, "cancelled by the sender")
+			}
+		}
 	case pend != nil:
 		if !verify(pend.SenderPub) {
 			http.Error(w, "bad cancel notice", http.StatusForbidden)
