@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">rocket</string>
+    <string name="share_label">Send with rocket</string>
+    <string name="channel_transfers">Transfers</string>
+    <string name="channel_transfers_desc">Progress of files being sent</string>
+</resources>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The dark background token of web/styles.css: the window behind the
+         first Compose frame and the adaptive launcher icon's background. -->
+    <color name="rocket_bg">#FF1C1917</color>
+    <color name="ic_launcher_background">#FF1C1917</color>
+</resources>

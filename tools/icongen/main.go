@@ -7,6 +7,14 @@
 //	tray/assets/icon.png             tray icon for Linux (64 px)
 //	tray/assets/icon-pending.ico     the same with a badge: offers are waiting
 //	tray/assets/icon-pending.png
+//	android/app/src/main/res/mipmap-<density>/
+//	    ic_launcher_foreground.png   adaptive launcher icon: the rocket alone
+//	                                 on the 108 dp canvas (the background
+//	                                 layer is the --bg colour, in XML)
+//	    ic_launcher_monochrome.png   themed (Android 13+) launcher icon: the
+//	                                 rocket's silhouette in white
+//	android/app/src/main/res/drawable-<density>/
+//	    ic_stat_rocket.png           24 dp white silhouette for notifications
 //
 // Run it from the repository root: go run ./tools/icongen
 //
@@ -46,6 +54,39 @@ var winresSizes = []int{16, 24, 32, 48, 64, 128, 256}
 // icoSizes are the images inside each tray .ico.
 var icoSizes = []int{16, 20, 24, 32, 40, 48, 64, 256}
 
+// androidDensities are Android's screen density buckets and their scale
+// factor in quarters (mdpi = 4/4 = 1 px per dp).
+var androidDensities = []struct {
+	name     string
+	quarters int
+}{
+	{"mdpi", 4}, {"hdpi", 6}, {"xhdpi", 8}, {"xxhdpi", 12}, {"xxxhdpi", 16},
+}
+
+// Android icon canvases, in dp.
+const (
+	adaptiveDP = 108 // adaptive icon layer canvas
+	statusDP   = 24  // notification (status bar) icon
+)
+
+// adaptiveCanvas is the side of the adaptive icon canvas in design units: the
+// 1024-unit tile drawing sits in its middle (about 61 of the 108 dp), so the
+// whole rocket, flame tip included, stays inside the 66 dp safe zone that
+// every launcher mask keeps.
+const adaptiveCanvas = 1800
+
+// layer picks what a render draws.
+type layer int
+
+const (
+	layerTile       layer = iota // the full rounded tile (favicon, exe, tray)
+	layerPending                 // the tile with the "offers waiting" badge
+	layerForeground              // the rocket alone, transparent around it
+	layerMonochrome              // the rocket's silhouette in white
+)
+
+var colWhite = color.NRGBA{0xff, 0xff, 0xff, 0xff}
+
 func main() {
 	root := flag.String("root", ".", "repository root to write into")
 	flag.Parse()
@@ -79,6 +120,13 @@ func main() {
 		out("tray/assets/"+name+".ico", encodeICO(imgs))
 		out("tray/assets/"+name+".png", encodePNG(render(64, pending)))
 	}
+	const res = "android/app/src/main/res/"
+	for _, d := range androidDensities {
+		n := adaptiveDP * d.quarters / 4
+		out(res+"mipmap-"+d.name+"/ic_launcher_foreground.png", encodePNG(renderLayer(n, adaptiveCanvas, layerForeground)))
+		out(res+"mipmap-"+d.name+"/ic_launcher_monochrome.png", encodePNG(renderLayer(n, adaptiveCanvas, layerMonochrome)))
+		out(res+"drawable-"+d.name+"/ic_stat_rocket.png", encodePNG(renderLayer(statusDP*d.quarters/4, design, layerMonochrome)))
+	}
 }
 
 func fail(err error) {
@@ -98,28 +146,41 @@ type sampler struct {
 // sc scales a design length to sample units.
 func (s sampler) sc(v int64) int64 { return v * s.k }
 
-// render draws the icon at n x n pixels. Each pixel is the average of an
-// ss x ss grid of samples; a sample takes the colour of the topmost shape
-// that contains it, or is transparent.
+// render draws the icon tile (with the badge when pending) at n x n pixels.
 func render(n int, pending bool) *image.NRGBA {
-	ss := (design + n - 1) / n // samples per pixel side; n*ss >= design
+	l := layerTile
+	if pending {
+		l = layerPending
+	}
+	return renderLayer(n, design, l)
+}
+
+// renderLayer draws layer l at n x n pixels on a square canvas of canvas
+// design units, with the 1024-unit drawing centred on it. Each pixel is the
+// average of an ss x ss grid of samples; a sample takes the colour of the
+// topmost shape that contains it, or is transparent.
+func renderLayer(n int, canvas int64, l layer) *image.NRGBA {
+	ss := int((canvas + int64(n) - 1) / int64(n)) // samples per pixel side; n*ss >= canvas
 	if ss < 4 {
 		ss = 4
 	}
 	grid := int64(n * ss)
-	// Sample i (0..grid-1) has its centre at design coordinate
-	// (2i+1)*design/(2*grid). Multiply through by 2*grid: x = (2i+1)*design
-	// and a design length L becomes L*2*grid.
+	// Sample i (0..grid-1) has its centre at canvas coordinate
+	// (2i+1)*canvas/(2*grid). Multiply through by 2*grid: x = (2i+1)*canvas
+	// and a design length L becomes L*2*grid. The drawing starts at
+	// (canvas-design)/2 on the canvas, so subtract that offset (an integer:
+	// every canvas differs from design by an even amount).
 	s := sampler{k: 2 * grid}
+	off := s.sc((canvas - design) / 2)
 	img := image.NewNRGBA(image.Rect(0, 0, n, n))
 	for py := range n {
 		for px := range n {
 			var r, g, b, hit int64
 			for sy := range ss {
-				y := (2*int64(py*ss+sy) + 1) * design
+				y := (2*int64(py*ss+sy)+1)*canvas - off
 				for sx := range ss {
-					x := (2*int64(px*ss+sx) + 1) * design
-					c := s.colourAt(x, y, pending)
+					x := (2*int64(px*ss+sx)+1)*canvas - off
+					c := s.layerAt(x, y, l)
 					if c.A == 0 {
 						continue
 					}
@@ -142,6 +203,24 @@ func render(n int, pending bool) *image.NRGBA {
 		}
 	}
 	return img
+}
+
+// layerAt returns the colour of layer l at sample point (x, y).
+func (s sampler) layerAt(x, y int64, l layer) color.NRGBA {
+	switch l {
+	case layerForeground:
+		c, _ := s.rocket(x, y)
+		return c
+	case layerMonochrome:
+		// The dark ring around the window stays open, so the window still
+		// reads in a one-colour icon.
+		if c, ok := s.rocket(x, y); ok && c != colBG {
+			return colWhite
+		}
+		return transpare
+	default:
+		return s.colourAt(x, y, l == layerPending)
+	}
 }
 
 // colourAt returns the colour at sample point (x, y), topmost shape first.

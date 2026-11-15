@@ -40,6 +40,43 @@ func TestRenderShape(t *testing.T) {
 	}
 }
 
+func TestAndroidLayers(t *testing.T) {
+	fg := renderLayer(108, adaptiveCanvas, layerForeground)
+	if c := fg.NRGBAAt(54, 54); c.A != 255 {
+		t.Errorf("foreground centre is not opaque: %v", c)
+	}
+	// Outside the 66 dp safe zone (radius 33 around the centre) the
+	// foreground is empty, so no launcher mask clips the rocket.
+	for y := range 108 {
+		for x := range 108 {
+			dx, dy := x-54, y-54
+			if dx*dx+dy*dy > 33*33 && fg.NRGBAAt(x, y).A != 0 {
+				t.Fatalf("foreground pixel (%d,%d) outside the safe zone", x, y)
+			}
+		}
+	}
+	mono := renderLayer(108, adaptiveCanvas, layerMonochrome)
+	opaque := 0
+	for y := range 108 {
+		for x := range 108 {
+			c := mono.NRGBAAt(x, y)
+			if c.A > 0 && (c.R != 0xff || c.G != 0xff || c.B != 0xff) {
+				t.Fatalf("monochrome pixel (%d,%d) is %v, not white", x, y, c)
+			}
+			if c.A == 255 {
+				opaque++
+			}
+		}
+	}
+	if opaque == 0 {
+		t.Error("monochrome icon is empty")
+	}
+	// The tile still renders exactly as before the canvas was generalised.
+	if !bytes.Equal(encodePNG(render(48, false)), encodePNG(renderLayer(48, design, layerTile))) {
+		t.Error("render and renderLayer disagree for the tile")
+	}
+}
+
 func TestICO(t *testing.T) {
 	data := encodeICO([]*image.NRGBA{render(16, false), render(256, false)})
 	var hdr struct{ Reserved, Type, Count uint16 }

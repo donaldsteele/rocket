@@ -1,0 +1,190 @@
+package io.github.donaldsteele.rocket.ui
+
+import android.content.ClipData
+import android.content.ClipboardManager
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.donaldsteele.rocket.BuildConfig
+import io.github.donaldsteele.rocket.core
+import io.github.donaldsteele.rocket.core.ThemeMode
+import io.github.donaldsteele.rocket.ui.theme.Mono
+import io.github.donaldsteele.rocket.ui.theme.Rocket
+
+private const val PROJECT_URL = "https://github.com/donaldsteele/rocket"
+
+/** Device name, appearance, security note and about. */
+@Composable
+fun SettingsScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val core = context.core
+    val name by core.name.collectAsStateWithLifecycle()
+    val theme by core.theme.collectAsStateWithLifecycle()
+    var draft by rememberSaveable(name) { mutableStateOf(name) }
+    val focus = LocalFocusManager.current
+    val uri = LocalUriHandler.current
+    val c = Rocket.colors
+
+    fun saveName() {
+        focus.clearFocus()
+        if (draft.trim() == name) return
+        core.setName(draft)
+        draft = core.name.value
+        onMessage("Others now see this phone as ${core.name.value}.")
+    }
+
+    Column(
+        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Panel {
+            Column {
+                SectionTitle(Lucide.Smartphone, "This device")
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it.take(64) },
+                    label = { Text("Device name") },
+                    singleLine = true,
+                    supportingText = { Text("Others see this name. It is a label, not proof of who you are: the fingerprint is.") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { saveName() }),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(4.dp))
+                PrimaryAction("Save name", Lucide.Check, onClick = { saveName() }, enabled = draft.trim() != name)
+                Spacer(Modifier.height(12.dp))
+                Text("Fingerprint", style = MaterialTheme.typography.bodySmall, color = c.fgMuted)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Lucide.Fingerprint, contentDescription = null, tint = c.link, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(core.fingerprint, fontFamily = Mono, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                    IconButton(onClick = {
+                        context.getSystemService(ClipboardManager::class.java)
+                            ?.setPrimaryClip(ClipData.newPlainText("rocket fingerprint", core.fingerprint))
+                        onMessage("Fingerprint copied.")
+                    }) {
+                        Icon(Lucide.Copy, contentDescription = "Copy fingerprint", modifier = Modifier.size(20.dp))
+                    }
+                }
+                Text(
+                    "Compare it with what the other device shows before you choose \"Always accept\" there.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.fgMuted,
+                )
+            }
+        }
+
+        Panel {
+            Column(Modifier.selectableGroup()) {
+                SectionTitle(Lucide.Sun, "Appearance")
+                ThemeOption(ThemeMode.Dark, "Dark", Lucide.Moon, theme) { core.setTheme(it) }
+                ThemeOption(ThemeMode.Light, "Light", Lucide.Sun, theme) { core.setTheme(it) }
+                ThemeOption(ThemeMode.System, "Same as the system", Lucide.Smartphone, theme) { core.setTheme(it) }
+            }
+        }
+
+        Panel {
+            Column {
+                SectionTitle(Lucide.ShieldCheck, "Security")
+                Text(
+                    "Every offer is signed by the sender's key, and \"Always accept from this device\" pins that key, " +
+                        "so another device cannot pass itself off as one you trust. The files themselves travel as " +
+                        "plain HTTP on your network: someone who can watch the network could read them. Use rocket " +
+                        "on networks you trust.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                TextButton(onClick = { uri.openUri("$PROJECT_URL/blob/main/docs/security.md") }, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("Read the security notes")
+                }
+            }
+        }
+
+        Panel {
+            Column {
+                SectionTitle(Lucide.Info, "About")
+                Text("rocket ${BuildConfig.VERSION_NAME} for Android · protocol v1", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "LAN file transfer between rocket hosts. The wire protocol is rocket's Go code, the same as on desktop.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.fgMuted,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Fonts: Inter and JetBrains Mono (SIL Open Font License 1.1). Icons: Lucide (ISC). " +
+                        "Licence texts are in the app's assets and the project repository.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.fgMuted,
+                )
+                TextButton(onClick = { uri.openUri(PROJECT_URL) }, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("Project page")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionTitle(icon: ImageVector, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
+        Icon(icon, contentDescription = null, tint = Rocket.colors.link, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+    }
+}
+
+@Composable
+private fun ThemeOption(mode: ThemeMode, label: String, icon: ImageVector, current: ThemeMode, onPick: (ThemeMode) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .selectable(selected = mode == current, role = Role.RadioButton, onClick = { onPick(mode) }),
+    ) {
+        RadioButton(selected = mode == current, onClick = null)
+        Spacer(Modifier.width(12.dp))
+        Icon(icon, contentDescription = null, tint = Rocket.colors.fgMuted, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge)
+    }
+}
