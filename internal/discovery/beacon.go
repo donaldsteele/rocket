@@ -72,7 +72,7 @@ func (r *Registry) listen(ctx context.Context, conn *net.UDPConn) {
 // packet's source IP with the announced port.
 func beaconPeer(pkt []byte, src *net.UDPAddr) (Peer, bool) {
 	var s Self
-	if json.Unmarshal(pkt, &s) != nil || s.Fingerprint == "" || src == nil {
+	if json.Unmarshal(pkt, &s) != nil || !isFingerprint(s.Fingerprint) || src == nil {
 		return Peer{}, false
 	}
 	if s.HTTPPort <= 0 || s.HTTPPort > 65535 {

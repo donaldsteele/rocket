@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -56,9 +57,9 @@ func runSend(args []string) int {
 	} else {
 		go func() { _ = rs.reg.Run(ctx) }()
 		defer rs.startMDNS(ctx, false, io.Discard)()
-		peer, ok := resolvePeer(ctx, rs.reg, target, *wait)
-		if !ok {
-			fmt.Fprintf(os.Stderr, "peer %q not found on the network\n", target)
+		peer, err := resolvePeer(ctx, rs.reg, target, *wait)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
 		}
 		t = transfer.Target{Addr: peer.Addr, FP: peer.Fingerprint}
@@ -112,14 +113,18 @@ func recordSend(dataDir string, e history.Entry, err error) {
 	_ = h.Add(e)
 }
 
-func resolvePeer(ctx context.Context, reg *discovery.Registry, target string, wait time.Duration) (discovery.Peer, bool) {
+// resolvePeer waits up to wait for target to name exactly one discovered
+// peer (discovery.Registry.Resolve). A target that matches several peers
+// fails at once: picking one could send to the wrong host.
+func resolvePeer(ctx context.Context, reg *discovery.Registry, target string, wait time.Duration) (discovery.Peer, error) {
 	deadline := time.Now().Add(wait)
 	for {
-		if p, ok := reg.Find(target); ok {
-			return p, true
+		p, err := reg.Resolve(target)
+		if err == nil || errors.Is(err, discovery.ErrPeerAmbiguous) {
+			return p, err
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
-			return discovery.Peer{}, false
+			return discovery.Peer{}, err
 		}
 		time.Sleep(300 * time.Millisecond)
 	}

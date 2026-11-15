@@ -42,6 +42,7 @@ type Server struct {
 	xfers    *transfer.Manager
 	hist     *history.Store
 	settings *config.SettingsStore
+	offers   *rateLimiter // offers per remote IP (/api/offer, /drop/offer)
 	// Version is reported by /api/hello and /api/self.
 	Version string
 	// OS is reported by /api/hello.
@@ -119,6 +120,7 @@ func New(cfg *config.Config, id *node.Identity, trust *peers.Store, reg *discove
 		xfers:    transfer.NewManager(),
 		hist:     hist,
 		settings: settings,
+		offers:   newRateLimiter(offerBurst, offerRefill),
 		dlDir:    cfg.DownloadDir,
 		Version:  "dev",
 		pending:  map[string]*pendingOffer{},
@@ -212,19 +214,34 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 func (s *Server) addPending(po *pendingOffer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.pendingRoomLocked(po.ip); err != nil {
+		return err
+	}
+	s.pending[po.view.TransferID] = po
+	return nil
+}
+
+// pendingRoom reports errTooMany when no further offer from ip could wait
+// for a decision.
+func (s *Server) pendingRoom(ip string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingRoomLocked(ip)
+}
+
+func (s *Server) pendingRoomLocked(ip string) error {
 	if len(s.pending) >= protocol.MaxPending {
 		return errTooMany
 	}
 	n := 0
 	for _, p := range s.pending {
-		if p.ip == po.ip {
+		if p.ip == ip {
 			n++
 		}
 	}
 	if n >= protocol.MaxPendingIP {
 		return errTooMany
 	}
-	s.pending[po.view.TransferID] = po
 	return nil
 }
 
@@ -415,14 +432,17 @@ func (s *Server) takeUpload(token string, drop bool, ip string) *upload {
 
 func viewOf(id string, m protocol.Manifest) IncomingOffer {
 	v := IncomingOffer{ID: id, TransferID: id, Kind: m.Kind, Size: m.Total, Files: transfer.Files(m)}
+	// Names are shown as they will be written to disk: sanitized, so bidi
+	// overrides and other invisible characters cannot disguise them.
 	for i, e := range m.Entries {
-		if i == 0 {
-			v.Name = e.Path
-		}
 		if i == 5 {
 			break
 		}
-		v.Names = append(v.Names, e.Path)
+		p := transfer.SanitizePath(e.Path)
+		if i == 0 {
+			v.Name = p
+		}
+		v.Names = append(v.Names, p)
 	}
 	return v
 }

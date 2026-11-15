@@ -280,26 +280,68 @@ func TestOfferWithTraversalRejected(t *testing.T) {
 	}
 }
 
-func TestNonceCacheLRU(t *testing.T) {
+// TestNonceCacheNeverEvictsFreshNonces: a full cache refuses new nonces
+// rather than forgetting one that could still pass the freshness check, so
+// flooding it cannot make a captured offer replayable.
+func TestNonceCacheNeverEvictsFreshNonces(t *testing.T) {
 	c := NewNonceCache(3)
 	for _, k := range []string{"a", "b", "c"} {
-		if !c.Use(k, t0) {
-			t.Fatalf("first use of %s rejected", k)
+		if err := c.Use(k, t0); err != nil {
+			t.Fatalf("first use of %s: %v", k, err)
 		}
 	}
-	if c.Use("a", t0) {
-		t.Fatal("reuse of a accepted")
+	if err := c.Use("a", t0); !errors.Is(err, ErrReplay) {
+		t.Fatalf("reuse of a: %v, want ErrReplay", err)
 	}
-	c.Use("d", t0) // evicts the oldest (a)
+	if err := c.Use("d", t0.Add(time.Minute)); !errors.Is(err, ErrBusy) {
+		t.Fatalf("use while full of fresh nonces: %v, want ErrBusy", err)
+	}
 	if c.Len() != 3 {
 		t.Fatalf("len %d, want 3", c.Len())
 	}
-	if !c.Use("a", t0) {
-		t.Fatal("evicted key should be usable again")
+	// Just inside the window, every nonce is still remembered.
+	edge := t0.Add(2 * MaxClockSkew)
+	if err := c.Use("a", edge); !errors.Is(err, ErrReplay) {
+		t.Fatalf("replay at the window edge: %v, want ErrReplay", err)
 	}
-	// Entries older than 2x the skew window are forgotten.
-	if !c.Use("b", t0.Add(2*MaxClockSkew+time.Second)) {
-		t.Fatal("expired key should be forgotten")
+	// Entries older than 2x the skew window are forgotten, making room.
+	later := edge.Add(time.Second)
+	if err := c.Use("d", later); err != nil {
+		t.Fatalf("use after the window: %v", err)
+	}
+	if c.Len() != 1 {
+		t.Fatalf("len %d after expiry, want 1", c.Len())
+	}
+}
+
+// TestVerifyFloodCannotFlushNonce replays the attack: capture a good offer,
+// fill the cache with offers from throwaway keys, then replay. The replay
+// must still be refused.
+func TestVerifyFloodCannotFlushNonce(t *testing.T) {
+	_, _, v, captured := fixture(t)
+	v.nonces = NewNonceCache(8)
+	recvFP := captured.ReceiverFP
+	m := FileManifest("x.bin", 1, 0o644)
+	if _, err := v.Verify(captured); err != nil {
+		t.Fatalf("first delivery: %v", err)
+	}
+	busy := false
+	for i := 0; i < 20; i++ {
+		o, err := NewOffer(newID(t, "flood"), "flood", recvFP, m, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := v.Verify(o); errors.Is(err, ErrBusy) {
+			busy = true
+		} else if err != nil {
+			t.Fatalf("flood offer %d: %v", i, err)
+		}
+	}
+	if !busy {
+		t.Fatal("a full cache never answered ErrBusy")
+	}
+	if _, err := v.Verify(captured); !errors.Is(err, ErrReplay) {
+		t.Fatalf("replay after a flood: %v, want ErrReplay", err)
 	}
 }
 

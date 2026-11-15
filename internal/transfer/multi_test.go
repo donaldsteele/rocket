@@ -318,3 +318,38 @@ func assertNoPartsTree(t *testing.T, root string) {
 		return nil
 	})
 }
+
+// TestLongNamesReceive: names up to the manifest's 255-byte segment limit
+// are received (shortened, extension kept), even though the part file and a
+// " (n)" uniquifier make the on-disk name longer while it is written.
+func TestLongNamesReceive(t *testing.T) {
+	dl := t.TempDir()
+	long := strings.Repeat("n", 250) + ".txt" // 254 bytes, a valid segment
+	for i := range 3 {
+		final, err := ReceiveFile(dl, long, 2, strings.NewReader("hi"), nil)
+		if err != nil {
+			t.Fatalf("receive %d of a long name: %v", i, err)
+		}
+		base := filepath.Base(final)
+		if len(base) > 255-len(PartSuffix) || !strings.HasSuffix(base, ".txt") {
+			t.Fatalf("final name %q (%d bytes)", base, len(base))
+		}
+	}
+	m := protocol.Manifest{Kind: protocol.KindMulti, Entries: []protocol.Entry{
+		{Path: "d", Mode: protocol.ModeDir}, {Path: "d/" + long, Size: 1}, {Path: "d/" + strings.Repeat("\u00e9", 127), Size: 1},
+	}, Total: 2}
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	x := NewExtractor(dl, m, nil)
+	for i, body := range []string{"", "1", "2"} {
+		if err := x.Write(i, strings.NewReader(body)); err != nil {
+			t.Fatalf("entry %d: %v", i, err)
+		}
+	}
+	res, err := x.Finish()
+	if err != nil || res.Files != 2 {
+		t.Fatalf("finish: %+v %v", res, err)
+	}
+	assertNoPartsTree(t, dl)
+}

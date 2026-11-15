@@ -77,7 +77,7 @@ prompt on the receiving computer.
 
 | input   | type     | meaning |
 |---------|----------|---------|
-| `peer`  | string   | peer name or fingerprint prefix, from `list_peers` |
+| `peer`  | string   | full fingerprint (safest), or a name or fingerprint prefix that matches exactly one peer, from `list_peers` |
 | `paths` | string[] | absolute paths of local files and folders; folders are sent recursively, symlinks skipped |
 
 ```json

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -19,30 +20,54 @@ const PartSuffix = ".rocket-part"
 var ErrSize = errors.New("size does not match the offer")
 
 // reserved holds Windows device names, which cannot be used as a file name
-// (with or without an extension) on Windows.
+// (with or without an extension) on Windows. Windows also treats the
+// superscript digits one, two and three (U+00B9, U+00B2, U+00B3) as device
+// numbers in COM and LPT names.
 var reserved = map[string]bool{
 	"CON": true, "PRN": true, "AUX": true, "NUL": true, "CONIN$": true, "CONOUT$": true,
 	"COM0": true, "COM1": true, "COM2": true, "COM3": true, "COM4": true,
 	"COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
 	"LPT0": true, "LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true,
 	"LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+	"COM\u00b9": true, "COM\u00b2": true, "COM\u00b3": true,
+	"LPT\u00b9": true, "LPT\u00b2": true, "LPT\u00b3": true,
 }
 
+// MaxNameBytes is the longest name SanitizeComponent returns: a file system
+// name is at most 255 bytes (ext4, APFS) or 255 UTF-16 units (NTFS; never
+// more units than UTF-8 bytes), and a received file is first written as
+// "<name> (n)" + PartSuffix, so room is left for both.
+const MaxNameBytes = 255 - len(PartSuffix) - len(" (99999)")
+
+// maxExtBytes is the longest extension kept when a long name is shortened.
+const maxExtBytes = 16
+
 // SanitizeComponent turns one untrusted name segment into a safe, portable
-// file name on every OS: characters Windows forbids (<>:"/\|?*) and control
-// characters become "_", trailing dots and spaces are trimmed, Windows device
-// names (CON, NUL, COM1, ...) get a "_" prefix, an empty or dot-only result
-// becomes "_", and the result is cut to 255 bytes on a rune boundary.
+// file name on every OS: characters Windows forbids (<>:"/\|?*), control
+// characters and invisible format characters (bidi overrides such as U+202E,
+// zero-width spaces; the joiners U+200C and U+200D are kept) become "_",
+// trailing dots and spaces are trimmed, Windows device names (CON, NUL,
+// COM1, ...) get a "_" prefix, an empty or dot-only result becomes "_", and a
+// name longer than MaxNameBytes is shortened on a rune boundary, keeping a
+// short extension.
 func SanitizeComponent(s string) string {
 	var b strings.Builder
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f || strings.ContainsRune(`<>:"/\|?*`, r) {
+		if unsafeRune(r) || strings.ContainsRune(`<>:"/\|?*`, r) {
 			b.WriteByte('_')
 			continue
 		}
 		b.WriteRune(r)
 	}
 	out := strings.TrimRight(b.String(), " .")
+	if len(out) > MaxNameBytes {
+		ext := ""
+		if i := strings.LastIndexByte(out, '.'); i > 0 && len(out)-i <= maxExtBytes {
+			ext = out[i:]
+		}
+		out = truncateUTF8(out[:len(out)-len(ext)], MaxNameBytes-len(ext)) + ext
+		out = strings.TrimRight(out, " .")
+	}
 	if out == "" {
 		return "_"
 	}
@@ -51,13 +76,40 @@ func SanitizeComponent(s string) string {
 		stem = stem[:i]
 	}
 	if reserved[strings.ToUpper(strings.TrimRight(stem, " "))] {
-		out = "_" + out
-	}
-	for len(out) > 255 {
-		_, size := utf8.DecodeLastRuneInString(out)
-		out = out[:len(out)-size]
+		out = truncateUTF8("_"+out, MaxNameBytes)
 	}
 	return out
+}
+
+// unsafeRune reports whether r must not appear in a file name or in a name
+// shown to the person: control characters, line and paragraph separators,
+// and format characters (which include the bidi controls that can make
+// "invoice<U+202E>fdp.exe" display as "invoiceexe.pdf"), except the zero-width
+// joiners that some scripts and emoji need.
+func unsafeRune(r rune) bool {
+	if r == 0x200C || r == 0x200D {
+		return false
+	}
+	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
+}
+
+// truncateUTF8 cuts s to at most n bytes on a rune boundary.
+func truncateUTF8(s string, n int) string {
+	for len(s) > n {
+		_, size := utf8.DecodeLastRuneInString(s)
+		s = s[:len(s)-size]
+	}
+	return s
+}
+
+// SanitizePath applies SanitizeComponent to every "/"-separated segment of
+// a manifest path: the names as they will be written to disk, safe to show.
+func SanitizePath(p string) string {
+	segs := strings.Split(p, "/")
+	for i, s := range segs {
+		segs[i] = SanitizeComponent(s)
+	}
+	return strings.Join(segs, "/")
 }
 
 // BaseName reduces an untrusted file name (for example a browser upload name,

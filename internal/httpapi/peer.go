@@ -20,8 +20,19 @@ func (s *Server) handleHello(w http.ResponseWriter, _ *http.Request) {
 
 // handleOffer verifies a signed peer offer and long-polls for the person's
 // decision (skipped for a trusted sender whose key matches the pinned key).
+//
+// Every offer with a good signature spends a slot in the replay cache, so
+// offers are rate-limited per IP, and an offer that could only be refused
+// for want of room to wait (an untrusted sender while the pending limits are
+// reached) is refused before its signature is checked.
 func (s *Server) handleOffer(w http.ResponseWriter, r *http.Request) {
+	ip := remoteIP(r)
+	if !s.offers.allow(ip) {
+		http.Error(w, "too many offers; slow down", http.StatusTooManyRequests)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, protocol.MaxOfferBytes)
+	decoded := limitOfferRead(w)
 	var o protocol.Offer
 	if err := json.NewDecoder(r.Body).Decode(&o); err != nil {
 		var mbe *http.MaxBytesError
@@ -32,20 +43,32 @@ func (s *Server) handleOffer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad offer: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	decoded()
+	// Trust-on-first-use with proof of key possession: a sender whose
+	// fingerprint is trusted AND whose key matches the pinned key skips the
+	// prompt, unless auto-accept is switched off in the settings. (The key
+	// is proven by Verify below; until then this only picks the path.)
+	autoOK := s.autoAccept() && s.trust.IsTrusted(o.SenderFP, o.SenderPub)
+	if !autoOK {
+		if err := s.pendingRoom(ip); err != nil {
+			http.Error(w, err.Error(), http.StatusTooManyRequests)
+			return
+		}
+	}
 	if _, err := s.verifier.Verify(&o); err != nil {
-		http.Error(w, "offer rejected: "+err.Error(), http.StatusBadRequest)
+		code := http.StatusBadRequest
+		if errors.Is(err, protocol.ErrBusy) {
+			code = http.StatusServiceUnavailable
+		}
+		http.Error(w, "offer rejected: "+err.Error(), code)
 		return
 	}
 
 	tid := randToken()
-	ip := remoteIP(r)
 	name := cleanLabel(o.SenderName, o.SenderFP)
 	up := &upload{transferID: tid, manifest: o.Manifest, senderName: name, senderFP: o.SenderFP, ip: ip}
 
-	// Trust-on-first-use with proof of key possession: a sender whose
-	// fingerprint is trusted AND whose key matches the pinned key skips the
-	// prompt, unless auto-accept is switched off in the settings.
-	if s.autoAccept() && s.trust.IsTrusted(o.SenderFP, o.SenderPub) {
+	if autoOK {
 		writeJSON(w, protocol.OfferReply{Accepted: true, Token: s.mintUpload(up), TransferID: tid})
 		return
 	}

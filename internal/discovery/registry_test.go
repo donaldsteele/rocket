@@ -1,9 +1,11 @@
 package discovery
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -174,6 +176,52 @@ func TestPeersFreshestFirstAndFind(t *testing.T) {
 	}
 }
 
+// TestResolveExactFingerprintBeatsNames covers a LAN host that names itself
+// after another peer's fingerprint and announces more often: a full
+// fingerprint must still resolve to the real peer, never to the impostor.
+func TestResolveExactFingerprintBeatsNames(t *testing.T) {
+	r, clk := newTestRegistry()
+	const victim, attacker = "ab12cd34ef567890", "9999999999999999"
+	r.Observe(ViaBeacon, Peer{Name: "laptop", Fingerprint: victim, Addr: "192.168.1.5:29005"})
+	clk.advance(time.Second)
+	r.Observe(ViaBeacon, Peer{Name: victim, Fingerprint: attacker, Addr: "192.168.1.66:29005"})
+	p, err := r.Resolve(victim)
+	if err != nil || p.Fingerprint != victim {
+		t.Fatalf("Resolve(full fp) = %+v, %v; want the victim", p, err)
+	}
+	if p, err := r.Resolve(strings.ToUpper(victim)); err != nil || p.Fingerprint != victim {
+		t.Fatalf("Resolve(upper-case fp) = %+v, %v", p, err)
+	}
+	// With the real peer gone, the impostor's name still does not match a
+	// full fingerprint.
+	clk.advance(peerTTL)
+	r.Observe(ViaBeacon, Peer{Name: victim, Fingerprint: attacker, Addr: "192.168.1.66:29005"})
+	if p, err := r.Resolve(victim); !errors.Is(err, ErrPeerNotFound) {
+		t.Fatalf("Resolve(fp of a gone peer) = %+v, %v; want not found", p, err)
+	}
+}
+
+func TestResolveAmbiguous(t *testing.T) {
+	r, _ := newTestRegistry()
+	r.Observe(ViaBeacon, Peer{Name: "desk", Fingerprint: "ab12000000000001", Addr: "192.168.1.5:29005"})
+	r.Observe(ViaBeacon, Peer{Name: "desk", Fingerprint: "cd34000000000002", Addr: "192.168.1.6:29005"})
+	r.Observe(ViaBeacon, Peer{Name: "ab12", Fingerprint: "ef56000000000003", Addr: "192.168.1.7:29005"})
+	for _, target := range []string{"desk", "DESK", "ab12"} {
+		if p, err := r.Resolve(target); !errors.Is(err, ErrPeerAmbiguous) {
+			t.Errorf("Resolve(%q) = %+v, %v; want ambiguous", target, p, err)
+		}
+		if _, ok := r.Find(target); ok {
+			t.Errorf("Find(%q) matched an ambiguous target", target)
+		}
+	}
+	if p, err := r.Resolve("cd34"); err != nil || p.Fingerprint != "cd34000000000002" {
+		t.Fatalf("Resolve(unique prefix) = %+v, %v", p, err)
+	}
+	if _, err := r.Resolve("nobody"); !errors.Is(err, ErrPeerNotFound) {
+		t.Fatalf("Resolve(unknown) = %v", err)
+	}
+}
+
 func TestPeersReturnsCopies(t *testing.T) {
 	r, _ := newTestRegistry()
 	r.Observe(ViaBeacon, Peer{Name: "c", Fingerprint: "3333333333333333", Addr: "192.168.1.7:29005"})
@@ -200,7 +248,10 @@ func TestBeaconPeer(t *testing.T) {
 	if !ok || p.Addr != "192.168.1.30:29005" || p.Name != "desk" || p.OS != "windows" || p.Version != "1.0.0" {
 		t.Fatalf("beaconPeer = %+v %v", p, ok)
 	}
-	for _, bad := range []string{`not json`, `{"name":"x"}`, `{"fp":"abcdefabcdefabcd","port":0}`, `{"fp":"abcdefabcdefabcd","port":70000}`} {
+	for _, bad := range []string{
+		`not json`, `{"name":"x"}`, `{"fp":"abcdefabcdefabcd","port":0}`, `{"fp":"abcdefabcdefabcd","port":70000}`,
+		`{"fp":"abcd","port":29005}`, `{"fp":"ABCDEFABCDEFABCD","port":29005}`, `{"fp":"abcdefabcdefabcz","port":29005}`,
+	} {
 		if _, ok := beaconPeer([]byte(bad), src); ok {
 			t.Errorf("beaconPeer(%s) accepted", bad)
 		}

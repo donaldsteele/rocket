@@ -106,6 +106,7 @@ var (
 	ErrStale         = errors.New("offer timestamp outside the allowed window")
 	ErrNonce         = errors.New("bad nonce")
 	ErrReplay        = errors.New("offer nonce already used")
+	ErrBusy          = errors.New("too many recent offers; try again in a few minutes")
 	ErrSignature     = errors.New("bad offer signature")
 	ErrManifest      = errors.New("invalid manifest")
 )

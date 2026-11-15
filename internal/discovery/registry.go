@@ -8,6 +8,8 @@
 package discovery
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"slices"
 	"strings"
@@ -218,17 +220,58 @@ func isIPv4Addr(addr string) bool {
 	return ip != nil && ip.To4() != nil
 }
 
-// Find returns the live peer whose name matches target (case-insensitive) or
-// whose fingerprint starts with target.
-func (r *Registry) Find(target string) (Peer, bool) {
+// ErrPeerNotFound and ErrPeerAmbiguous are wrapped by Resolve.
+var (
+	ErrPeerNotFound  = errors.New("peer not found on the network")
+	ErrPeerAmbiguous = errors.New("more than one peer matches; use the full fingerprint")
+)
+
+// IsFingerprint reports whether s is a full peer fingerprint: 16 lower-case
+// hex digits.
+func IsFingerprint(s string) bool { return isFingerprint(s) }
+
+// Resolve returns the one live peer that target names. A full 16-hex
+// fingerprint matches only the peer with exactly that fingerprint, never a
+// name: names come from unauthenticated announcements, so a peer could
+// otherwise call itself after another's fingerprint. Anything else matches
+// peers whose name equals target (case-insensitive) or whose fingerprint
+// starts with it; more than one such peer is ErrPeerAmbiguous rather than a
+// guess.
+func (r *Registry) Resolve(target string) (Peer, error) {
 	if target == "" {
-		return Peer{}, false
+		return Peer{}, fmt.Errorf("%w: no peer named", ErrPeerNotFound)
 	}
 	low := strings.ToLower(target)
-	for _, p := range r.Peers() {
+	peers := r.Peers()
+	if isFingerprint(low) {
+		for _, p := range peers {
+			if p.Fingerprint == low {
+				return p, nil
+			}
+		}
+		return Peer{}, fmt.Errorf("%w: %q", ErrPeerNotFound, target)
+	}
+	var match []Peer
+	for _, p := range peers {
 		if strings.EqualFold(p.Name, target) || strings.HasPrefix(p.Fingerprint, low) {
-			return p, true
+			match = append(match, p)
 		}
 	}
-	return Peer{}, false
+	switch len(match) {
+	case 0:
+		return Peer{}, fmt.Errorf("%w: %q", ErrPeerNotFound, target)
+	case 1:
+		return match[0], nil
+	}
+	fps := make([]string, len(match))
+	for i, p := range match {
+		fps[i] = p.Fingerprint
+	}
+	return Peer{}, fmt.Errorf("%w: %q matches %s", ErrPeerAmbiguous, target, strings.Join(fps, ", "))
+}
+
+// Find is Resolve reporting only whether exactly one peer matched.
+func (r *Registry) Find(target string) (Peer, bool) {
+	p, err := r.Resolve(target)
+	return p, err == nil
 }

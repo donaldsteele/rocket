@@ -53,7 +53,16 @@ The first release.
 - Path traversal, symlinks, devices and Windows reserved names are refused or
   made safe on receive; files are written as `.rocket-part` and renamed when
   complete.
-- Limits on offer size, entries, total bytes and pending offers.
+- Limits on offer size, entries, total bytes and pending offers; offers are
+  rate-limited per IP, offer bodies must arrive within 30 seconds, and one LAN
+  address can hold at most 32 connections.
+- The replay cache never forgets a nonce that is still inside the freshness
+  window; a flood gets "busy" (503) instead.
+- A full fingerprint only ever matches that exact peer, and a name or prefix
+  that matches several peers is refused, so a host cannot capture sends by
+  announcing another peer's fingerprint as its name.
+- Quitting cancels transfers in flight cleanly (partials removed, history
+  written).
 - Traffic is plain HTTP; see `docs/security.md`.
 
 [1.0.0]: https://github.com/donaldsteele/rocket/releases/tag/v1.0.0

@@ -47,7 +47,7 @@
     </header>
 
     <!-- Incoming offers: a sticky prompt above every view. -->
-    <section class="offers" aria-label="Incoming offers" x-show="offers.length" x-cloak>
+    <section class="offers" x-ref="offers" aria-label="Incoming offers" x-show="offers.length" x-cloak>
       <template x-for="o in offers" :key="o.id">
         <div class="offer" role="group" :aria-label="'Offer from ' + o.sender_name">
           <svg class="ico s-warn" aria-hidden="true" focusable="false"><use href="icons.svg#i-download"></use></svg>

@@ -26,7 +26,12 @@ type dropFile = transfer.BrowserFile
 // proven by the CSRF header). On the first accept it sets the cookie. The
 // reply carries a one-shot token for POST /drop/upload.
 func (s *Server) handleDropOffer(w http.ResponseWriter, r *http.Request) {
+	if !s.isLocal(r) && !s.offers.allow(remoteIP(r)) {
+		http.Error(w, "too many offers; slow down", http.StatusTooManyRequests)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, protocol.MaxOfferBytes)
+	decoded := limitOfferRead(w)
 	var body struct {
 		Files []dropFile `json:"files"`
 	}
@@ -34,6 +39,7 @@ func (s *Server) handleDropOffer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad offer", http.StatusBadRequest)
 		return
 	}
+	decoded()
 	m, err := dropManifest(body.Files)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

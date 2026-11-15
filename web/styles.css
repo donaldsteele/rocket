@@ -96,7 +96,9 @@ label.check{flex-direction:row;align-items:center;gap:var(--s2);color:var(--fg);
 @media (min-width:1100px){.topbar h1{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}}
 
 /* Incoming offers: a sticky prompt above the views */
-.offers{position:sticky;top:0;z-index:10}
+/* Capped and scrollable, so a stack of offers never covers the whole view
+   (or hides later offers' buttons) on a small screen. */
+.offers{position:sticky;top:0;z-index:10;max-height:50vh;overflow-y:auto;overscroll-behavior:contain}
 .offer{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2) var(--s4);padding:var(--s3) var(--s4);background:var(--warnbg);border-bottom:1px solid var(--line);border-left:4px solid var(--warn);box-shadow:0 4px 12px var(--shadow-soft)}
 .offer .otext{flex:1 1 300px;min-width:0;overflow-wrap:anywhere}
 .offer .otext p{margin:2px 0}

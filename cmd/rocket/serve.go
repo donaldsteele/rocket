@@ -118,6 +118,10 @@ func (rs *runtimeState) serve(openBrowser bool) int {
 		fmt.Fprintln(os.Stderr, "listen:", err)
 		return 1
 	}
+	// One LAN host cannot hold more than a few dozen connections open, so it
+	// cannot starve the process of file descriptors (offer bodies also have
+	// a read deadline; see httpapi).
+	ln = httpapi.LimitListener(ln, httpapi.MaxConnsPerIP)
 	hs := &http.Server{
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -155,6 +159,13 @@ func (rs *runtimeState) serve(openBrowser bool) int {
 	case <-ctx.Done():
 	case <-srv.Quit():
 	}
+	// Cancel the transfers in flight first, so each removes its partial
+	// files, writes its history entry and tells the other end, as the UI's
+	// Quit promises. Shutdown alone would leave the handlers running until
+	// the process exits under them.
+	cancelCtx, cancelDone := context.WithTimeout(context.Background(), 5*time.Second)
+	srv.CancelTransfers(cancelCtx)
+	cancelDone()
 	stopMDNS()
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer shutCancel()

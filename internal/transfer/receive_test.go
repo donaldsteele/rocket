@@ -11,20 +11,31 @@ import (
 
 func TestSanitizeComponent(t *testing.T) {
 	cases := map[string]string{
-		"report.pdf":     "report.pdf",
-		"a:b":            "a_b",
-		`a\b/c`:          "a_b_c",
-		"name. . ":       "name",
-		"...":            "_",
-		"":               "_",
-		"CON":            "_CON",
-		"con.txt":        "_con.txt",
-		"Lpt1.tar.gz":    "_Lpt1.tar.gz",
-		"COM10":          "COM10",
-		"console":        "console",
-		"a\x00b\nc":      "a_b_c",
-		`what?<>|*".txt`: "what______.txt",
-		"ファイル.txt":       "ファイル.txt",
+		"report.pdf":                 "report.pdf",
+		"a:b":                        "a_b",
+		`a\b/c`:                      "a_b_c",
+		"name. . ":                   "name",
+		"...":                        "_",
+		"":                           "_",
+		"CON":                        "_CON",
+		"con.txt":                    "_con.txt",
+		"Lpt1.tar.gz":                "_Lpt1.tar.gz",
+		"COM10":                      "COM10",
+		"console":                    "console",
+		"a\x00b\nc":                  "a_b_c",
+		`what?<>|*".txt`:             "what______.txt",
+		"ファイル.txt":                   "ファイル.txt",
+		"invoice\u202efdp.exe":       "invoice_fdp.exe",
+		"a\u2066b\u2069c":            "a_b_c",
+		"zero\u200bwidth":            "zero_width",
+		"bom\ufeff.txt":              "bom_.txt",
+		"c1\u0085x":                  "c1_x",
+		"\U0001F468\u200d\U0001F469": "\U0001F468\u200d\U0001F469",
+		"COM\u00b9.txt":              "_COM\u00b9.txt",
+		"lpt\u00b3":                  "_lpt\u00b3",
+		"COM\u00b2":                  "_COM\u00b2",
+		"LPT\u00b9.log":              "_LPT\u00b9.log",
+		"COM\u00b9x":                 "COM\u00b9x",
 	}
 	for in, want := range cases {
 		if got := SanitizeComponent(in); got != want {
@@ -32,8 +43,21 @@ func TestSanitizeComponent(t *testing.T) {
 		}
 	}
 	long := strings.Repeat("é", 200) // 400 bytes
-	if got := SanitizeComponent(long); len(got) > 255 || !strings.HasPrefix(long, got) {
+	if got := SanitizeComponent(long); len(got) > MaxNameBytes || !strings.HasPrefix(long, got) {
 		t.Errorf("long name not cut on a rune boundary: %d bytes", len(got))
+	}
+	longExt := strings.Repeat("a", 250) + ".pdf"
+	if got := SanitizeComponent(longExt); len(got) > MaxNameBytes || !strings.HasSuffix(got, ".pdf") || !strings.HasPrefix(got, "aaa") {
+		t.Errorf("long name with extension = %q (%d bytes)", got, len(got))
+	}
+	if got := SanitizeComponent(strings.Repeat("a", 240) + ". . .pdf"); strings.HasSuffix(got, " ") || strings.HasSuffix(got, ".") {
+		t.Errorf("shortened name ends in a dot or space: %q", got)
+	}
+	if got := SanitizeComponent("CON" + strings.Repeat(".x", 200)); len(got) > MaxNameBytes || got[0] != '_' {
+		t.Errorf("long reserved name = %q (%d bytes)", got, len(got))
+	}
+	if got := SanitizePath("a\u202e/b:c"); got != "a_/b_c" {
+		t.Errorf("SanitizePath = %q", got)
 	}
 	if got := BaseName(`C:\Users\x\Desktop\photo.jpg`); got != "photo.jpg" {
 		t.Errorf("BaseName = %q", got)

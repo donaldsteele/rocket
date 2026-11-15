@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/donaldsteele/rocket/internal/discovery"
 	"github.com/donaldsteele/rocket/internal/history"
 	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/transfer"
@@ -75,16 +76,18 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 
 // resolveTarget turns a peer reference into a send target and a display
 // name: host:port is used directly (and named by its address); otherwise it
-// is a discovered peer's name or fingerprint prefix, whose fingerprint the
-// receiver must then answer with.
+// is a discovered peer's full fingerprint, or a name or fingerprint prefix
+// that matches exactly one peer (discovery.Registry.Resolve). The receiver
+// must then answer with that peer's fingerprint.
 func (s *Server) resolveTarget(peer string) (transfer.Target, string, error) {
 	if transfer.IsHostPort(peer) {
 		return transfer.Target{Addr: peer}, peer, nil
 	}
-	if p, ok := s.reg.Find(peer); ok {
-		return transfer.Target{Addr: p.Addr, FP: p.Fingerprint}, p.Name, nil
+	p, err := s.reg.Resolve(peer)
+	if err != nil {
+		return transfer.Target{}, "", err
 	}
-	return transfer.Target{}, "", fmt.Errorf("peer %q not found on the network", peer)
+	return transfer.Target{Addr: p.Addr, FP: p.Fingerprint}, p.Name, nil
 }
 
 // startOutgoing registers an outgoing transfer (waiting for the receiver's
@@ -151,12 +154,19 @@ const relayManifestField = "manifest"
 
 // handleRelay takes files uploaded from this host's own browser UI and
 // streams them straight to a peer, so a browser (which has no local file
-// paths) can drive a peer-to-peer send. ?peer= names the peer. The body is
+// paths) can drive a peer-to-peer send. ?peer= is the peer's full
+// fingerprint (as the UI's peer list carries it) or a host:port; names and
+// prefixes are refused, since names are unauthenticated. The body is
 // multipart: first the "manifest" field, then one file part per listed file,
 // in order. One bare file goes out as kind:file, anything else as a tar
 // (kind:multi) built on the fly from the parts; nothing is staged.
 func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
-	target, peerName, err := s.resolveTarget(r.URL.Query().Get("peer"))
+	peer := r.URL.Query().Get("peer")
+	if !discovery.IsFingerprint(peer) && !transfer.IsHostPort(peer) {
+		http.Error(w, "peer must be a full fingerprint or host:port", http.StatusBadRequest)
+		return
+	}
+	target, peerName, err := s.resolveTarget(peer)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return

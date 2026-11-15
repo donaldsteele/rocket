@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -132,8 +133,11 @@ func (t *tools) sendFile(ctx context.Context, _ *mcp.CallToolRequest, in sendFil
 	if in.Peer == "" || len(in.Paths) == 0 {
 		return nil, sendFileOut{}, fmt.Errorf("peer and paths are required")
 	}
-	peer, ok := t.svc.Reg.Find(in.Peer)
-	if !ok {
+	peer, err := t.svc.Reg.Resolve(in.Peer)
+	if errors.Is(err, discovery.ErrPeerAmbiguous) {
+		return nil, sendFileOut{Note: err.Error() + " (from list_peers)"}, nil
+	}
+	if err != nil {
 		return nil, sendFileOut{Note: "peer not visible; call list_peers"}, nil
 	}
 	plan, err := transfer.PlanPaths(in.Paths)

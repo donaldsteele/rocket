@@ -72,8 +72,12 @@ sender                                   receiver
                     ◀──────────────────  {"ok": true}
 ```
 
-A host can be addressed by name, by fingerprint prefix (both from discovery),
-or directly as `host:port`.
+A host can be addressed by its full fingerprint, by name or fingerprint prefix
+(all from discovery), or directly as `host:port`. A full 16-hex fingerprint
+matches only the peer with exactly that fingerprint, never a name (names are
+not authenticated). A name or prefix must match exactly one peer; if several
+match, the send fails rather than guess. The browser UI always names peers by
+full fingerprint.
 
 ## GET /api/hello
 
@@ -162,11 +166,17 @@ The receiver answers **400** if any of these fail, in this order:
 5. The nonce has a valid shape.
 6. The manifest is valid.
 7. The signature verifies.
-8. The pair `(sender_fp, nonce)` has not been used before (an LRU of 4096
+8. The pair `(sender_fp, nonce)` has not been used before (a cache of 4096
    recent nonces; a nonce is only spent once the signature is good).
 
-It answers **413** for a body over 1 MiB and **429** when 16 offers are
-already waiting for a decision, or 4 from the same IP.
+It answers **413** for a body over 1 MiB, and **429** when one IP sends offers
+faster than a burst of 30 then one every 2 seconds, or when 16 offers are
+already waiting for a decision, or 4 from the same IP (for a sender that would
+be prompted; checked before the signature, so such an offer spends no nonce).
+The body must arrive within 30 seconds. A nonce is remembered until it is
+older than twice the clock-skew window and is never evicted early: when the
+cache is full of fresh nonces the receiver answers **503** until room frees
+up, so a flood of offers can delay offers but never make a replay possible.
 
 ### Decision
 
@@ -203,8 +213,11 @@ in `trusted.json`.
 The receiver writes each file to `<name>.rocket-part` and renames it when
 complete. Each top-level name gets a fresh file or folder in the download
 folder (`photos`, then `photos (1)` if taken), so nothing that was there before
-is written into or over. Windows reserved names and trailing dots and spaces
-are sanitized. On any failure, or on cancel, everything the transfer created is
+is written into or over. Windows reserved names (including `COM¹`-style
+superscript forms), trailing dots and spaces, control characters and invisible
+format characters (bidi overrides, zero-width spaces) are sanitized, and a name
+longer than 235 bytes is shortened (keeping its extension) so the part file
+and a ` (n)` suffix still fit the 255-byte name limit. On any failure, or on cancel, everything the transfer created is
 removed.
 
 Answers: **200** `{"ok":true}`; **400** on a size or archive mismatch; **410**
@@ -239,4 +252,7 @@ page (`drop.html`), not the full UI.
 | decision wait                 | 2 minutes  |
 | upload token lifetime         | 10 minutes |
 | pending offers (total / per IP) | 16 / 4   |
+| offers per IP                 | burst 30, then 1 per 2 s |
+| offer body arrival            | 30 seconds |
+| connections per LAN IP        | 32         |
 | drop cookie lifetime          | 30 days    |

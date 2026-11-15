@@ -111,7 +111,7 @@ func NewVerifier(selfFP string) *Verifier {
 // public key and that its fingerprint derives from it, that the offer names
 // this receiver, the timestamp window, nonce shape, manifest validity, the
 // signature, and finally the replay cache (only offers with a good signature
-// consume a nonce). It returns the sender's public key. Errors wrap one of the
+// consume a nonce; ErrBusy when the cache is full of fresh nonces). It returns the sender's public key. Errors wrap one of the
 // Err* values in this package.
 func (v *Verifier) Verify(o *Offer) (ed25519.PublicKey, error) {
 	if o.Proto != Version {
@@ -149,8 +149,8 @@ func (v *Verifier) Verify(o *Offer) (ed25519.PublicKey, error) {
 	if !node.Verify(pub, msg, sig) {
 		return nil, ErrSignature
 	}
-	if !v.nonces.Use(o.SenderFP+"/"+o.Nonce, now) {
-		return nil, ErrReplay
+	if err := v.nonces.Use(o.SenderFP+"/"+o.Nonce, now); err != nil {
+		return nil, err
 	}
 	return pub, nil
 }

@@ -210,7 +210,7 @@ function app() {
       const d = m.data || {};
       switch (m.type) {
         case 'offer_gone':
-          this.offers = this.offers.filter((x) => x.id !== d.transfer_id);
+          this.removeOffer(d.transfer_id);
           if (d.reason !== 'accepted') this.loadHistory();
           break;
         case 'offer':
@@ -256,10 +256,28 @@ function app() {
       this.say(`${o.sender_name} wants to send you ${this.offerWhat(o)}. Accept or decline at the top of the page.`);
     },
 
+    // removeOffer drops a prompt. If keyboard focus was inside the offers
+    // (on the button just pressed, which is about to leave the page), it
+    // moves to the next offer's first button, or else to the current view's
+    // heading, instead of falling back to the top of the document.
+    removeOffer(id) {
+      const box = this.$refs.offers;
+      const hadFocus = !!(box && box.contains(document.activeElement));
+      this.offers = this.offers.filter((x) => x.id !== id);
+      if (!hadFocus) return;
+      this.$nextTick(() => {
+        // Another offer went away and focus is still on a live button.
+        if (box.contains(document.activeElement)) return;
+        const next = box.querySelector('.offer button');
+        const target = next || document.getElementById(`h-${this.view}`);
+        if (target) target.focus();
+      });
+    },
+
     // decide answers an offer: accept, accept and trust the sender's key
     // ("Always accept from this host"), or decline.
     async decide(o, accept, trust) {
-      this.offers = this.offers.filter((x) => x.id !== o.id);
+      this.removeOffer(o.id);
       try {
         const r = await api('api/accept', jsonBody('POST', { id: o.id, accept, trust: !!(accept && trust) }));
         if (!r.ok) throw new Error(await errText(r));

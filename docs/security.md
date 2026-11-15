@@ -78,13 +78,20 @@ Every peer offer is signed with the sender's ed25519 key. The receiver checks:
 
 A trusted fingerprint presented with a different key gets a normal prompt.
 Changing the name or IP address of a host does not change its fingerprint.
+Names come from unauthenticated announcements, so a full fingerprint never
+matches a name, and a name or fingerprint prefix that matches more than one
+peer is refused instead of guessed. The browser UI sends by full fingerprint.
 
 ### Someone replays a captured offer
 
 Offers carry a timestamp (accepted within 5 minutes of the receiver's clock)
-and a random nonce. The receiver remembers the last 4096 (sender, nonce) pairs
-and refuses a repeat; an offer older than the window is refused anyway. Upload tokens are one-shot, expire after 10 minutes and are
-only accepted from the IP address that made the offer.
+and a random nonce. The receiver remembers every (sender, nonce) pair it saw
+within twice that window and refuses a repeat; an offer older than the window
+is refused anyway. The cache holds 4096 pairs and never forgets one early: if
+someone floods it, new offers get "busy" (503) for a few minutes instead, so a
+flood can delay transfers but cannot make a replay possible. Offers are also
+rate-limited per IP address. Upload tokens are one-shot, expire after 10
+minutes and are only accepted from the IP address that made the offer.
 
 Keep the clocks of your computers roughly right (within 5 minutes); network
 time does this for you on most systems.
@@ -97,9 +104,12 @@ backslashes, colons, NUL or control characters, no duplicates (case-blind) and
 no file that is also a folder. The tar stream must match the list exactly;
 symlinks, hard links and devices are refused. Each top-level item gets a fresh
 name in the download folder, everything below it is joined and re-checked
-under that folder, and Windows reserved names (CON, NUL, COM1, ...) and
-trailing dots and spaces are made safe. Files are written as `.rocket-part` and
-renamed when complete; a failed or cancelled transfer removes what it wrote.
+under that folder, and Windows reserved names (CON, NUL, COM1, COM¹, ...),
+trailing dots and spaces, control characters and invisible format characters
+are made safe. The accept prompt shows the names as they will be written, so a
+right-to-left override cannot make `invoice<RLO>fdp.exe` look like a PDF.
+Files are written as `.rocket-part` and renamed when complete; a failed or
+cancelled transfer removes what it wrote.
 
 ### A web page in your browser tries to drive rocket
 
