@@ -28,7 +28,7 @@ type app struct {
 	shown         View
 	shownOnce     bool
 
-	status, offers, open, start, quit, exit *systray.MenuItem
+	status, offers, activity, open, start, quit, exit *systray.MenuItem
 }
 
 func newApp(client *Client, port int) *app {
@@ -49,6 +49,8 @@ func (a *app) onReady(ctx context.Context) {
 	a.status.Disable()
 	a.offers = systray.AddMenuItem("", "Open rocket to accept or decline")
 	a.offers.Hide()
+	a.activity = systray.AddMenuItem("", "Open rocket to see the transfers")
+	a.activity.Hide()
 	systray.AddSeparator()
 	a.open = systray.AddMenuItem("Open rocket", "Open the rocket window in your browser")
 	a.start = systray.AddMenuItem("Start rocket", "Start rocket in the background")
@@ -122,6 +124,14 @@ func (a *app) apply(v View) {
 			a.offers.Show()
 		}
 	}
+	if first || v.Activity != old.Activity {
+		if v.Activity == "" {
+			a.activity.Hide()
+		} else {
+			a.activity.SetTitle(v.Activity + ": open rocket")
+			a.activity.Show()
+		}
+	}
 	setEnabled(a.open, v.CanOpen)
 	setEnabled(a.start, v.CanStart)
 	setEnabled(a.quit, v.CanQuit)
@@ -144,6 +154,8 @@ func (a *app) handleClicks(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-a.offers.ClickedCh:
+			openInBrowser(a.client.UIURL())
+		case <-a.activity.ClickedCh:
 			openInBrowser(a.client.UIURL())
 		case <-a.open.ClickedCh:
 			openInBrowser(a.client.UIURL())

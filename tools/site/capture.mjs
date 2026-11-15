@@ -151,7 +151,7 @@ function beacons() {
   for (const to of Object.values(hosts)) {
     for (const p of Object.values(hosts)) {
       if (p === to) continue;
-      const pkt = Buffer.from(JSON.stringify({ name: p.name, fp: p.fp, port: p.proxy, ver: p.ver, os: p.os }));
+      const pkt = Buffer.from(JSON.stringify({ name: p.name, fp: p.fp, port: p.proxy, ver: p.ver, os: p.os, proto: 2 }));
       udp.send(pkt, to.beacon, HOSTIP);
     }
   }

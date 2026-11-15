@@ -16,6 +16,7 @@ import (
 	"github.com/donaldsteele/rocket/internal/buildinfo"
 	"github.com/donaldsteele/rocket/internal/history"
 	"github.com/donaldsteele/rocket/internal/mcpserver"
+	"github.com/donaldsteele/rocket/internal/resume"
 )
 
 // nopWriteCloser keeps stdout open when the transport closes.
@@ -52,6 +53,11 @@ func runMCP(args []string) int {
 		hist = nil
 	}
 	svc := &mcpserver.Service{ID: rs.id, Reg: rs.reg, History: hist}
+	if outbox, err := resume.OpenOutbox(rs.cfg.DataDir); err == nil {
+		svc.Outbox = outbox // interrupted sends: send_file adds, get_status lists
+	} else {
+		fmt.Fprintln(os.Stderr, "outbox:", err) // keep serving without resume records
+	}
 	srv := mcpserver.New(svc, mcpserver.Options{Version: buildinfo.Version, Logger: logger})
 
 	transport := &mcp.IOTransport{Reader: io.NopCloser(os.Stdin), Writer: nopWriteCloser{os.Stdout}}

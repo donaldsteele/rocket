@@ -55,7 +55,9 @@
             <p><strong x-text="o.sender_name"></strong> wants to send you
               <strong x-text="offerWhat(o)"></strong>
               <span class="muted" x-show="o.size" x-text="'(' + fmtSize(o.size) + ')'"></span>
-              <span class="muted" x-show="o.from_browser">from a web browser</span></p>
+              <span class="muted" x-show="o.from_browser">from a web browser</span>
+              <span class="state sec" x-show="!o.from_browser"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-lock"></use></svg>Encrypted</span>
+              <span class="state nosec" x-show="o.from_browser"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-lock-open"></use></svg>Not encrypted</span></p>
             <p class="names" x-show="o.files > 1 && (o.names || []).length" x-text="namesLine(o)"></p>
             <p class="fp" x-show="o.sender_fp"><span class="muted">Fingerprint</span> <span x-text="o.sender_fp"></span></p>
           </div>
@@ -87,15 +89,18 @@
         <div class="grid">
           <section class="card" aria-labelledby="h-peers">
             <h3 id="h-peers"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-send"></use></svg>Computers on your network</h3>
+            <p class="sub secnote" x-show="peers.some((p) => peerOK(p))"><svg class="ico s-ok" aria-hidden="true" focusable="false"><use href="icons.svg#i-lock"></use></svg>Files you send to these computers are encrypted on the way. Names and sizes are not.</p>
             <ul class="plain" aria-label="Computers running rocket">
               <template x-for="p in peers" :key="p.fp">
-                <li class="peer">
+                <li class="peer" :class="{old: !peerOK(p)}">
                   <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-monitor"></use></svg>
                   <div class="who">
-                    <div class="nm" x-text="p.name"></div>
+                    <div class="nm"><span x-text="p.name"></span>
+                      <span class="state warn" x-show="!peerOK(p)"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-triangle-alert"></use></svg>Needs update</span></div>
                     <div class="meta" x-text="peerMeta(p)"></div>
                   </div>
-                  <div class="act">
+                  <p class="upd" x-show="!peerOK(p)" x-text="peerUpdateText(p)"></p>
+                  <div class="act" x-show="peerOK(p)">
                     <button type="button" class="primary" :disabled="stopped" @click="pickFor(p, false)" :aria-label="'Send files to ' + p.name">
                       <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-file"></use></svg>Send files</button>
                     <button type="button" :disabled="stopped" @click="pickFor(p, true)" :aria-label="'Send a folder to ' + p.name">
@@ -120,7 +125,7 @@
                 <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-upload"></use></svg>Choose files</button></p>
               <input type="file" x-ref="drop" class="sr" multiple tabindex="-1" aria-hidden="true" @change="onDropPick()">
             </div>
-            <p class="sub">Phones and computers without rocket can send to this one too: open this computer's address in a web browser, port <span class="mono" x-text="self.port || 29005"></span>.</p>
+            <p class="sub">Phones and computers without rocket can send to this one too: open this computer's address in a web browser, port <span class="mono" x-text="self.port || 29005"></span>. Uploads from a browser are not encrypted.</p>
           </section>
         </div>
       </section>
@@ -132,14 +137,17 @@
           <template x-for="x in xferList()" :key="x.id">
             <li class="xfer">
               <div class="xhead">
-                <span class="state" :class="x.state === 'waiting' ? 'warn' : 'info'">
-                  <svg class="ico" aria-hidden="true" focusable="false"><use :href="'icons.svg#i-' + xferIcon(x)"></use></svg><span x-text="xferWord(x)"></span></span>
+                <span class="state" :class="xferClass(x)">
+                  <svg class="ico" aria-hidden="true" focusable="false"><use :href="'icons.svg#i-' + xferIcon(x)"></use></svg><span aria-hidden="true" x-text="xferWord(x)"></span><span class="sr" x-text="xferSpoken(x)"></span></span>
                 <span class="xname"><strong x-text="countWhat(x.name, x.files)"></strong>
                   <span class="muted" x-show="x.peer" x-text="(x.dir === 'in' ? 'from ' : 'to ') + x.peer"></span></span>
+                <span class="state sec" x-show="x.encrypted"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-lock"></use></svg>Encrypted</span>
+                <span class="state nosec" x-show="x.encrypted === false && !x.local"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-lock-open"></use></svg>Not encrypted</span>
                 <button type="button" class="small" x-show="!x.local" :disabled="stopped" @click="cancel(x)" :aria-label="'Cancel ' + countWhat(x.name, x.files)">
                   <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-square"></use></svg>Cancel</button>
               </div>
-              <p class="xfile" x-show="x.files > 1 && x.fileIndex" x-text="'File ' + x.fileIndex + ' of ' + x.files + ': ' + (x.file || '')"></p>
+              <p class="xfile" x-show="x.state === 'reconnecting'">Connection lost<span x-show="x.retryError" x-text="x.retryError ? ': ' + x.retryError.replace(/[.]$/, '') : ''"></span>. rocket tries again by itself and continues where it stopped.</p>
+              <p class="xfile" x-show="x.state !== 'reconnecting' && x.files > 1 && x.fileIndex" x-text="'File ' + x.fileIndex + ' of ' + x.files + ': ' + (x.file || '')"></p>
               <div class="xbar">
                 <div class="track" role="progressbar" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="pct(x.sent, x.total)"
                      :aria-label="countWhat(x.name, x.files)" :aria-valuetext="pct(x.sent, x.total) + '%, ' + (fmtSize(x.sent) || '0 B') + ' of ' + (fmtSize(x.total) || '0 B')">
@@ -151,6 +159,49 @@
           </template>
         </ul>
         <p class="empty" x-show="!xferList().length">Nothing is moving right now. Transfers show up here while they run; finished ones are in History.</p>
+
+        <!-- Interrupted: sends to resume, and what this computer kept. -->
+        <section class="card resum" aria-labelledby="h-resume" x-show="resumableCount()" x-cloak>
+          <h3 id="h-resume"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-unplug"></use></svg>Interrupted transfers</h3>
+          <p class="sub">When a connection breaks, what arrived is kept for 24 hours, and the transfer continues where it stopped.</p>
+          <div class="alert error" role="alert" x-show="resumeError" x-text="resumeError"></div>
+          <div x-show="resumable.outgoing.length">
+            <h4 id="h-resume-out">Sends to resume</h4>
+            <ul class="plain kept" aria-labelledby="h-resume-out">
+              <template x-for="o in resumable.outgoing" :key="o.transfer_id">
+                <li>
+                  <span class="state warn"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-unplug"></use></svg>Interrupted</span>
+                  <div class="who"><strong x-text="countWhat(o.name, o.files)"></strong> <span class="muted" x-text="'to ' + o.peer_name"></span>
+                    <div class="meta" x-text="sendMeta(o)"></div></div>
+                  <div class="act">
+                    <button type="button" class="small primary" :disabled="stopped || !!busy[o.transfer_id]" @click="resumeSend(o)" :aria-label="'Resume sending ' + countWhat(o.name, o.files) + ' to ' + o.peer_name">
+                      <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-play"></use></svg>Resume</button>
+                    <button type="button" class="small danger" :disabled="stopped || !!busy[o.transfer_id]" @click="discardSend(o)" :aria-label="'Discard the interrupted send of ' + countWhat(o.name, o.files)">
+                      <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-trash-2"></use></svg>Discard</button>
+                  </div>
+                </li>
+              </template>
+            </ul>
+          </div>
+          <div x-show="resumable.incoming.length">
+            <h4 id="h-resume-in">Kept on this computer</h4>
+            <p class="sub">These continue by themselves when the sender tries again.</p>
+            <ul class="plain kept" aria-labelledby="h-resume-in">
+              <template x-for="k in resumable.incoming" :key="k.id">
+                <li>
+                  <span class="state warn"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-unplug"></use></svg>Partly received</span>
+                  <div class="who"><strong x-text="countWhat(k.name, k.files)"></strong> <span class="muted" x-text="'from ' + k.sender_name"></span>
+                    <div class="meta" x-text="keptMeta(k)"></div>
+                    <div class="meta wrapany" x-show="k.location" x-text="k.location"></div></div>
+                  <div class="act">
+                    <button type="button" class="small danger" :disabled="stopped || !!busy[k.id]" @click="discardKept(k)" :aria-label="'Discard what arrived of ' + countWhat(k.name, k.files)">
+                      <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-trash-2"></use></svg>Discard</button>
+                  </div>
+                </li>
+              </template>
+            </ul>
+          </div>
+        </section>
 
         <section class="card" aria-labelledby="h-activity" style="margin-top:var(--s4)">
           <h3 id="h-activity">Recent activity</h3>
@@ -175,6 +226,7 @@
           </div>
         </div>
         <div class="alert error" role="alert" x-show="historyError" x-text="historyError"></div>
+        <div class="alert error" role="alert" x-show="resumeError && view === 'history'" x-text="resumeError"></div>
         <div class="histbox" x-show="history.length">
           <ul class="plain hist" aria-label="Past transfers, newest first">
             <template x-for="h in history" :key="h.id + h.ended">
@@ -185,9 +237,23 @@
                   <span class="hdir"><svg class="ico s-muted" aria-hidden="true" focusable="false"><use :href="h.dir === 'in' ? 'icons.svg#i-arrow-down' : 'icons.svg#i-arrow-up'"></use></svg><span class="sr" x-text="h.dir === 'in' ? 'Received' : 'Sent'"></span></span>
                   <strong x-text="countWhat(h.name || '(nothing)', h.files)"></strong>
                   <span class="muted" x-text="(h.dir === 'in' ? 'from ' : 'to ') + (h.peer_name || 'unknown')"></span></span>
+                <span class="state sec" x-show="showSec(h) && h.encrypted"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-lock"></use></svg>Encrypted</span>
+                <span class="state nosec" x-show="showSec(h) && !h.encrypted"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-lock-open"></use></svg>Not encrypted</span>
                 <span class="hmeta" x-text="fmtSize(h.bytes) || '0 B'"></span>
                 <span class="hmeta"><time :datetime="h.ended" x-text="when(h.ended)"></time></span>
                 <span class="herr" x-show="h.error && h.result !== 'ok'" x-text="h.error"></span>
+                <div class="hacts" x-show="outgoingFor(h)">
+                  <span class="sub" x-text="outgoingFor(h) ? 'Can be resumed until ' + untilText(outgoingFor(h).expires) + '.' : ''"></span>
+                  <button type="button" class="small primary" :disabled="stopped || !!busy[h.id]" @click="resumeSend(outgoingFor(h))" :aria-label="'Resume sending ' + countWhat(h.name, h.files) + ' to ' + h.peer_name">
+                    <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-play"></use></svg>Resume</button>
+                  <button type="button" class="small danger" :disabled="stopped || !!busy[h.id]" @click="discardSend(outgoingFor(h))" :aria-label="'Discard the interrupted send of ' + countWhat(h.name, h.files)">
+                    <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-trash-2"></use></svg>Discard</button>
+                </div>
+                <div class="hacts" x-show="keptFor(h)">
+                  <span class="sub" x-text="keptFor(h) ? 'Kept: ' + keptMeta(keptFor(h)) + '.' : ''"></span>
+                  <button type="button" class="small danger" :disabled="stopped || !!busy[h.id]" @click="discardKept(keptFor(h))" :aria-label="'Discard what arrived of ' + countWhat(h.name, h.files)">
+                    <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-trash-2"></use></svg>Discard</button>
+                </div>
               </li>
             </template>
           </ul>

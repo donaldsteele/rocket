@@ -43,11 +43,24 @@ type Status struct {
 	Version  string // rocket's version
 	Peers    int    // peers rocket can see on the LAN
 	Incoming int    // offers waiting for an answer
-	Err      error  // why Running is false
+	// OldPeers counts the peers that speak another protocol than rocket
+	// (an older or newer rocket): they cannot be sent to until updated.
+	OldPeers int
+	// Reconnecting counts sends whose connection broke and that are trying
+	// again; Interrupted counts sends that gave up plus receives kept for a
+	// resume. Both are 0 when rocket cannot tell (an older rocket).
+	Reconnecting int
+	Interrupted  int
+	Err          error // why Running is false
 }
+
+// proto is the wire protocol this tray's rocket speaks.
+const proto = 2
 
 // Status reads /api/self, /api/peers and /api/incoming. Any failure, or an
 // answer that does not look like rocket, reports Running false with Err set.
+// /api/transfers and /api/resumable add the reconnecting and interrupted
+// counts; a failure there leaves them 0.
 func (c *Client) Status(ctx context.Context) Status {
 	var self struct {
 		Name        string `json:"name"`
@@ -60,20 +73,46 @@ func (c *Client) Status(ctx context.Context) Status {
 	if self.Fingerprint == "" {
 		return Status{Err: errors.New("the program on this port is not rocket")}
 	}
-	var peers, incoming []json.RawMessage
+	var peers []struct {
+		Proto int `json:"proto"`
+	}
+	var incoming []json.RawMessage
 	if err := c.getJSON(ctx, "/api/peers", &peers); err != nil {
 		return Status{Err: err}
 	}
 	if err := c.getJSON(ctx, "/api/incoming", &incoming); err != nil {
 		return Status{Err: err}
 	}
-	return Status{
+	st := Status{
 		Running:  true,
 		Name:     self.Name,
 		Version:  self.Version,
 		Peers:    len(peers),
 		Incoming: len(incoming),
 	}
+	for _, p := range peers {
+		if p.Proto != 0 && p.Proto != proto { // 0: a rocket that does not say
+			st.OldPeers++
+		}
+	}
+	var xfers []struct {
+		State string `json:"state"`
+	}
+	if c.getJSON(ctx, "/api/transfers", &xfers) == nil {
+		for _, x := range xfers {
+			if x.State == "reconnecting" {
+				st.Reconnecting++
+			}
+		}
+	}
+	var res struct {
+		Outgoing []json.RawMessage `json:"outgoing"`
+		Incoming []json.RawMessage `json:"incoming"`
+	}
+	if c.getJSON(ctx, "/api/resumable", &res) == nil {
+		st.Interrupted = len(res.Outgoing) + len(res.Incoming)
+	}
+	return st
 }
 
 // Quit asks rocket to shut down (POST /api/quit with the CSRF header).

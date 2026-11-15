@@ -70,3 +70,41 @@ func TestOutboxExpiry(t *testing.T) {
 		t.Fatalf("after sweep %+v", l)
 	}
 }
+
+func TestOutboxSupersede(t *testing.T) {
+	b, err := OpenOutbox(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs := []Outgoing{
+		{ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ManifestHash: "h1", PeerFP: "0123456789abcdef", Addr: "10.0.0.2:29005"},
+		{ID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", ManifestHash: "h1", PeerFP: "fedcba9876543210", Addr: "10.0.0.3:29005"},
+		{ID: "cccccccccccccccccccccccccccccccc", ManifestHash: "h2", PeerFP: "0123456789abcdef", Addr: "10.0.0.2:29005"},
+		{ID: "dddddddddddddddddddddddddddddddd", ManifestHash: "h1", Addr: "10.0.0.4:29005"},
+	}
+	for _, r := range recs {
+		if err := b.Put(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Same files, same peer (it may have a new address): gone.
+	if n := b.Supersede("h1", "0123456789abcdef", "10.0.0.9:29005"); n != 1 {
+		t.Fatalf("superseded %d, want 1", n)
+	}
+	if _, ok := b.Get(recs[0].ID); ok {
+		t.Fatal("matching record kept")
+	}
+	// A bare host:port send matches by address only.
+	if n := b.Supersede("h1", "", "10.0.0.3:29005"); n != 0 {
+		t.Fatalf("superseded %d by address of a fingerprinted record", n)
+	}
+	if n := b.Supersede("h1", "", "10.0.0.4:29005"); n != 1 {
+		t.Fatalf("superseded %d by address, want 1", n)
+	}
+	if n := b.Supersede("", "", ""); n != 0 {
+		t.Fatalf("empty hash superseded %d", n)
+	}
+	if l := b.List(); len(l) != 2 {
+		t.Fatalf("left %+v", l)
+	}
+}

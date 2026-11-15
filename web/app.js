@@ -2,7 +2,10 @@
 // views Send, Transfers, History, Settings). Talks only to the loopback
 // control API of this rocket: peers come from UDP-beacon and mDNS discovery,
 // transfers are pushed with an accept prompt (trust-on-first-use), and
-// progress arrives over the SSE event stream, keyed by transfer_id.
+// progress arrives over the SSE event stream, keyed by transfer_id. Peer
+// transfers are encrypted (protocol 2); a send whose connection breaks
+// reconnects by itself, and one that gives up, or a receive kept half-done,
+// is listed with Resume / Discard until it expires (GET /api/resumable).
 
 // api calls the loopback control API. Every non-GET call carries the
 // X-Rocket-CSRF header the server requires.
@@ -29,6 +32,10 @@ async function errText(r) {
 
 const VIEWS = ['send', 'transfers', 'history', 'settings'];
 
+// PROTO is the wire protocol this UI's rocket speaks; peers that announce
+// another one show as needing an update and cannot be sent to.
+const PROTO = 2;
+
 function app() {
   let saved = 'send';
   try { saved = localStorage.getItem('rocket.view') || 'send'; } catch (e) { /* storage blocked */ }
@@ -45,10 +52,14 @@ function app() {
     theme: document.documentElement.getAttribute('data-theme') || 'dark',
     peers: [],
     offers: [],
-    xfers: {}, // transfer_id -> {id,name,peer,dir,state,sent,total,file,fileIndex,files,local}
+    xfers: {}, // transfer_id -> {id,name,peer,dir,state,sent,total,file,fileIndex,files,local,encrypted,attempt,attempts,retryError}
     ended: {}, // transfer_id -> true once finished, so a late poll cannot revive it
     history: [],
     historyError: '',
+    // Interrupted sends (Resume / Discard) and transfers kept here (Discard).
+    resumable: { outgoing: [], incoming: [] },
+    resumeError: '',
+    busy: {}, // transfer_id -> true while its Resume or Discard runs
     logLines: [],
     logSeq: 0,
     announce: '',
@@ -71,12 +82,15 @@ function app() {
       this.loadIncoming();
       this.loadTransfers();
       this.loadHistory();
+      this.loadResumable();
       this.loadSettings();
       setInterval(() => {
         if (this.stopped) return;
         this.pollPeers();
         this.loadTransfers();
       }, 2000);
+      // Events keep the resumable lists current; this catches expiry.
+      setInterval(() => { if (!this.stopped) this.loadResumable(); }, 30000);
       this.connectEvents();
     },
 
@@ -87,6 +101,7 @@ function app() {
       this.navOpen = false;
       try { localStorage.setItem('rocket.view', v); } catch (e) { /* storage blocked */ }
       if (v === 'history') this.loadHistory();
+      if (v === 'history' || v === 'transfers') this.loadResumable();
       if (v === 'settings') this.loadSettings();
       // Move focus to the view's heading, so keyboard and screen-reader
       // users land on what they just opened.
@@ -100,7 +115,7 @@ function app() {
       this.$nextTick(() => this.$refs.menuBtn && this.$refs.menuBtn.focus());
     },
     navCount(id) {
-      if (id === 'transfers') return this.xferList().length + this.offers.length;
+      if (id === 'transfers') return this.xferList().length + this.offers.length + this.resumableCount();
       return 0;
     },
     navCountText(id) {
@@ -109,6 +124,7 @@ function app() {
       const n = this.xferList().length;
       if (n) parts.push(`${n} in progress`);
       if (this.offers.length) parts.push(`${this.offers.length} waiting for you`);
+      if (this.resumableCount()) parts.push(`${this.resumableCount()} interrupted`);
       return `: ${parts.join(', ')}`;
     },
 
@@ -146,7 +162,7 @@ function app() {
           next[t.transfer_id] = Object.assign({}, this.xfers[t.transfer_id] || {}, {
             id: t.transfer_id, name: t.name, peer: t.peer_name, dir: t.dir, state: t.state,
             sent: t.sent, total: t.total, file: t.file, fileIndex: t.file_index, files: t.files,
-            local: false,
+            local: false, encrypted: !!t.encrypted, attempt: t.attempt || 0, attempts: t.attempts || 0,
           });
         });
         // Keep local placeholders (a browser upload about to start).
@@ -160,6 +176,15 @@ function app() {
         this.history = Array.isArray(list) ? list : [];
         this.historyError = '';
       } catch (e) { this.historyError = `Could not load history: ${e.message || e}`; }
+    },
+    async loadResumable() {
+      try {
+        const r = await this.get('api/resumable');
+        this.resumable = {
+          outgoing: Array.isArray(r && r.outgoing) ? r.outgoing : [],
+          incoming: Array.isArray(r && r.incoming) ? r.incoming : [],
+        };
+      } catch (e) { /* transient */ }
     },
     async clearHistory() {
       if (!window.confirm('Clear the whole transfer history? Received files are kept.')) return;
@@ -180,12 +205,97 @@ function app() {
       } catch (e) { this.log(`could not cancel: ${e.message || e}`); }
     },
     // finish forgets a transfer that ended (any outcome) and refreshes the
-    // history, where its entry now is.
+    // history, where its entry now is, and what can be resumed.
     finish(id) {
       this.ended[id] = true;
       delete this.xfers[id];
       this.xfers = Object.assign({}, this.xfers);
       this.loadHistory();
+      this.loadResumable();
+    },
+
+    // ---- resume ----
+    resumableCount() {
+      return this.resumable.outgoing.length + this.resumable.incoming.length;
+    },
+    setBusy(id, on) {
+      const b = Object.assign({}, this.busy);
+      if (on) b[id] = true; else delete b[id];
+      this.busy = b;
+    },
+    // resumeSend offers an interrupted send again; unchanged files continue
+    // where they stopped. It shows up in Transfers under a new ID.
+    async resumeSend(o) {
+      const what = this.countWhat(o.name, o.files);
+      this.resumeError = '';
+      this.setBusy(o.transfer_id, true);
+      try {
+        const r = await api('api/resume', jsonBody('POST', { transfer_id: o.transfer_id }));
+        if (!r.ok) throw new Error(await errText(r));
+        this.log(`resuming ${what} to ${o.peer_name}…`);
+        this.say(`Resuming ${what} to ${o.peer_name}. Progress is in Transfers.`);
+        this.loadTransfers();
+      } catch (e) {
+        this.resumeError = `Could not resume ${what}: ${e.message || e}`;
+        this.say(this.resumeError);
+      } finally {
+        this.setBusy(o.transfer_id, false);
+        this.loadResumable();
+      }
+    },
+    // discardSend forgets an interrupted send; its receiver is told to
+    // delete what it kept.
+    async discardSend(o) {
+      const what = this.countWhat(o.name, o.files);
+      if (!window.confirm(`Forget the interrupted send of ${what} to ${o.peer_name}? ${o.peer_name} deletes what it kept, and sending it again starts from the beginning.`)) return;
+      await this.discard(o.transfer_id, `Discarded the interrupted send of ${what}.`, what);
+    },
+    // discardKept removes what this computer kept of an interrupted receive.
+    async discardKept(k) {
+      const what = this.countWhat(k.name, k.files);
+      if (!window.confirm(`Delete what arrived of ${what} from ${k.sender_name}? The files received so far are removed, and the sender has to start over.`)) return;
+      await this.discard(k.id, `Deleted what was kept of ${what}.`, what);
+    },
+    async discard(id, done, what) {
+      this.resumeError = '';
+      this.setBusy(id, true);
+      try {
+        const r = await api('api/discard', jsonBody('POST', { transfer_id: id }));
+        if (!r.ok) throw new Error(await errText(r));
+        this.log(done);
+        this.say(done);
+      } catch (e) {
+        this.resumeError = `Could not discard ${what}: ${e.message || e}`;
+        this.say(this.resumeError);
+      } finally {
+        this.setBusy(id, false);
+        this.loadResumable();
+      }
+    },
+    // The interrupted send or kept receive a history entry can still act on.
+    outgoingFor(h) {
+      if (h.dir !== 'out' || h.result !== 'interrupted') return null;
+      return this.resumable.outgoing.find((o) => o.transfer_id === h.id) || null;
+    },
+    keptFor(h) {
+      if (h.dir !== 'in' || h.result !== 'interrupted') return null;
+      return this.resumable.incoming.find((k) => k.id === h.id) || null;
+    },
+    // "3 files · 1.2 GB · kept until 15:04" for an interrupted send.
+    sendMeta(o) {
+      return [o.files > 1 ? `${o.files} files` : '', this.fmtSize(o.bytes), `kept until ${this.untilText(o.expires)}`]
+        .filter(Boolean).join(' · ');
+    },
+    // "42% · 410 MB of 980 MB · kept until 15:04" for a transfer kept here.
+    keptMeta(k) {
+      return [`${this.pct(k.done, k.total)}%`, `${this.fmtSize(k.done) || '0 B'} of ${this.fmtSize(k.total) || '0 B'}`, `kept until ${this.untilText(k.expires)}`]
+        .join(' · ');
+    },
+    untilText(ts) {
+      const d = new Date(ts);
+      if (!ts || isNaN(d)) return '';
+      const t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return d.toDateString() === new Date().toDateString() ? t : `${d.toLocaleDateString([], { weekday: 'short' })} ${t}`;
     },
 
     connectEvents() {
@@ -226,6 +336,22 @@ function app() {
           });
           break;
         }
+        case 'retrying': {
+          // The connection broke; the send offers itself again after a wait.
+          if (this.ended[d.transfer_id]) break;
+          const prev = this.xfers[d.transfer_id] || { id: d.transfer_id, name: d.name, dir: d.dir || 'out', sent: 0, total: 0 };
+          this.xfers[d.transfer_id] = Object.assign({}, prev, {
+            state: 'reconnecting', attempt: d.attempt, attempts: d.attempts, retryError: d.error || '', local: false,
+          });
+          const secs = Math.round((d.delay_ms || 0) / 1000);
+          this.log(`connection lost sending ${d.name || 'a transfer'} (${d.error}); reconnecting ${d.attempt}/${d.attempts} in ${secs} s`);
+          this.say(`Connection lost while sending ${d.name || 'a transfer'}. Reconnecting, attempt ${d.attempt} of ${d.attempts}.`);
+          break;
+        }
+        case 'kept':
+        case 'kept_gone':
+          this.loadResumable();
+          break;
         case 'done':
           this.finish(d.transfer_id);
           this.log(`received ${this.countWhat(d.name, d.files)} from ${d.from}`);
@@ -243,6 +369,17 @@ function app() {
           break;
         case 'error':
           this.finish(d.transfer_id);
+          if (d.result === 'interrupted') {
+            const n = d.name || 'a transfer';
+            if (d.dir === 'in') {
+              this.log(`${n} was interrupted; what arrived is kept so the sender can resume`);
+              this.say(`Receiving ${n} was interrupted. What arrived is kept so the sender can resume.`);
+            } else {
+              this.log(`${n} was interrupted: ${d.error}`);
+              this.say(`Sending ${n} was interrupted. You can resume it in Transfers.`);
+            }
+            break;
+          }
           this.log(`error on ${d.name || 'transfer'}: ${d.error}`);
           this.say(`${d.name || 'A transfer'} failed: ${d.error}`);
           break;
@@ -287,11 +424,13 @@ function app() {
     },
 
     // Send files or a whole folder to a chosen peer: the browser uploads to
-    // this host, which relays them on to the peer as one transfer (a tar for
-    // several files), so no local file path is needed. The multipart body is
+    // this host, which relays them on to the peer as one encrypted transfer,
+    // so no local file path is needed. A relayed send cannot read its files
+    // twice, so it does not reconnect or resume. The multipart body is
     // the "manifest" field (names, with folder-relative paths, and sizes)
     // followed by the files in the same order.
     pickFor(p, folder) {
+      if (!this.peerOK(p)) return;
       this.target = p;
       (folder ? this.$refs.folder : this.$refs.file).click();
     },
@@ -428,11 +567,21 @@ function app() {
     },
     xferWord(x) {
       if (x.state === 'waiting') return 'Waiting';
+      if (x.state === 'reconnecting') return x.attempts ? `Reconnecting ${x.attempt}/${x.attempts}` : 'Reconnecting';
       return x.dir === 'in' ? 'Receiving' : 'Sending';
+    },
+    // xferSpoken is xferWord for screen readers ("attempt 2 of 5").
+    xferSpoken(x) {
+      if (x.state === 'reconnecting' && x.attempts) return `Reconnecting, attempt ${x.attempt} of ${x.attempts}`;
+      return this.xferWord(x);
     },
     xferIcon(x) {
       if (x.state === 'waiting') return 'clock';
+      if (x.state === 'reconnecting') return 'refresh-cw';
       return x.dir === 'in' ? 'arrow-down' : 'arrow-up';
+    },
+    xferClass(x) {
+      return x.state === 'waiting' || x.state === 'reconnecting' ? 'warn' : 'info';
     },
     // History result as a word plus a shape (never colour alone).
     resultClass(r) {
@@ -441,12 +590,19 @@ function app() {
     resultIcon(r) {
       return {
         ok: 'circle-check', declined: 'circle-x', cancelled: 'square', error: 'triangle-alert', timeout: 'clock',
+        interrupted: 'unplug',
       }[r] || 'info';
     },
     resultWord(r) {
       return {
         ok: 'Done', declined: 'Declined', cancelled: 'Cancelled', error: 'Failed', timeout: 'No answer',
+        interrupted: 'Interrupted',
       }[r] || r;
+    },
+    // A history entry says whether its bytes were encrypted only when bytes
+    // could have moved (not for a declined or unanswered offer).
+    showSec(h) {
+      return h.result !== 'declined' && h.result !== 'timeout';
     },
     when(ts) {
       const d = new Date(ts);
@@ -496,6 +652,17 @@ function app() {
       if (p.os) parts.push(p.os);
       if (Array.isArray(p.via) && p.via.length) parts.push(`via ${p.via.join(' + ')}`);
       return parts.join(' · ');
+    },
+    // peerOK: the peer speaks this rocket's protocol, so it can be sent to.
+    // A peer that announces none is rocket 1.0 (protocol 1).
+    peerOK(p) {
+      return (p.proto || 1) === PROTO;
+    },
+    peerUpdateText(p) {
+      const proto = p.proto || 1;
+      if (proto > PROTO) return `Runs a newer rocket (protocol ${proto}). Update rocket on this computer to send to it.`;
+      const ver = p.version ? `rocket ${p.version}` : 'an older rocket';
+      return `Runs ${ver} (protocol ${proto}). Update it to rocket 1.1 or later to send to it.`;
     },
     pct(a, b) { return b > 0 ? Math.min(100, Math.floor((a * 100) / b)) : 0; },
     fmtSize(n) {

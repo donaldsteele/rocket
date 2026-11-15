@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // View is what the tray shows for one Status. It holds no systray types, so
@@ -10,6 +11,7 @@ import (
 type View struct {
 	Status   string // disabled first menu line
 	Offers   string // "2 incoming offers"; empty hides the item
+	Activity string // "1 transfer reconnecting, 2 interrupted transfers"; empty hides the item
 	Tooltip  string // icon tooltip
 	Pending  bool   // use the badged icon
 	CanOpen  bool   // Open rocket
@@ -21,11 +23,26 @@ type View struct {
 // tray launched is still coming up; startErr is why the last launch failed.
 func viewFor(st Status, starting bool, startErr string) View {
 	if st.Running {
+		peers := plural(st.Peers, "peer", "peers")
+		if st.OldPeers > 0 {
+			peers += " (" + plural(st.OldPeers, "needs", "need") + " update)"
+		}
 		v := View{
-			Status:  "Running, " + plural(st.Peers, "peer", "peers"),
-			Tooltip: "rocket: running, " + plural(st.Peers, "peer", "peers"),
+			Status:  "Running, " + peers,
+			Tooltip: "rocket: running, " + peers,
 			CanOpen: true,
 			CanQuit: true,
+		}
+		var act []string
+		if st.Reconnecting > 0 {
+			act = append(act, plural(st.Reconnecting, "transfer", "transfers")+" reconnecting")
+		}
+		if st.Interrupted > 0 {
+			act = append(act, plural(st.Interrupted, "interrupted transfer", "interrupted transfers"))
+		}
+		if len(act) > 0 {
+			v.Activity = strings.Join(act, ", ")
+			v.Tooltip = "rocket: " + v.Activity
 		}
 		if st.Incoming > 0 {
 			v.Offers = plural(st.Incoming, "incoming offer", "incoming offers")

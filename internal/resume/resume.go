@@ -210,6 +210,28 @@ func (b *Outbox) List() []Outgoing {
 	return out
 }
 
+// Supersede forgets the interrupted sends of the manifest with hash
+// manifestHash to the same peer (by fingerprint when the record has one,
+// else by address) and returns how many: a later send of the same files
+// that completed, whether through Resume, the same command run again or a
+// fresh pick, leaves nothing to resume.
+func (b *Outbox) Supersede(manifestHash, peerFP, addr string) int {
+	if manifestHash == "" {
+		return 0
+	}
+	n := 0
+	for _, o := range b.List() {
+		if o.ManifestHash != manifestHash {
+			continue
+		}
+		same := o.PeerFP != "" && o.PeerFP == peerFP || o.PeerFP == "" && peerFP == "" && o.Addr == addr
+		if same && b.Remove(o.ID) == nil {
+			n++
+		}
+	}
+	return n
+}
+
 // Sweep removes expired and unreadable records and returns how many.
 func (b *Outbox) Sweep() int {
 	ids, _ := b.dir.IDs()

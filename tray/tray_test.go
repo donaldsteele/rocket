@@ -71,6 +71,31 @@ func TestStatusRunning(t *testing.T) {
 	}
 }
 
+// TestStatusTransferStates: peers on another protocol, reconnecting sends
+// and resumable transfers are counted.
+func TestStatusTransferStates(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/self", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"name":"desk","fingerprint":"0123456789abcdef","version":"1.1.0"}`)
+	})
+	mux.HandleFunc("GET /api/peers", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `[{"fp":"a","proto":2},{"fp":"b","proto":1},{"fp":"c","proto":3}]`)
+	})
+	mux.HandleFunc("GET /api/incoming", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "[]") })
+	mux.HandleFunc("GET /api/transfers", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `[{"state":"active"},{"state":"reconnecting","attempt":2,"attempts":5}]`)
+	})
+	mux.HandleFunc("GET /api/resumable", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"outgoing":[{"transfer_id":"x"}],"incoming":[{"id":"y"},{"id":"z"}]}`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	st := testClient(srv).Status(context.Background())
+	if !st.Running || st.Peers != 3 || st.OldPeers != 2 || st.Reconnecting != 1 || st.Interrupted != 3 {
+		t.Fatalf("status = %+v", st)
+	}
+}
+
 func TestStatusNotRunning(t *testing.T) {
 	srv, _ := fakeRocket(t, 0, 0)
 	c := testClient(srv)
@@ -162,6 +187,27 @@ func TestViewFor(t *testing.T) {
 			st:       Status{Err: errors.New("refused")},
 			startErr: "rocket program not found",
 			want:     View{Status: "Not running (rocket program not found)", Tooltip: "rocket: not running", CanStart: true},
+		},
+		{
+			name: "peers that need an update",
+			st:   Status{Running: true, Peers: 3, OldPeers: 1},
+			want: View{Status: "Running, 3 peers (1 needs update)", Tooltip: "rocket: running, 3 peers (1 needs update)", CanOpen: true, CanQuit: true},
+		},
+		{
+			name: "reconnecting and interrupted",
+			st:   Status{Running: true, Peers: 2, OldPeers: 2, Reconnecting: 1, Interrupted: 2},
+			want: View{
+				Status: "Running, 2 peers (2 need update)", Activity: "1 transfer reconnecting, 2 interrupted transfers",
+				Tooltip: "rocket: 1 transfer reconnecting, 2 interrupted transfers", CanOpen: true, CanQuit: true,
+			},
+		},
+		{
+			name: "offers win the tooltip over activity",
+			st:   Status{Running: true, Peers: 1, Incoming: 1, Interrupted: 1},
+			want: View{
+				Status: "Running, 1 peer", Offers: "1 incoming offer", Activity: "1 interrupted transfer",
+				Tooltip: "rocket: 1 incoming offer waiting", Pending: true, CanOpen: true, CanQuit: true,
+			},
 		},
 		{
 			name:     "running wins over starting",

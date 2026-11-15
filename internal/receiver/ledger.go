@@ -155,7 +155,9 @@ type Outgoing struct {
 
 // Send runs outgoing transfer o to its end: retries show as reconnecting
 // ("retrying" events), a send that gives up after its retries is put in
-// o.Outbox (so it can be resumed or discarded), and then the transfer ends
+// o.Outbox (so it can be resumed or discarded), a send that completes
+// removes earlier interrupted sends of the same files to the same peer
+// from o.Outbox (resume.Outbox.Supersede), and then the transfer ends
 // as End does, with a "sent" event on success. It returns the error as End
 // reports it.
 func (l *Ledger) Send(ctx context.Context, id *node.Identity, o Outgoing) error {
@@ -170,8 +172,13 @@ func (l *Ledger) Send(ctx context.Context, id *node.Identity, o Outgoing) error 
 		OnAccepted: func(fp, rid string) { receiverFP, remoteID = fp, rid },
 	}
 	err := transfer.SendManifestOpts(ctx, id, o.Target, o.Manifest, o.Open, l.Progress(o.ID, name, "out"), opts)
+	mh, _ := o.Manifest.Hash()
+	if err == nil && o.Outbox != nil {
+		// The same files reached the same peer: an earlier interrupted send
+		// of them has nothing left to resume.
+		o.Outbox.Supersede(mh, o.Target.FP, o.Target.Addr)
+	}
 	if errors.Is(err, transfer.ErrInterrupted) && o.Outbox != nil && !l.Transfers.Cancelled(o.ID) {
-		mh, _ := o.Manifest.Hash()
 		rec := resume.Outgoing{
 			ID: o.ID, Name: name, PeerName: o.PeerName, PeerFP: o.Target.FP, Addr: o.Target.Addr,
 			Files: transfer.Files(o.Manifest), Bytes: o.Manifest.Total, ManifestHash: mh, Paths: o.Paths,

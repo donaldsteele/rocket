@@ -129,6 +129,21 @@ main{padding:var(--s4);max-width:1100px;width:100%}
 .peer .nm{font-weight:600;overflow-wrap:anywhere}
 .peer .meta{font-family:var(--font-mono);font-size:12px;color:var(--muted);overflow-wrap:anywhere}
 .peer .act{display:flex;flex-wrap:wrap;gap:var(--s2)}
+.peer .nm .state{margin-left:var(--s1);vertical-align:1px}
+.peer.old>.ico{color:var(--fg-muted)}
+.peer .upd{flex:1 1 220px;margin:0;font-size:13px;color:var(--muted)}
+.secnote{display:flex;align-items:flex-start;gap:6px;margin:0 0 var(--s3)}
+.secnote .ico{width:16px;height:16px;margin-top:1px}
+
+/* Interrupted transfers (Transfers view) */
+.resum{margin-top:var(--s4)}
+.resum h4{margin:var(--s4) 0 var(--s1);font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--fg-muted)}
+.resum>.sub{margin-top:0}
+.kept li{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2) var(--s3);padding:var(--s2) 0;border-bottom:1px solid var(--line)}
+.kept li:last-child{border-bottom:0}
+.kept .who{flex:1 1 220px;min-width:0;overflow-wrap:anywhere}
+.kept .meta{font-family:var(--font-mono);font-size:12px;color:var(--muted)}
+.kept .act{display:flex;flex-wrap:wrap;gap:var(--s2)}
 
 /* Drop zone (this computer, and the LAN drop page) */
 .drop{border:2px dashed var(--line-strong);border-radius:8px;padding:var(--s5) var(--s4);text-align:center;color:var(--muted)}
@@ -143,6 +158,10 @@ main{padding:var(--s4);max-width:1100px;width:100%}
 .state.warn{border-color:var(--warn);background:var(--warnbg)}.state.warn .ico{color:var(--warn)}
 .state.bad{border-color:var(--bad);background:var(--badbg)}.state.bad .ico{color:var(--bad)}
 .state.info{border-color:var(--info);background:var(--infobg)}.state.info .ico{color:var(--info)}
+/* Encryption badges: a lock (closed or open) plus the word. */
+.state.sec{font-weight:500}.state.sec .ico{color:var(--ok)}
+.state.nosec{font-weight:500;border-style:dashed;color:var(--fg-muted)}.state.nosec .ico{color:var(--fg-muted)}
+.offer .state{vertical-align:middle;margin-left:var(--s1)}
 
 /* Transfers */
 .xfer{padding:var(--s3);border:1px solid var(--line);border-radius:var(--radius);background:var(--bg);margin-bottom:var(--s2)}
@@ -168,6 +187,8 @@ main{padding:var(--s4);max-width:1100px;width:100%}
 .hist .hdir{display:inline-flex;align-items:center;gap:4px}
 .hist .hmeta{font-family:var(--font-mono);font-size:12px;color:var(--muted);white-space:nowrap}
 .hist .herr{flex-basis:100%;font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.hist .hacts{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2)}
+.hist .hacts .sub{flex:1 1 200px;margin:0}
 .histbox{background:var(--panel);border:1px solid var(--line);border-radius:6px}
 
 /* Settings */
