@@ -154,6 +154,10 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nothing to resume with that id", http.StatusNotFound)
 		return
 	}
+	if len(rec.Picked) > 0 {
+		http.Error(w, "this send was started from the rocket page with files picked there; resume it from the page, which asks for the same files again", http.StatusConflict)
+		return
+	}
 	plan, err := transfer.PlanPaths(rec.Paths)
 	if err != nil {
 		http.Error(w, "cannot send these files again: "+err.Error(), http.StatusBadRequest)

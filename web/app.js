@@ -6,6 +6,8 @@
 // transfers are encrypted (protocol 2); a send whose connection breaks
 // reconnects by itself, and one that gives up, or a receive kept half-done,
 // is listed with Resume / Discard until it expires (GET /api/resumable).
+// Files picked here are sent through this host (POST /api/relay/*); only
+// this page holds them, so it drives their attempts (see relaySend).
 
 // api calls the loopback control API. Every non-GET call carries the
 // X-Rocket-CSRF header the server requires.
@@ -36,6 +38,18 @@ const VIEWS = ['send', 'transfers', 'history', 'settings'];
 // another one show as needing an update and cannot be sent to.
 const PROTO = 2;
 
+// HELD keeps the picked files (File objects) of this tab's sends by
+// transfer_id, so a send that broke can be offered again, and an
+// interrupted one resumed without picking the files again. It is not
+// reactive data on purpose: Alpine would wrap every File.
+const HELD = new Map();
+
+// heldList turns picked files into the list the server builds the manifest
+// from: names with folder-relative paths, sizes, in the same order.
+function heldList(named) {
+  return named.map((x) => ({ name: x.name, size: x.f.size }));
+}
+
 function app() {
   let saved = 'send';
   try { saved = localStorage.getItem('rocket.view') || 'send'; } catch (e) { /* storage blocked */ }
@@ -60,6 +74,8 @@ function app() {
     resumable: { outgoing: [], incoming: [] },
     resumeError: '',
     busy: {}, // transfer_id -> true while its Resume or Discard runs
+    held: {}, // transfer_id -> true while this tab holds its files (HELD)
+    repick: null, // the interrupted send whose files the person is picking again
     logLines: [],
     logSeq: 0,
     announce: '',
@@ -228,6 +244,18 @@ function app() {
     async resumeSend(o) {
       const what = this.countWhat(o.name, o.files);
       this.resumeError = '';
+      if (o.picked && o.picked.length) {
+        // Picked in this page: only a page holds such files.
+        const named = HELD.get(o.transfer_id);
+        if (named) { this.resumePicked(o, named); return; }
+        // After a reload the person picks the same files again; the server
+        // checks them against the interrupted send's list.
+        const folder = o.picked.some((x) => x.name.includes('/'));
+        this.repick = o;
+        this.say(`To resume ${what}, pick the same ${folder ? 'folder' : 'files'} again.`);
+        (folder ? this.$refs.folder : this.$refs.file).click();
+        return;
+      }
       this.setBusy(o.transfer_id, true);
       try {
         const r = await api('api/resume', jsonBody('POST', { transfer_id: o.transfer_id }));
@@ -249,6 +277,43 @@ function app() {
       const what = this.countWhat(o.name, o.files);
       if (!window.confirm(`Forget the interrupted send of ${what} to ${o.peer_name}? ${o.peer_name} deletes what it kept, and sending it again starts from the beginning.`)) return;
       await this.discard(o.transfer_id, `Discarded the interrupted send of ${what}.`, what);
+      this.drop(o.transfer_id);
+    },
+    // resumePicked sends an interrupted send of picked files again, with the
+    // files this tab still holds or the ones the person picked again. Picked
+    // again, they are put in the order of the first pick when the names
+    // match (a folder may list its files in another order); the server
+    // refuses other files with a message that says what differs.
+    async resumePicked(o, named) {
+      const what = this.countWhat(o.name, o.files);
+      const byName = new Map(named.map((x) => [x.name, x]));
+      if (byName.size === named.length && o.picked.length === named.length && o.picked.every((x) => byName.has(x.name))) {
+        named = o.picked.map((x) => byName.get(x.name));
+      }
+      this.setBusy(o.transfer_id, true);
+      this.log(`resuming ${what} to ${o.peer_name}…`);
+      this.say(`Resuming ${what} to ${o.peer_name}. Progress is in Transfers.`);
+      try {
+        await this.relaySend({ resume: o.transfer_id, files: heldList(named) }, named, () => {
+          this.drop(o.transfer_id);
+          this.setBusy(o.transfer_id, false);
+          this.loadResumable();
+        });
+      } catch (e) {
+        this.resumeError = `Could not resume ${what}: ${e.message || e}`;
+        this.log(this.resumeError);
+        this.say(this.resumeError);
+      } finally {
+        this.setBusy(o.transfer_id, false);
+        this.loadResumable();
+      }
+    },
+    // drop forgets the files this tab holds for a send.
+    drop(id) {
+      if (!HELD.delete(id)) return;
+      const h = Object.assign({}, this.held);
+      delete h[id];
+      this.held = h;
     },
     // discardKept removes what this computer kept of an interrupted receive.
     async discardKept(k) {
@@ -281,9 +346,12 @@ function app() {
       if (h.dir !== 'in' || h.result !== 'interrupted') return null;
       return this.resumable.incoming.find((k) => k.id === h.id) || null;
     },
-    // "3 files · 1.2 GB · kept until 15:04" for an interrupted send.
+    // "3 files · 1.2 GB · kept until 15:04" for an interrupted send, and,
+    // for files picked in a page that no longer holds them, that Resume
+    // asks for them again.
     sendMeta(o) {
-      return [o.files > 1 ? `${o.files} files` : '', this.fmtSize(o.bytes), `kept until ${this.untilText(o.expires)}`]
+      const again = o.picked && o.picked.length && !this.held[o.transfer_id] ? 'Resume asks for the files again' : '';
+      return [o.files > 1 ? `${o.files} files` : '', this.fmtSize(o.bytes), `kept until ${this.untilText(o.expires)}`, again]
         .filter(Boolean).join(' · ');
     },
     // "42% · 410 MB of 980 MB · kept until 15:04" for a transfer kept here.
@@ -425,25 +493,25 @@ function app() {
 
     // Send files or a whole folder to a chosen peer: the browser uploads to
     // this host, which relays them on to the peer as one encrypted transfer,
-    // so no local file path is needed. A relayed send cannot read its files
-    // twice, so it does not reconnect or resume. The multipart body is
-    // the "manifest" field (names, with folder-relative paths, and sizes)
-    // followed by the files in the same order.
+    // so no local file path is needed. Names keep their folder-relative
+    // paths, in the order the browser lists them.
     pickFor(p, folder) {
       if (!this.peerOK(p)) return;
       this.target = p;
+      this.repick = null;
       (folder ? this.$refs.folder : this.$refs.file).click();
     },
     async onPicked(ref) {
       const input = this.$refs[ref];
       const files = [...input.files];
       const p = this.target;
+      const again = this.repick;
       input.value = '';
-      if (!files.length || !p) return;
+      this.repick = null;
+      if (!files.length) return;
       const named = files.map((f) => ({ f, name: f.webkitRelativePath || f.name }));
-      const fd = new FormData();
-      fd.append('manifest', JSON.stringify({ files: named.map((x) => ({ name: x.name, size: x.f.size })) }));
-      named.forEach((x) => fd.append('file', x.f, x.name));
+      if (again) { this.resumePicked(again, named); return; }
+      if (!p) return;
       const label = named[0].name.split('/')[0];
       this.log(`sending ${this.countWhat(label, files.length)} to ${p.name}…`);
       this.say(`Sending ${this.countWhat(label, files.length)} to ${p.name}. Progress is in Transfers.`);
@@ -451,12 +519,74 @@ function app() {
       // GET /api/transfers under its server-side ID, with a Cancel button.
       setTimeout(() => this.loadTransfers(), 300);
       try {
-        const r = await api(`api/relay?peer=${encodeURIComponent(p.fp)}`, { method: 'POST', body: fd });
-        // 410: cancelled; the "cancelled" event already said so.
-        if (!r.ok && r.status !== 410) throw new Error(await errText(r));
+        await this.relaySend({ peer: p.fp, files: heldList(named) }, named);
       } catch (e) {
         this.log(`send failed: ${e.message || e}`);
         this.say(`Sending to ${p.name} failed: ${e.message || e}`);
+      }
+    },
+
+    // relaySend runs a send of picked files from its first offer (body:
+    // {peer, files} or {resume, files}) to its end. Each attempt is an
+    // offer (POST /api/relay/offer), which the receiver answers, then an
+    // upload of the files from the one the server names on: at a resume
+    // point the server asks for the file the receiver kept part of, checks
+    // its first bytes, and answers "restart" (upload them all) when they
+    // differ. When the connection to the peer breaks, the answer is
+    // "interrupted" and retryable: the page offers again at once, and the
+    // server waits out the delay (2, 5, 10, 20, 30 s) while Transfers shows
+    // "Reconnecting n/5". Events report how the send ends. started(id) is
+    // told the send's ID once it has one. Failed requests (a refused
+    // resume, rocket gone) throw.
+    async relaySend(body, named, started) {
+      let id = '';
+      let a = await this.relayOffer(body);
+      for (;;) {
+        if (!id && a.transfer_id) {
+          id = a.transfer_id;
+          HELD.set(id, named);
+          this.held = Object.assign({}, this.held, { [id]: true });
+          if (started) started(id);
+          this.loadTransfers();
+        }
+        if (a.result === 'accepted' || a.result === 'restart') {
+          a = await this.relayUpload(id, a.seq, named, a.from);
+        } else if (a.result === 'interrupted' && a.retryable && !this.ended[id]) {
+          a = await this.relayOffer({ transfer_id: id });
+        } else {
+          break;
+        }
+      }
+      // Kept for Resume while interrupted; otherwise there is nothing more
+      // to send.
+      if (id && a.result !== 'interrupted') this.drop(id);
+      return a;
+    },
+    async relayOffer(body) {
+      const r = await api('api/relay/offer', jsonBody('POST', body));
+      if (!r.ok) throw new Error(await errText(r));
+      return r.json();
+    },
+    // relayUpload uploads the files from file "from" on. The server may
+    // answer before it has read the whole upload (the peer went away, or
+    // the first bytes did not match); the browser may then report a failed
+    // request instead of the answer, so the page asks for it.
+    async relayUpload(id, seq, named, from) {
+      const fd = new FormData();
+      named.slice(from).forEach((x) => fd.append('file', x.f, x.name));
+      const q = `transfer_id=${encodeURIComponent(id)}&seq=${seq}`;
+      let r = null;
+      try {
+        r = await api(`api/relay/upload?${q}`, { method: 'POST', body: fd });
+      } catch (e) { /* the server stopped reading the upload */ }
+      if (r && r.ok) {
+        try { return await r.json(); } catch (e) { /* cut off: ask below */ }
+      } else if (r) {
+        throw new Error(await errText(r));
+      }
+      for (;;) {
+        const res = await this.get(`api/relay/result?${q}`);
+        if (res.result !== 'pending') return res;
       }
     },
 

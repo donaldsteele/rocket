@@ -110,8 +110,8 @@
               </template>
             </ul>
             <p class="empty" x-show="!peers.length">No other computers yet. Start rocket on another computer on this network; it shows up here within a few seconds.</p>
-            <input type="file" x-ref="file" class="sr" multiple tabindex="-1" aria-hidden="true" @change="onPicked('file')">
-            <input type="file" x-ref="folder" class="sr" webkitdirectory multiple tabindex="-1" aria-hidden="true" @change="onPicked('folder')">
+            <input type="file" x-ref="file" class="sr" multiple tabindex="-1" aria-hidden="true" @change="onPicked('file')" @cancel="repick = null">
+            <input type="file" x-ref="folder" class="sr" webkitdirectory multiple tabindex="-1" aria-hidden="true" @change="onPicked('folder')" @cancel="repick = null">
           </section>
 
           <section class="card" aria-labelledby="h-here">
@@ -146,7 +146,7 @@
                 <button type="button" class="small" x-show="!x.local" :disabled="stopped" @click="cancel(x)" :aria-label="'Cancel ' + countWhat(x.name, x.files)">
                   <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-square"></use></svg>Cancel</button>
               </div>
-              <p class="xfile" x-show="x.state === 'reconnecting'">Connection lost<span x-show="x.retryError" x-text="x.retryError ? ': ' + x.retryError.replace(/[.]$/, '') : ''"></span>. rocket tries again by itself and continues where it stopped.</p>
+              <p class="xfile" x-show="x.state === 'reconnecting'">Connection lost<span x-show="x.retryError" x-text="x.retryError ? ': ' + x.retryError.replace(/[.]$/, '') : ''"></span>. rocket tries again by itself and continues where it stopped.<span x-show="held[x.id]"> Keep this page open: it holds the files.</span></p>
               <p class="xfile" x-show="x.state !== 'reconnecting' && x.files > 1 && x.fileIndex" x-text="'File ' + x.fileIndex + ' of ' + x.files + ': ' + (x.file || '')"></p>
               <div class="xbar">
                 <div class="track" role="progressbar" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="pct(x.sent, x.total)"

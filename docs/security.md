@@ -121,7 +121,11 @@ the missing bytes are sent ([protocol.md](protocol.md#resume)).
   so nobody can make the receiver write at an offset it did not offer.
 - The sender hashes the part of its own file that the receiver says it
   holds and starts over when that does not match, so a file changed in the
-  meantime is not stitched together from old and new bytes.
+  meantime is not stitched together from old and new bytes. For files
+  picked in the desktop page, rocket (not the page) takes the start point
+  from the receiver's signed reply and hashes the bytes the page uploads,
+  so the page cannot choose where the receiver continues; a resume after a
+  reload accepts only the same file names and sizes in the same order.
 - A cancel on either side, a decline, a body that fails authentication or
   does not match the offer never leaves anything kept. When the sender
   gives up (cancel, a failure reading its files), it sends a cancel notice
@@ -292,10 +296,11 @@ archive first.
 
 ## Other limits
 
-- **Resume needs both ends.** Browser drops and uploads relayed from the
-  browser UI do not resume. An Android send picked from the share sheet
-  usually cannot be read again after the app was closed, so Resume asks for
-  the files again.
+- **Resume needs both ends.** Browser drops do not resume. Files picked in
+  the desktop page can only be read by that page, so after a reload (or a
+  closed tab) Resume asks for the same files again, and an Android send
+  picked from the share sheet usually cannot be read again after the app was
+  closed, so Resume asks for the files there too.
 - **Unsigned binaries.** Release zips are not code-signed or notarized. Check
   them against `SHA256SUMS` from the release page. (The Android APK is signed;
   see [Android](#android).)

@@ -466,9 +466,11 @@ point or `(0,0)`:
   peer, the manifest hash, and on the desktop the local paths. The person
   can then **Resume** (the files are listed again; unchanged files continue
   where they stopped) or **Discard** it.
-- Sends whose content cannot be read twice (a browser upload relayed by the
-  desktop UI) make one attempt and ignore resume points; when they fail
-  they send a cancel notice so the receiver keeps nothing.
+- **Files picked in the desktop page** live only in the browser, so the
+  page drives the attempts and the desktop keeps the rest (see
+  [Sends from the desktop page](#sends-from-the-desktop-page)): the same
+  retries, resume points and **Interrupted** state, and Resume after a
+  reload asks the person to pick the same files again.
 
 The Android app sends the same way, keeping the content URIs for Resume
 (with persistable read access where the provider allows it, otherwise
@@ -476,6 +478,68 @@ Resume asks for the files again). It keeps a broken receive the same way
 too: the finished files and the incomplete one stay in `Download/rocket`
 (the incomplete one as a pending MediaStore item, invisible to other apps),
 and the sender's next offer continues it.
+
+### Sends from the desktop page
+
+The desktop UI is a browser page, and files picked in it (a file or folder
+picker) have no path on disk: only the page can read them. It uploads them
+to its own rocket over loopback, which encrypts them on the fly into the
+peer body; nothing is staged. Because the page holds the files, it makes
+each attempt itself, on the loopback control routes below (same rules as
+every local route), and the desktop keeps what the attempts share (the
+manifest, the peer, the accepted attempt, the retry count), as the sender's
+own retry loop does:
+
+1. `POST /api/relay/offer` with `{"peer": "<full fingerprint or host:port>",
+   "files": [{"name", "size"}]}` (names are folder-relative paths from a
+   folder picker, in the page's order). The desktop builds the manifest
+   from that list (the same list always gives the same manifest), then
+   hello, signed offer and signed reply. The answer is
+   `{"result": "accepted", "transfer_id", "seq", "from", "resume"}`.
+2. `POST /api/relay/upload?transfer_id=&seq=` with a multipart body: one
+   part per file, starting with file `from` of the list. Without a resume
+   point `from` is 0. With one (entry *i*, offset *n*, sha256), `from` is
+   the file behind entry *i*: the page uploads that file from its
+   beginning, the desktop hashes its first *n* bytes as they arrive and,
+   when the hash matches the receiver's, sends the peer a body that starts
+   at *(i, n)* with only the bytes after them. When it does not match (the
+   file changed), the answer is `{"result": "restart", "seq", "from": 0}`
+   and the page uploads every file for the same accepted offer, whose body
+   then starts at *(0, 0)*. The page never chooses a start point; the
+   desktop takes it from the receiver's signed reply.
+3. The upload answers `{"result": "sent"}` or how the send failed. After a
+   network failure of the peer connection the answer is
+   `{"result": "interrupted", "retryable": true, "attempt", "attempts",
+   "delay_ms", "error"}`, the transfer shows **Reconnecting n/5** and a
+   `retrying` event goes out. The page then offers again at once with
+   `POST /api/relay/offer {"transfer_id"}`; the desktop waits out the
+   delay (2, 5, 10, 20, 30 s) and makes a new signed offer of the same
+   manifest, which the receiver accepts without asking (same sender key,
+   same manifest hash) with its resume point.
+4. The desktop may answer an upload before it has read all of it (the peer
+   went away, or the prefix did not match), and a browser may then report a
+   failed request instead of the answer. `GET
+   /api/relay/result?transfer_id=&seq=` answers how upload `seq` ended
+   (`{"result": "pending"}` after 30 s without an answer; ask again).
+
+Other results are `cancelled`, `declined`, `timeout` and `error`, each
+with `error`, and `interrupted` without `retryable` once the send gave up.
+A send gives up after the fifth retry, and at once when the page goes away
+(closed or reloaded during an upload, or not back within 60 s): either way,
+if the receiver had accepted an attempt, it ends **Interrupted** and is kept
+in `<data-dir>/outgoing/` with the list of picked files (`picked`).
+Resume then needs the files again: while the same page still holds them it
+sends them directly; after a reload it asks the person to pick the same
+files or folder, and `POST /api/relay/offer {"resume": "<transfer_id>",
+"files"}` checks the new list against `picked` (names, sizes, order) and
+refuses a different one with **409** and a message that says what differs.
+A cancel (`POST /api/cancel`) during any of this, including while
+reconnecting, ends the send and sends the receiver a cancel notice; nothing
+is kept on either side.
+
+The one-request form `POST /api/relay?peer=` (a multipart body whose first
+field `manifest` is `{"files": [...]}`, then the files) is kept for
+scripts: it makes one attempt and does not resume.
 
 ## POST /api/recv/cancel
 
@@ -525,10 +589,13 @@ loopback, Host allowlist, `X-Rocket-CSRF: 1` on POST; see
 | `GET /api/resumable` | `{"outgoing": [interrupted sends], "incoming": [transfers kept here]}` |
 | `POST /api/resume {transfer_id}` | sends an interrupted send again; answers `{ok, transfer_id}` with the new transfer's ID |
 | `POST /api/discard {transfer_id}` | forgets an interrupted send (and sends its receiver a cancel notice) or removes a kept transfer with its files |
+| `POST /api/relay/offer`, `POST /api/relay/upload`, `GET /api/relay/result` | sends of files picked in the desktop page, with their retries and resume (see [Sends from the desktop page](#sends-from-the-desktop-page)) |
 
 An outgoing item is `{transfer_id, name, peer_name, peer_fp, addr, files,
-bytes, manifest_hash, paths, receiver_fp, remote_id, error, interrupted,
-expires}`; an incoming one `{id, name, sender_name, sender_fp, files,
+bytes, manifest_hash, paths, picked, receiver_fp, remote_id, error,
+interrupted, expires}` (`paths` for a send of local files, `picked`
+`[{name, size}]` for files picked in the desktop page; `POST /api/resume`
+refuses the latter with 409, the page resumes them); an incoming one `{id, name, sender_name, sender_fp, files,
 total, done, location, kept_at, expires}`. Events: `retrying`, `error` with
 `result: "interrupted"`, `kept` (an incoming item) and `kept_gone` `{id,
 reason}`. The Android core has the same as `ResumableJSON`, `Resume` and

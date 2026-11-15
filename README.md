@@ -26,7 +26,10 @@ same protocol.
   receiver keeps what arrived for 24 hours, the sender reconnects by itself
   (up to 5 tries) and only the missing bytes are sent, without a second
   prompt. After the last try the send is **Interrupted**, with **Resume** and
-  **Discard**.
+  **Discard**. This works for every send between rocket apps: files picked in
+  the desktop page, `rocket send`, MCP and the Android app. Files picked in
+  the page stay in the browser, so keep the page open while it reconnects;
+  after a reload, Resume asks you to pick the same files or folder again.
 - **Android app:** send from the phone (or its share sheet) and receive on it,
   with the same approval prompt and trusted senders. See
   [Android app](#android-app).
@@ -179,7 +182,8 @@ macOS, `~/.config/rocket` on Linux), unless `--data-dir` says otherwise:
 - `resume/`: transfers this computer received in part and keeps for 24
   hours (the part files themselves stay in the download folder).
 - `outgoing/`: interrupted sends that can be resumed, with the paths of their
-  files, for 24 hours.
+  files (or, for files picked in the desktop page, their names and sizes),
+  for 24 hours.
 
 ## Tray app
 
@@ -284,9 +288,7 @@ full threat model is in [docs/security.md](docs/security.md).
 ## Status
 
 Version 1.1. Not included: encryption of file names, sizes and device names
-(HTTPS), encryption and resume for the browser drop page, resume for files
-picked in the desktop page (they are uploaded through the browser and start
-over), code signing of the desktop binaries, macOS tray binaries, an iPhone
+(HTTPS), encryption and resume for the browser drop page, code signing of the desktop binaries, macOS tray binaries, an iPhone
 app, a Play Store listing, and transfers over the internet. See
 [CHANGELOG.md](CHANGELOG.md).
 

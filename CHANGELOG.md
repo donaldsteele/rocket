@@ -35,9 +35,12 @@ Encrypted transfers and resume.
   2, 5, 10, 20 and 30 seconds (**Reconnecting n/5**), and only the missing
   bytes are sent, without a second prompt. After the last try the send is
   **Interrupted**, with **Resume** and **Discard**; the receiver lists what it
-  kept with **Discard**. Works for sends from `rocket send`, MCP and the
-  Android app, and for receiving on both desktop and Android. Cancel or
-  decline never keeps anything.
+  kept with **Discard**. Works for every send between rocket apps (files
+  picked in the desktop page, `rocket send`, MCP and the Android app) and
+  for receiving on both desktop and Android. Files picked in the desktop
+  page stay in the browser: the page makes the retries itself, and after a
+  reload Resume asks for the same files or folder again and refuses
+  different ones. Cancel or decline never keeps anything.
 - **Status in the UI**: an **Encrypted** / **Not encrypted** badge on offers,
   transfers and history, **Needs update** peers, **Reconnecting n/5**, and
   **Interrupted** in History, on the desktop and on Android.
@@ -72,13 +75,14 @@ Encrypted transfers and resume.
 
 - The browser drop page stays plain HTTP and is **not encrypted** (browsers
   only allow Web Crypto on HTTPS pages); offers and history mark it **Not
-  encrypted**, and it does not resume. Files picked in the desktop page are
-  uploaded through the browser and do not resume either.
+  encrypted**, and it does not resume.
 - File names, sizes, folder layout and device names are still visible on the
   network: offers are signed, not encrypted. See `docs/security.md`.
 - A transfer resumes only for an offer signed by the same sender key for the
   same file list, and only at the point the receiver offered in its signed
-  reply; the sender checks its copy of the kept part first.
+  reply; the sender checks its copy of the kept part first. For files
+  picked in the desktop page, rocket takes that point from the signed reply
+  and hashes what the page uploads; the page cannot choose it.
 
 ## [1.0.0] - 2026-11-14
 

@@ -150,6 +150,11 @@ type Outgoing struct {
 	// on Android, where the app keeps its content URIs and gives a Source
 	// again.
 	Paths []string `json:"paths,omitempty"`
+	// Picked lists the files of a send started from the desktop's browser
+	// page, as the page named them (folder-relative paths) and in its order;
+	// such a send has no Paths, and its Resume needs the page to pick the
+	// same files again (checked against this list).
+	Picked []PickedFile `json:"picked,omitempty"`
 	// ReceiverFP and RemoteID name the receiver's side of the last accepted
 	// attempt, for the cancel notice a Discard sends.
 	ReceiverFP  string    `json:"receiver_fp,omitempty"`
@@ -157,6 +162,13 @@ type Outgoing struct {
 	Error       string    `json:"error"`
 	Interrupted time.Time `json:"interrupted"`
 	Expires     time.Time `json:"expires"`
+}
+
+// PickedFile is one file picked in a browser page: its name (a bare name,
+// or a path relative to the picked folder) and size in bytes.
+type PickedFile struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
 }
 
 // Outbox is the sender's list of interrupted sends, in <data-dir>/outgoing.

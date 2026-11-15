@@ -193,59 +193,167 @@ func SendManifestOpts(ctx context.Context, id *node.Identity, t Target, m protoc
 // errStalled is the cause of an upload stopped by the stall watchdog.
 var errStalled = errors.New("stalled")
 
+// ErrSourceLost is wrapped by the reader an OpenFunc returns when its
+// content stopped arriving in a way a later attempt can continue: a browser
+// page that uploads the files to this host went away. Upload then cuts the
+// body off like a lost connection instead of telling the receiver to drop
+// what it stored, so the receiver keeps it (see Accepted.Upload).
+var ErrSourceLost = errors.New("the files stopped arriving")
+
 // sendAttempt makes one attempt: hello, offer, reply, body. r names the
 // receiver's side once the offer was accepted.
 func sendAttempt(ctx context.Context, id *node.Identity, t Target, m protocol.Manifest, open OpenFunc, progress ProgressFn, opts SendOptions) (r remote, err error) {
-	hello, err := Hello(ctx, t.Addr)
+	a, err := offerAttempt(ctx, id, t, m)
+	if a != nil {
+		r = a.r
+		if opts.OnAccepted != nil {
+			opts.OnAccepted(r.fp, r.id)
+		}
+	}
 	if err != nil {
 		return r, err
+	}
+	start := Start{}
+	if opts.Retry && a.resume != nil {
+		start = resumeStart(m, a.resume, open)
+	}
+	return r, a.Upload(ctx, start, open, progress, opts.Retry)
+}
+
+// Accepted is an offer the receiver accepted whose body has not been sent
+// yet: the first half of one attempt (Offer). Its body goes out once, with
+// Upload. A sender that splits its attempts this way (the desktop's
+// browser page, which holds the files) makes its own retries.
+type Accepted struct {
+	id     *node.Identity
+	addr   string
+	m      protocol.Manifest
+	r      remote
+	key    []byte
+	token  string
+	resume *protocol.ResumePoint
+	once   sync.Once
+	used   atomic.Bool
+}
+
+// Offer makes the first half of an attempt to send m to t: hello (the peer
+// must speak protocol 2), a signed offer with a fresh ephemeral key, and the
+// receiver's signed reply, verified against the key from its hello. A
+// decline wraps ErrDeclined and no answer ErrTimedOut; network failures are
+// IsNetwork. m must be valid.
+func Offer(ctx context.Context, id *node.Identity, t Target, m protocol.Manifest) (*Accepted, error) {
+	a, err := offerAttempt(ctx, id, t, m)
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+// offerAttempt is Offer, except that it returns the accepted offer also
+// when its body key cannot be derived (the receiver has then already been
+// sent a cancel notice).
+func offerAttempt(ctx context.Context, id *node.Identity, t Target, m protocol.Manifest) (*Accepted, error) {
+	hello, err := Hello(ctx, t.Addr)
+	if err != nil {
+		return nil, err
 	}
 	pub, err := protocol.CheckHello(hello, t.FP)
 	if errors.Is(err, protocol.ErrProto) {
-		return r, err // names the peer and says what to update
+		return nil, err // names the peer and says what to update
 	}
 	if err != nil {
-		return r, fmt.Errorf("peer %s: %w", t.Addr, err)
+		return nil, fmt.Errorf("peer %s: %w", t.Addr, err)
 	}
 	offer, eph, err := protocol.NewOffer(id, id.Name, hello.FP, m, time.Now())
 	if err != nil {
-		return r, err
+		return nil, err
 	}
 	offerSB, err := protocol.SigningBytes(offer)
 	if err != nil {
-		return r, err
+		return nil, err
 	}
 	reply, err := postOffer(ctx, t.Addr, offer)
 	if err != nil {
-		return r, err
+		return nil, err
 	}
 	if err := protocol.VerifyReply(pub, offerSB, &reply); err != nil {
-		return r, fmt.Errorf("peer %s: %w", t.Addr, err)
+		return nil, fmt.Errorf("peer %s: %w", t.Addr, err)
 	}
 	if !reply.Accepted {
 		if reply.Reason == protocol.ReasonTimedOut {
-			return r, fmt.Errorf("%w (%s)", ErrTimedOut, t.Addr)
+			return nil, fmt.Errorf("%w (%s)", ErrTimedOut, t.Addr)
 		}
 		if reply.Reason == "" {
 			reply.Reason = "declined"
 		}
-		return r, fmt.Errorf("%w: %s", ErrDeclined, reply.Reason)
+		return nil, fmt.Errorf("%w: %s", ErrDeclined, reply.Reason)
 	}
-	r = remote{fp: hello.FP, id: reply.TransferID}
-	if opts.OnAccepted != nil {
-		opts.OnAccepted(r.fp, r.id)
+	a := &Accepted{
+		id: id, addr: t.Addr, m: m, r: remote{fp: hello.FP, id: reply.TransferID},
+		token: reply.Token, resume: reply.Resume,
 	}
-	var once sync.Once
-	abandon := func() { once.Do(func() { notifyCancel(id, t.Addr, r) }) }
 	key, err := protocol.BodyKey(eph, reply.Eph, offer, reply.TransferID)
 	if err != nil {
-		abandon()
-		return r, fmt.Errorf("peer %s: %w", t.Addr, err)
+		a.Abandon()
+		return a, fmt.Errorf("peer %s: %w", t.Addr, err)
 	}
-	start := Start{}
-	if opts.Retry && reply.Resume != nil {
-		start = resumeStart(m, reply.Resume, open)
+	a.key = key
+	return a, nil
+}
+
+// ReceiverFP is the fingerprint of the receiver that accepted.
+func (a *Accepted) ReceiverFP() string { return a.r.fp }
+
+// RemoteID is the receiver's transfer ID, which a cancel notice names.
+func (a *Accepted) RemoteID() string { return a.r.id }
+
+// Resume returns the resume point the receiver offered, and the SHA-256
+// (lowercase hex) of the bytes of entry s.Entry before s.Offset as the
+// receiver holds them, when there is one that fits the manifest and is not
+// the beginning. The body may then start at s if the sender's own prefix
+// has that hash, and must otherwise start at the beginning.
+func (a *Accepted) Resume() (s Start, sha256 string, ok bool) {
+	if a.resume == nil {
+		return Start{}, "", false
 	}
+	s = Start{Entry: a.resume.Entry, Offset: a.resume.Offset}
+	if s == (Start{}) || !validStart(a.m, s) {
+		return Start{}, "", false
+	}
+	return s, a.resume.SHA256, true
+}
+
+// Abandon tells the receiver, once and on a best-effort basis, that this
+// sender gave the transfer up (a signed cancel notice), so that it removes
+// what it stored or kept of it.
+func (a *Accepted) Abandon() {
+	a.once.Do(func() { notifyCancel(a.id, a.addr, a.r) })
+}
+
+// Upload sends the body of the accepted offer beginning at start, which
+// must be the beginning or exactly the point Resume returned (the caller
+// has checked the prefix hash); open supplies the content from there on.
+// However it ends, the receiver is left nothing half-done except after a
+// network failure with keep set, which it keeps for a resume: a cancel
+// (ctx), a failure reading the content, and a network failure without keep
+// are followed by a cancel notice, sent before the body is cut off where
+// possible. A content error wrapping ErrSourceLost counts as a network
+// failure here (the body is cut off, no notice) when keep is set; Upload
+// returns it as it is. progress may be nil. Upload may be called once.
+func (a *Accepted) Upload(ctx context.Context, start Start, open OpenFunc, progress ProgressFn, keep bool) error {
+	if a.used.Swap(true) {
+		return errors.New("this accepted offer was already used")
+	}
+	if a.key == nil {
+		return errors.New("no body key for this offer")
+	}
+	if start != (Start{}) {
+		if s, _, ok := a.Resume(); !ok || s != start {
+			a.Abandon()
+			return fmt.Errorf("%w: entry %d offset %d", ErrStart, start.Entry, start.Offset)
+		}
+	}
+	m, abandon := a.m, a.Abandon
 	sent, done := Before(m, start)
 	tr := newTracker(progress, m.Total, Files(m)).from(sent, done)
 
@@ -270,8 +378,8 @@ func sendAttempt(ctx context.Context, id *node.Identity, t Target, m protocol.Ma
 	lastMove.Store(time.Now().UnixNano())
 	writeDone := make(chan error, 1)
 	go func() {
-		err := writeSealed(stallWriter{w: pw, last: &lastMove}, key, m, start, open, tr)
-		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
+		err := writeSealed(stallWriter{w: pw, last: &lastMove}, a.key, m, start, open, tr)
+		if err != nil && !errors.Is(err, io.ErrClosedPipe) && !(keep && errors.Is(err, ErrSourceLost)) {
 			abandon() // a local failure: tell the receiver before the body is cut off
 		}
 		lastMove.Store(0)
@@ -296,13 +404,13 @@ func sendAttempt(ctx context.Context, id *node.Identity, t Target, m protocol.Ma
 		}
 	}()
 
-	u := fmt.Sprintf("http://%s/api/recv?token=%s", t.Addr, url.QueryEscape(reply.Token))
+	u := fmt.Sprintf("http://%s/api/recv?token=%s", a.addr, url.QueryEscape(a.token))
 	req, err := http.NewRequestWithContext(upCtx, http.MethodPost, u, pr)
 	if err != nil {
 		pr.Close()
 		<-writeDone
 		abandon()
-		return r, err
+		return err
 	}
 	req.ContentLength = SealedBodySize(m, start)
 	req.Header.Set("Content-Type", BodyType)
@@ -317,29 +425,29 @@ func sendAttempt(ctx context.Context, id *node.Identity, t Target, m protocol.Ma
 	}
 	switch {
 	case ctx.Err() != nil && (err != nil || werr != nil || resp.StatusCode != http.StatusOK):
-		return r, fmt.Errorf("send stopped: %w", ctx.Err())
+		return fmt.Errorf("send stopped: %w", ctx.Err())
 	case err == nil && resp.StatusCode == http.StatusGone:
-		return r, fmt.Errorf("%w by the receiver", ErrCancelled)
+		return fmt.Errorf("%w by the receiver", ErrCancelled)
 	case werr != nil:
 		// A failure while reading local files is the real cause; report it
 		// rather than the aborted request it caused.
-		return r, werr
+		return werr
 	case err != nil && context.Cause(upCtx) == errStalled:
 		err = fmt.Errorf("%w: nothing moved for %s", ErrConnLost, StallTimeout)
-		if !opts.Retry {
+		if !keep {
 			abandon()
 		}
-		return r, err
+		return err
 	case err != nil:
-		if !opts.Retry && IsNetwork(err) {
+		if !keep && IsNetwork(err) {
 			abandon()
 		}
-		return r, err
+		return err
 	case resp.StatusCode != http.StatusOK:
-		return r, fmt.Errorf("upload failed: %s: %s", resp.Status, readMsg(resp.Body))
+		return fmt.Errorf("upload failed: %s: %s", resp.Status, readMsg(resp.Body))
 	}
 	tr.finish()
-	return r, nil
+	return nil
 }
 
 // stallWriter records when the transport last took bytes.

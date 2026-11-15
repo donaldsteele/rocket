@@ -48,6 +48,12 @@ type Server struct {
 	// retryDelays are the waits between a send's retries; nil means
 	// transfer.RetryDelays (tests shorten them).
 	retryDelays []time.Duration
+	// relays are the sends of files picked in the browser page (relay.go),
+	// by transfer ID; relayWait is how long one waits for the page (0:
+	// relayWaitDefault; tests shorten it).
+	relayMu   sync.Mutex
+	relays    map[string]*relaySession
+	relayWait time.Duration
 	// Version is reported by /api/hello and /api/self.
 	Version string
 	// OS is reported by /api/hello.
@@ -106,6 +112,7 @@ func New(cfg *config.Config, id *node.Identity, trust *peers.Store, reg *discove
 		dlDir:    cfg.DownloadDir,
 		Version:  "dev",
 		quit:     make(chan struct{}),
+		relays:   map[string]*relaySession{},
 	}
 	s.ledger = &receiver.Ledger{Transfers: s.xfers, History: hist, Events: s.hub.publish}
 	sink := receiver.FSSink{Dir: s.downloadDir}
@@ -180,6 +187,9 @@ func (s *Server) routes() []route {
 		{"POST /api/accept", surfaceLocal, s.handleAccept},
 		{"POST /api/send", surfaceLocal, s.handleSend},
 		{"POST /api/relay", surfaceLocal, s.handleRelay},
+		{"POST /api/relay/offer", surfaceLocal, s.handleRelayOffer},
+		{"POST /api/relay/upload", surfaceLocal, s.handleRelayUpload},
+		{"GET /api/relay/result", surfaceLocal, s.handleRelayResult},
 		{"GET /api/transfers", surfaceLocal, s.handleTransfers},
 		{"POST /api/cancel", surfaceLocal, s.handleCancel},
 		{"GET /api/resumable", surfaceLocal, s.handleResumable},

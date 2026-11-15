@@ -120,7 +120,7 @@
           <li class="tick go"><span class="t">retry</span><b>Reconnecting 1/5</b><span>The sender tries again after 2, 5, 10, 20 and 30 seconds, with a new signed offer.</span></li>
           <li class="tick ok"><span class="t">done</span><b>Carries on</b><span>No second prompt. Only the missing bytes are sent, once the sender has checked that what already arrived still matches its file.</span></li>
         </ol>
-        <p class="note">After the fifth try the send shows <b>Interrupted</b>, with <b>Resume</b> and <b>Discard</b>, for 24 hours; with <code>rocket send</code>, run the same command again. Sends from the Android app, <code>rocket send</code> and Claude carry on like this. Files you pick in the desktop page are uploaded through your browser and start over instead, and so do drops from the browser drop page. Cancel or Decline on either side never keeps anything.</p>
+        <p class="note">After the fifth try the send shows <b>Interrupted</b>, with <b>Resume</b> and <b>Discard</b>, for 24 hours; with <code>rocket send</code>, run the same command again. Every send between rocket apps carries on like this: from the desktop page, the Android app, <code>rocket send</code> and Claude. Files you pick in the desktop page stay in your browser, so keep the page open while it reconnects; after a reload, <b>Resume</b> asks you to pick the same files or folder again and checks that they match. Only drops from the browser drop page start over. Cancel or Decline on either side never keeps anything.</p>
       </div>
     </div>
   </section>
@@ -136,7 +136,7 @@
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-shield-check"></use></svg><h3>You say yes first</h3><p>The first transfer from a new sender asks you. Received files land in <code>Downloads/rocket</code>, or any folder you choose in Settings.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-lock"></use></svg><h3>Encrypted on the way</h3><p>File contents between rocket apps are encrypted with keys made fresh for every transfer, and a change in transit is caught. Offers and replies are signed, so nobody can pose as a sender you trust. Names and sizes are not encrypted.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-smartphone"></use></svg><h3>Phones too</h3><p>The Android app sends and receives like a computer. Any other phone, or a guest without rocket, opens the computer's drop page in a browser and uploads straight to it.</p></article>
-        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-refresh-cw"></use></svg><h3>Picks up where it stopped</h3><p>When the connection drops, the sender reconnects by itself and sends only what is missing, without a second prompt. Either side can still cancel, and History keeps the last 1000 transfers.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-refresh-cw"></use></svg><h3>Picks up where it stopped</h3><p>When the connection drops, the sender reconnects by itself and sends only what is missing, without a second prompt, whether you sent from the desktop page, the phone, the command line or Claude. Either side can still cancel, and History keeps the last 1000 transfers.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-bell-dot"></use></svg><h3>Tray icon</h3><p>On Windows and Linux, <code>rocket-tray</code> shows whether rocket runs and how many peers it sees, and gets a red badge when someone is waiting for your answer.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-bot"></use></svg><h3>Claude can help</h3><p>Over MCP, Claude can list the computers on your network and send files. It can never accept a transfer: that stays with you.</p></article>
       </div>
@@ -153,7 +153,7 @@
         <div class="copy">
           <p class="reading-label">Transfers</p>
           <h3>Watch it move, stop it any time.</h3>
-          <p>Sending and receiving side by side, each with a progress bar, a lock that says it is encrypted, and a Cancel button. Cancel from either computer and the receiver removes what it wrote. A send that is still waiting for an answer says so, and one that lost its connection says it is reconnecting.</p>
+          <p>Sending and receiving side by side, each with a progress bar, a lock that says it is encrypted, and a Cancel button. Cancel from either computer and the receiver removes what it wrote. A send that is still waiting for an answer says so, and one that lost its connection says it is reconnecting and carries on where it stopped, files picked in the page included.</p>
           <ul class="states" aria-label="Transfer states">
             <li class="chip warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-clock"></use></svg>Waiting</li>
             <li class="chip info"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-arrow-up"></use></svg>Sending</li>
