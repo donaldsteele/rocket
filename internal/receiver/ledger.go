@@ -151,6 +151,16 @@ type Outgoing struct {
 	Delays    []time.Duration // nil: transfer.RetryDelays
 	Outbox    *resume.Outbox
 	Paths     []string
+	// Resumes is the Outbox record this send resumes, claimed by the caller
+	// (resume.Outbox.Claim): it is removed once the receiver accepts this
+	// send and released however the send ends, so a resume that fails
+	// before acceptance leaves it to be resumed or discarded later.
+	Resumes string
+	// Pin is the fingerprint the receiver must have when Target has none
+	// (a bare host:port): the receiver that accepted the send resumed.
+	Pin string
+	// RenewAfter is passed to transfer.SendOptions (tests).
+	RenewAfter time.Duration
 }
 
 // Send runs outgoing transfer o to its end: retries show as reconnecting
@@ -169,9 +179,26 @@ func (l *Ledger) Send(ctx context.Context, id *node.Identity, o Outgoing) error 
 		OnRetry: func(n, max int, delay time.Duration, err error) {
 			l.Retrying(o.ID, name, n, max, delay, err)
 		},
-		OnAccepted: func(fp, rid string) { receiverFP, remoteID = fp, rid },
+		OnAccepted: func(fp, rid string) {
+			if receiverFP == "" && o.Resumes != "" && o.Outbox != nil {
+				// The receiver took the resumed send on: this send's own
+				// record replaces the old one if it is interrupted too.
+				_ = o.Outbox.Remove(o.Resumes)
+			}
+			receiverFP, remoteID = fp, rid
+		},
+		RenewAfter: o.RenewAfter,
 	}
-	err := transfer.SendManifestOpts(ctx, id, o.Target, o.Manifest, o.Open, l.Progress(o.ID, name, "out"), opts)
+	t := o.Target
+	if t.FP == "" {
+		t.FP = o.Pin
+	}
+	err := transfer.SendManifestOpts(ctx, id, t, o.Manifest, o.Open, l.Progress(o.ID, name, "out"), opts)
+	if o.Resumes != "" && o.Outbox != nil {
+		// Listed again (if still there) before the end is published, so a
+		// UI that reloads on the event sees it.
+		o.Outbox.Release(o.Resumes)
+	}
 	mh, _ := o.Manifest.Hash()
 	if err == nil && o.Outbox != nil {
 		// The same files reached the same peer: an earlier interrupted send

@@ -32,6 +32,7 @@ import (
 	"github.com/donaldsteele/rocket/internal/peers"
 	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/protocol/securestream"
+	"github.com/donaldsteele/rocket/internal/resume"
 	"github.com/donaldsteele/rocket/internal/transfer"
 )
 
@@ -128,6 +129,9 @@ type Config struct {
 	// is removed like any other failure. It needs a Sink whose Outputs are
 	// Keepers to keep anything.
 	Kept *KeptStore
+	// TokenTTL is how long an upload token stays good; 0 means
+	// protocol.TokenTTL (tests shorten it).
+	TokenTTL time.Duration
 }
 
 // Receiver holds the receive state: offers waiting for a decision and
@@ -141,6 +145,11 @@ type Receiver struct {
 	uploads    map[string]*Upload  // keyed by one-shot upload token
 	active     map[string]*Upload  // peer bodies being received, keyed by transfer ID
 	peerCancel map[string]bool     // transfer IDs the sender cancelled with a notice
+	// broken are accepted peer transfers that broke for a network reason
+	// before anything was stored, keyed by sender key and manifest hash
+	// (acceptedKey), with when they stop counting: a retry continues them
+	// without a new prompt, like a kept transfer.
+	broken map[string]time.Time
 }
 
 // New builds a receiver. Identity, Trust, Ledger (with Transfers), Decider
@@ -165,6 +174,7 @@ func New(cfg Config) *Receiver {
 		uploads:    map[string]*Upload{},
 		active:     map[string]*Upload{},
 		peerCancel: map[string]bool{},
+		broken:     map[string]time.Time{},
 	}
 }
 
@@ -303,7 +313,11 @@ func (rx *Receiver) Wait(ctx context.Context, p *Pending) (d Decision, ok, timed
 func (rx *Receiver) MintUpload(up *Upload) string {
 	token := NewToken()
 	now := time.Now()
-	up.expires = now.Add(protocol.TokenTTL)
+	ttl := rx.cfg.TokenTTL
+	if ttl <= 0 {
+		ttl = protocol.TokenTTL
+	}
+	up.expires = now.Add(ttl)
 	rx.mu.Lock()
 	for k, u := range rx.uploads {
 		if now.After(u.expires) {
@@ -555,14 +569,16 @@ func (rx *Receiver) HandleOffer(w http.ResponseWriter, r *http.Request) {
 	// fingerprint is trusted AND whose key matches the pinned key skips the
 	// prompt, unless auto-accept is switched off. So does an offer that
 	// continues a transfer the person already accepted: same sender key,
-	// same manifest, kept after a network failure, or still being received
-	// over a connection this side has not yet seen break. (The key is
+	// same manifest, kept after a network failure, still being received
+	// over a connection this side has not yet seen break, accepted but its
+	// upload never came (or broke before anything was stored). (The key is
 	// proven by Verify below; until then this only picks the path.)
 	mh, _ := o.Manifest.Hash()
+	continued := mh != "" && rx.acceptedFor(o.SenderPub, mh)
 	resumable := rx.cfg.Kept != nil && mh != "" &&
 		(rx.activeFor(o.SenderPub, mh) != nil || rx.cfg.Kept.Find(o.SenderFP, o.SenderPub, mh) != nil)
 	trusted := rx.cfg.AutoAccept() && rx.cfg.Trust.IsTrusted(o.SenderFP, o.SenderPub)
-	if !resumable && !trusted {
+	if !resumable && !continued && !trusted {
 		if err := rx.PendingRoom(ip); err != nil {
 			http.Error(w, err.Error(), http.StatusTooManyRequests)
 			return
@@ -588,6 +604,13 @@ func (rx *Receiver) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		// stored, then continue that.
 		rx.settleActive(o.SenderPub, mh)
 		kept = rx.cfg.Kept.Find(o.SenderFP, o.SenderPub, mh)
+		// The old receive may have ended before storing anything.
+		continued = continued || rx.acceptedFor(o.SenderPub, mh)
+	}
+	if continued || kept != nil {
+		// This offer takes over from the earlier attempt: its unused
+		// upload token goes.
+		rx.forgetAccepted(o.SenderPub, mh)
 	}
 
 	// This side's ephemeral key and the body key are made before anyone is
@@ -621,7 +644,7 @@ func (rx *Receiver) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		answer(protocol.OfferReply{Accepted: true, Resume: &p})
 		return
 	}
-	if trusted {
+	if trusted || continued {
 		answer(protocol.OfferReply{Accepted: true})
 		return
 	}
@@ -700,10 +723,14 @@ func (rx *Receiver) HandleRecv(w http.ResponseWriter, r *http.Request) {
 	// was to continue stays kept after a network failure and is dropped
 	// after any other.
 	failEarly := func(err error) {
+		err = rx.stopErr(tid, err)
 		if up.keptID != "" && !transfer.IsNetwork(err) {
 			rx.discardKept(up.keptID, "the sender's next attempt failed")
 		}
-		rx.failIncoming(w, r, up, rx.stopErr(tid, err))
+		if up.keptID == "" {
+			rx.markBroken(up, err)
+		}
+		rx.failIncoming(w, r, up, err)
 	}
 	if r.ContentLength >= 0 && r.ContentLength != full && r.ContentLength != resumeSize {
 		failEarly(fmt.Errorf("%w: content length %d, the offer needs %d", transfer.ErrSize, r.ContentLength, full))
@@ -809,8 +836,69 @@ func (rx *Receiver) endBroken(w http.ResponseWriter, r *http.Request, up *Upload
 	if prev != nil {
 		rx.cfg.Kept.Remove(prev.ID) // Abort removed what it kept
 		rx.publishKeptGone(prev.ID, "the transfer failed")
+	} else if !stopped {
+		rx.markBroken(up, err)
 	}
 	rx.failIncoming(w, r, up, rx.stopErr(tid, err))
+}
+
+// maxBroken bounds Receiver.broken.
+const maxBroken = 64
+
+// acceptedKey names the transfers of manifest hash mh from sender key pub.
+func acceptedKey(pub, mh string) string { return pub + "\n" + mh }
+
+// markBroken records that accepted peer upload up broke with err before
+// anything of it was kept: after a network failure (not a cancel), the
+// sender's retry continues it without a new prompt for resume.KeepFor.
+func (rx *Receiver) markBroken(up *Upload, err error) {
+	if up.Drop || up.mh == "" || !transfer.IsNetwork(err) || errors.Is(err, transfer.ErrCancelled) {
+		return
+	}
+	now := time.Now()
+	rx.mu.Lock()
+	defer rx.mu.Unlock()
+	for k, until := range rx.broken {
+		if now.After(until) {
+			delete(rx.broken, k)
+		}
+	}
+	if len(rx.broken) >= maxBroken {
+		return
+	}
+	rx.broken[acceptedKey(up.SenderPub, up.mh)] = now.Add(resume.KeepFor)
+}
+
+// acceptedFor reports whether the person already accepted a transfer of
+// manifest hash mh from sender key pub that has not run yet: its upload
+// token is unused and still good, or it broke before anything was stored
+// (markBroken). An offer of the same files from the same key continues it.
+func (rx *Receiver) acceptedFor(pub, mh string) bool {
+	now := time.Now()
+	rx.mu.Lock()
+	defer rx.mu.Unlock()
+	if until, ok := rx.broken[acceptedKey(pub, mh)]; ok && !now.After(until) {
+		return true
+	}
+	for _, u := range rx.uploads {
+		if !u.Drop && u.SenderPub == pub && u.mh == mh && !now.After(u.expires) {
+			return true
+		}
+	}
+	return false
+}
+
+// forgetAccepted drops what acceptedFor found for pub and mh: a new offer
+// of the same files took over.
+func (rx *Receiver) forgetAccepted(pub, mh string) {
+	rx.mu.Lock()
+	defer rx.mu.Unlock()
+	delete(rx.broken, acceptedKey(pub, mh))
+	for k, u := range rx.uploads {
+		if !u.Drop && u.SenderPub == pub && u.mh == mh {
+			delete(rx.uploads, k)
+		}
+	}
 }
 
 // resumeKeepFor is how long a kept transfer waits, for messages.

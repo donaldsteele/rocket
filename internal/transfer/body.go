@@ -44,7 +44,11 @@ func (s Start) Header() [StartHeaderSize]byte {
 func ReadStart(r io.Reader) (Start, error) {
 	var h [StartHeaderSize]byte
 	if _, err := io.ReadFull(r, h[:]); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		// Only a body that really ended (a bare EOF: from a securestream,
+		// after its final frame) is too short; a wrapped error keeps its
+		// type, so a stream cut off inside the header (securestream's
+		// ErrTruncated) stays a network failure.
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			return Start{}, fmt.Errorf("%w: the body ended inside its start header", ErrSize)
 		}
 		return Start{}, err

@@ -102,8 +102,10 @@ type relaySession struct {
 	m        protocol.Manifest
 	files    []transfer.BrowserFile // as the page listed them; file k is the k-th file entry of m
 	ctx      context.Context        // ends on POST /api/cancel and quit
+	resumes  string                 // the outbox record this send resumes (claimed), if any
 
 	mu       sync.Mutex
+	pin      string // the fingerprint every attempt must reach when target has none
 	phase    int
 	retries  int                // retries made so far
 	last     *transfer.Accepted // the latest accepted attempt
@@ -137,6 +139,19 @@ func (rs *relaySession) signal() {
 	rs.changed = make(chan struct{})
 }
 
+// offerTarget is where the next attempt goes: the target, pinned to the
+// receiver that accepted an earlier attempt (or the send resumed) when the
+// target is a bare address.
+func (rs *relaySession) offerTarget() transfer.Target {
+	t := rs.target
+	rs.mu.Lock()
+	if t.FP == "" {
+		t.FP = rs.pin
+	}
+	rs.mu.Unlock()
+	return t
+}
+
 // fileOf is the index in rs.files of the file behind manifest entry e.
 func (rs *relaySession) fileOf(e uint32) int {
 	k := 0
@@ -153,6 +168,13 @@ func (s *Server) relayWaitFor() time.Duration {
 		return s.relayWait
 	}
 	return relayWaitDefault
+}
+
+func (s *Server) renewAfterFor() time.Duration {
+	if s.renewAfter > 0 {
+		return s.renewAfter
+	}
+	return transfer.RenewAfter
 }
 
 func (s *Server) delays() []time.Duration {
@@ -269,15 +291,29 @@ func (s *Server) newRelay(peer, resumeID string, files []transfer.BrowserFile) (
 	)
 	if resumeID != "" {
 		var ok bool
-		if rec, ok = s.outbox.Get(resumeID); !ok {
+		if rec, ok = s.outbox.Claim(resumeID); !ok {
 			return nil, http.StatusNotFound, errors.New("nothing to resume with that id")
 		}
+		claimed := true
+		defer func() {
+			if claimed {
+				s.outbox.Release(resumeID)
+			}
+		}()
 		if len(rec.Picked) == 0 {
 			return nil, http.StatusConflict, errors.New("this send was not started from the rocket page; resume it with POST /api/resume")
 		}
 		if msg := pickedMismatch(rec.Picked, files); msg != "" {
 			return nil, http.StatusConflict, errors.New(msg)
 		}
+		m, err := transfer.BrowserManifest(files, true)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if mh, _ := m.Hash(); mh != rec.ManifestHash {
+			return nil, http.StatusConflict, errors.New("these files do not make the same send as the interrupted one; pick the same files or folder again")
+		}
+		claimed = false // the session releases it when it ends
 		target, peerName = transfer.Target{Addr: rec.Addr, FP: rec.PeerFP}, rec.PeerName
 		if p, found := s.reg.Find(rec.PeerFP); rec.PeerFP != "" && found {
 			target.Addr = p.Addr
@@ -295,15 +331,15 @@ func (s *Server) newRelay(peer, resumeID string, files []transfer.BrowserFile) (
 	if err != nil {
 		return nil, http.StatusBadRequest, err
 	}
-	if resumeID != "" {
-		if mh, _ := m.Hash(); mh != rec.ManifestHash {
-			return nil, http.StatusConflict, errors.New("these files do not make the same send as the interrupted one; pick the same files or folder again")
-		}
-		_ = s.outbox.Remove(resumeID)
-	}
 	rs := &relaySession{
 		id: randToken(), name: transfer.Label(m), peerName: peerName, target: target, m: m, files: files,
 		phase: relayOffering, results: map[int]relayAnswer{}, changed: make(chan struct{}),
+	}
+	if resumeID != "" {
+		// The interrupted send stays in the outbox (hidden) until the
+		// receiver accepts this one; a bare address must lead to the
+		// receiver that accepted it.
+		rs.resumes, rs.pin = resumeID, rec.ReceiverFP
 	}
 	rs.ctx = s.startOutgoing(context.Background(), rs.id, peerName, target, m, rs.abort)
 	s.relayMu.Lock()
@@ -365,15 +401,13 @@ func (s *Server) relayAttempt(r *http.Request, rs *relaySession) relayAnswer {
 	defer cancel()
 	stop := context.AfterFunc(r.Context(), cancel)
 	defer stop()
-	acc, err := transfer.Offer(octx, s.id, rs.target, rs.m)
+	acc, err := transfer.Offer(octx, s.id, rs.offerTarget(), rs.m)
 	if err == nil && (rs.ctx.Err() != nil || r.Context().Err() != nil) {
 		// Accepted just as it was stopped: the receiver's side counts.
 		err = context.Canceled
 	}
 	if acc != nil {
-		rs.mu.Lock()
-		rs.last = acc
-		rs.mu.Unlock()
+		s.relayAccepted(rs, acc)
 	}
 	if err != nil {
 		if rs.ctx.Err() == nil && r.Context().Err() != nil {
@@ -393,6 +427,22 @@ func (s *Server) relayAttempt(r *http.Request, rs *relaySession) relayAnswer {
 	rs.phase = relayUpload
 	s.arm(rs, s.relayWaitFor())
 	return relayAnswer{Result: "accepted", TransferID: rs.id, Seq: rs.seq, From: rs.from, Resume: resumed}
+}
+
+// relayAccepted records accepted attempt acc: later attempts must reach
+// the same receiver, and an interrupted send this one resumes leaves the
+// outbox (this send's own record replaces it if it is interrupted too).
+func (s *Server) relayAccepted(rs *relaySession, acc *transfer.Accepted) {
+	rs.mu.Lock()
+	first := rs.last == nil
+	rs.last = acc
+	if rs.pin == "" {
+		rs.pin = acc.ReceiverFP()
+	}
+	rs.mu.Unlock()
+	if first && rs.resumes != "" {
+		_ = s.outbox.Remove(rs.resumes)
+	}
 }
 
 // relayFailed decides what an attempt that failed with err leads to, like
@@ -451,6 +501,9 @@ func (s *Server) relayEnd(rs *relaySession, err error) relayAnswer {
 	}
 	last := rs.last
 	rs.mu.Unlock()
+	if rs.resumes != "" {
+		s.outbox.Release(rs.resumes) // listed again, if still there, before the end is published
+	}
 
 	cancelled := s.xfers.Cancelled(rs.id)
 	if err != nil && (cancelled || rs.ctx.Err() != nil) && last != nil {
@@ -569,6 +622,30 @@ func (s *Server) relayBody(r *http.Request, rs *relaySession, acc *transfer.Acce
 				acc.Abandon()
 			}
 			return s.relayFailed(rs, err)
+		}
+		if acc.Age() > s.renewAfterFor() {
+			// The upload token may have expired meanwhile: offer again.
+			// The receiver still keeps the same part, so it accepts
+			// without asking and names the same point.
+			octx, cancel := context.WithCancel(rs.ctx)
+			stop := context.AfterFunc(r.Context(), cancel)
+			nacc, err := acc.Renew(octx)
+			stop()
+			cancel()
+			if nacc != nil {
+				s.relayAccepted(rs, nacc)
+			}
+			if err != nil {
+				return s.relayFailed(rs, err)
+			}
+			acc = nacc
+			if st2, sha2, ok := acc.Resume(); !ok || st2 != st || sha2 != sha {
+				// Not the same point any more: everything goes again.
+				rs.mu.Lock()
+				rs.acc = acc
+				rs.mu.Unlock()
+				return s.relayRestart(rs)
+			}
 		}
 		start, first = st, &skipped{r: part, n: int64(st.Offset)}
 	}

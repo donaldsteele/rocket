@@ -56,6 +56,32 @@ class OutgoingStoreTest {
     }
 
     @Test
+    fun runningSendsKeepTheirGrants() {
+        val grants = FakeGrants()
+        val store = OutgoingStore(dir, grants)
+        val tree = "content://docs/tree/1"
+        // Two sends of the same folder run; the first ends.
+        store.hold(listOf(tree))
+        store.hold(listOf(tree))
+        store.unhold(listOf(tree))
+        assertEquals(emptyList<String>(), grants.released)
+
+        // Discarding an interrupted send of the same folder while the second
+        // still runs leaves the grant too.
+        store.save(SavedSend(a, items, listOf(tree)))
+        store.remove(a)
+        assertEquals(emptyList<String>(), grants.released)
+
+        // The second ends, interrupted: its saved items keep the grant.
+        store.save(SavedSend(b, items, listOf(tree)))
+        store.unhold(listOf(tree))
+        assertEquals(emptyList<String>(), grants.released)
+
+        store.prune(emptySet())
+        assertEquals(listOf(tree), grants.released)
+    }
+
+    @Test
     fun ignoresBadIdsAndFiles() {
         val store = OutgoingStore(dir, FakeGrants())
         store.save(SavedSend("../../evil-0123456789", items, emptyList()))

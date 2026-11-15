@@ -116,7 +116,7 @@
         <p class="sub">Wi-Fi drops out, a laptop goes to sleep, someone walks out of range. Once a transfer has been accepted, rocket keeps what already arrived and sends only the rest.</p>
         <ol class="timeline" aria-label="An interrupted transfer, step by step">
           <li class="tick go"><span class="t">sending</span><b>Accepted</b><span>The receiver said yes and the files are on their way, encrypted.</span></li>
-          <li class="tick ask"><span class="t">cut</span><b>Connection lost</b><span>The receiver keeps what arrived as <code>.rocket-part</code> files, for up to 24 hours.</span></li>
+          <li class="tick ask"><span class="t">cut</span><b>Connection lost</b><span>The receiver keeps what arrived for up to 24 hours: whole files under their names, the one in flight as a <code>.rocket-part</code> file.</span></li>
           <li class="tick go"><span class="t">retry</span><b>Reconnecting 1/5</b><span>The sender tries again after 2, 5, 10, 20 and 30 seconds, with a new signed offer.</span></li>
           <li class="tick ok"><span class="t">done</span><b>Carries on</b><span>No second prompt. Only the missing bytes are sent, once the sender has checked that what already arrived still matches its file.</span></li>
         </ol>

@@ -93,8 +93,9 @@ prompt on the receiving computer.
 ```
 
 The call returns when the transfer finishes, is declined, times out (the
-receiver has 2 minutes to decide; the whole send is limited to 30 minutes)
-or is interrupted. File contents travel encrypted (`encrypted`); names and
+receiver has 2 minutes to decide) or is interrupted. There is no overall
+time limit, so a large send can take as long as it needs; a connection on
+which nothing moves for 60 seconds counts as broken. File contents travel encrypted (`encrypted`); names and
 sizes do not. If the connection breaks after the receiver accepted, the send
 reconnects by itself after 2, 5, 10, 20 and 30 seconds and continues where
 it stopped; `retries` counts the reconnects. When the last one fails too,

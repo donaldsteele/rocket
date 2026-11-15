@@ -11,6 +11,7 @@ import (
 	"github.com/donaldsteele/rocket/internal/history"
 	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/receiver"
+	"github.com/donaldsteele/rocket/internal/resume"
 	"github.com/donaldsteele/rocket/internal/transfer"
 )
 
@@ -83,13 +84,14 @@ func (n *Node) SendNamed(addr, fp, shown string, src Source, l ProgressListener)
 		}
 		return "", fmt.Errorf("%q is not a host:port address", addr)
 	}
-	return n.startSend(target, peerName, src, l)
+	return n.startSend(target, peerName, src, l, nil)
 }
 
 // startSend builds the manifest of src and sends it to target in the
 // background; l gets the transfer's events. After a network failure the
-// send retries and resumes; when it gives up it is kept for Resume.
-func (n *Node) startSend(target transfer.Target, peerName string, src Source, l ProgressListener) (string, error) {
+// send retries and resumes; when it gives up it is kept for Resume. rec,
+// when not nil, is the outbox record it resumes, claimed by the caller.
+func (n *Node) startSend(target transfer.Target, peerName string, src Source, l ProgressListener, rec *resume.Outgoing) (string, error) {
 	items := make([]transfer.RelItem, src.Count())
 	for i := range items {
 		it := transfer.RelItem{Path: src.Path(i), Dir: src.IsDir(i)}
@@ -129,11 +131,15 @@ func (n *Node) startSend(target transfer.Target, peerName string, src Source, l 
 		Files: transfer.Files(m), Total: m.Total, State: transfer.StateWaiting, Encrypted: true,
 	}, nil)
 	id := n.identity()
+	o := receiver.Outgoing{
+		ID: tid, PeerName: peerName, Target: target, Manifest: m, Open: open,
+		Resumable: true, Delays: delays, Outbox: n.outbox,
+	}
+	if rec != nil {
+		o.Resumes, o.Pin = rec.ID, rec.ReceiverFP
+	}
 	go func() {
-		_ = n.ledger.Send(ctx, id, receiver.Outgoing{
-			ID: tid, PeerName: peerName, Target: target, Manifest: m, Open: open,
-			Resumable: true, Delays: delays, Outbox: n.outbox,
-		})
+		_ = n.ledger.Send(ctx, id, o)
 		n.mu.Lock()
 		delete(n.sends, tid)
 		n.mu.Unlock()
@@ -145,13 +151,17 @@ func (n *Node) startSend(target transfer.Target, peerName string, src Source, l 
 // fingerprint first, as its address may have changed), with src: the same
 // files, which the app opens again (from the content URIs it kept, or
 // picked again). When the files are unchanged, the receiver continues
-// where it stopped; otherwise they go again from the start. It returns the
-// new transfer's ID; l gets its events.
+// where it stopped; otherwise they go again from the start. A send to a
+// bare address must reach the receiver that accepted it before. It returns
+// the new transfer's ID; l gets its events. The interrupted send is left
+// out of ResumableJSON while the new one runs, and is forgotten once the
+// receiver accepts the new one: if the new send ends before that (the peer
+// is away), it can still be resumed or discarded.
 func (n *Node) Resume(id string, src Source, l ProgressListener) (string, error) {
 	if src == nil || l == nil {
 		return "", errors.New("nothing to send or no listener")
 	}
-	rec, ok := n.outbox.Get(id)
+	rec, ok := n.outbox.Claim(id)
 	if !ok {
 		return "", errors.New("nothing to resume with that id")
 	}
@@ -159,11 +169,11 @@ func (n *Node) Resume(id string, src Source, l ProgressListener) (string, error)
 	if p, found := n.registry().Find(rec.PeerFP); rec.PeerFP != "" && found {
 		target.Addr = p.Addr
 	}
-	tid, err := n.startSend(target, rec.PeerName, src, l)
+	tid, err := n.startSend(target, rec.PeerName, src, l, &rec)
 	if err != nil {
+		n.outbox.Release(id)
 		return "", err
 	}
-	_ = n.outbox.Remove(id)
 	return tid, nil
 }
 

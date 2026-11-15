@@ -119,6 +119,12 @@ const stallCheck = 2 * time.Second
 // cancelNoticeTimeout bounds a cancel notice round trip.
 const cancelNoticeTimeout = 3 * time.Second
 
+// RenewAfter is how long after the receiver's reply a sender trusts its
+// one-shot upload token (valid for protocol.TokenTTL) to be good. A resume
+// check that reads a long prefix can take longer; the attempt then offers
+// the same files again (Accepted.Renew) before it uploads.
+const RenewAfter = protocol.TokenTTL / 2
+
 // SendOptions tunes SendManifestOpts.
 type SendOptions struct {
 	// Retry makes the send resumable. open may then be called more than
@@ -138,6 +144,8 @@ type SendOptions struct {
 	// OnAccepted is told of every accepted attempt: the receiver's
 	// fingerprint and its transfer ID, which a later cancel notice names.
 	OnAccepted func(receiverFP, remoteID string)
+	// RenewAfter overrides the package's RenewAfter when positive (tests).
+	RenewAfter time.Duration
 }
 
 // remote names the receiver's side of an accepted attempt.
@@ -162,6 +170,12 @@ func SendManifestOpts(ctx context.Context, id *node.Identity, t Target, m protoc
 		r, err := sendAttempt(ctx, id, t, m, open, progress, opts)
 		if r.id != "" {
 			last = r
+			// Every later attempt must reach the receiver that accepted
+			// this one, also when t named only an address: whoever answers
+			// there after a broken connection may be someone else.
+			if t.FP == "" {
+				t.FP = r.fp
+			}
 		} else if ctx.Err() != nil {
 			// Stopped before this attempt was accepted: the receiver may
 			// still keep what an earlier attempt stored.
@@ -216,6 +230,28 @@ func sendAttempt(ctx context.Context, id *node.Identity, t Target, m protocol.Ma
 	start := Start{}
 	if opts.Retry && a.resume != nil {
 		start = resumeStart(m, a.resume, open)
+		renew := RenewAfter
+		if opts.RenewAfter > 0 {
+			renew = opts.RenewAfter
+		}
+		if a.Age() > renew {
+			// The prefix check took so long that the upload token may have
+			// expired: offer again. The receiver still keeps the same part,
+			// so it accepts without asking and names the same point.
+			checked := *a.resume
+			if a, err = a.Renew(ctx); a != nil {
+				r = a.r
+				if opts.OnAccepted != nil {
+					opts.OnAccepted(r.fp, r.id)
+				}
+			}
+			if err != nil {
+				return r, err
+			}
+			if a.resume == nil || *a.resume != checked {
+				start = Start{}
+			}
+		}
 	}
 	return r, a.Upload(ctx, start, open, progress, opts.Retry)
 }
@@ -232,6 +268,7 @@ type Accepted struct {
 	key    []byte
 	token  string
 	resume *protocol.ResumePoint
+	at     time.Time // when the reply arrived
 	once   sync.Once
 	used   atomic.Bool
 }
@@ -290,7 +327,7 @@ func offerAttempt(ctx context.Context, id *node.Identity, t Target, m protocol.M
 	}
 	a := &Accepted{
 		id: id, addr: t.Addr, m: m, r: remote{fp: hello.FP, id: reply.TransferID},
-		token: reply.Token, resume: reply.Resume,
+		token: reply.Token, resume: reply.Resume, at: time.Now(),
 	}
 	key, err := protocol.BodyKey(eph, reply.Eph, offer, reply.TransferID)
 	if err != nil {
@@ -306,6 +343,22 @@ func (a *Accepted) ReceiverFP() string { return a.r.fp }
 
 // RemoteID is the receiver's transfer ID, which a cancel notice names.
 func (a *Accepted) RemoteID() string { return a.r.id }
+
+// Age is the time since the receiver accepted. Its upload token is good for
+// protocol.TokenTTL from then; past RenewAfter, Renew before Upload.
+func (a *Accepted) Age() time.Duration { return time.Since(a.at) }
+
+// Renew offers the same files to the same receiver again (pinned to the
+// fingerprint that accepted) for an accepted offer whose body has not gone
+// out and whose upload token may have expired, after a long resume check.
+// The receiver accepts an offer that continues one it accepted without
+// asking, with the same resume point while it keeps the same part. a can
+// no longer be uploaded; the result is used instead (it may be non-nil
+// with an error, as from Offer's internals: see offerAttempt).
+func (a *Accepted) Renew(ctx context.Context) (*Accepted, error) {
+	a.used.Store(true)
+	return offerAttempt(ctx, a.id, Target{Addr: a.addr, FP: a.r.fp}, a.m)
+}
 
 // Resume returns the resume point the receiver offered, and the SHA-256
 // (lowercase hex) of the bytes of entry s.Entry before s.Offset as the

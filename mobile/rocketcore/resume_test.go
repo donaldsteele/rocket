@@ -429,3 +429,44 @@ func TestPhoneKeepsAcrossRestartAndDiscards(t *testing.T) {
 	}
 	waitNames(t, sink.root, []string{"album", "album/a.jpg", "album/b.jpg"})
 }
+
+// TestPhoneResumeBeforeAcceptKeepsSend: a Resume while the desktop is away
+// fails before the desktop accepts it, and the interrupted send stays
+// listed (it is hidden only while the Resume runs), so it can be resumed or
+// discarded later.
+func TestPhoneResumeBeforeAcceptKeepsSend(t *testing.T) {
+	phone, desk := newPhone(t, "pixel"), newDesktop(t, "desk")
+	if err := desk.trust.Approve(phone.Fingerprint(), "pixel", phone.PublicKey()); err != nil {
+		t.Fatal(err)
+	}
+	phone.retryDelays = []time.Duration{}
+	data := randomData(300 << 10)
+	src := func() Source { return &testSource{t: t, items: []item{{path: "clip.bin", data: data, fd: true}}} }
+	p := newCutProxy(t, desk.ts.URL, 100<<10)
+	ev := newEvents(t)
+	tid, err := phone.Send(p.addr(), "", src(), ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := ev.wait("error"); e.Data["result"] != "interrupted" {
+		t.Fatalf("end %v", e.Data)
+	}
+	desk.waitKept(1)
+	out := resumable(t, phone)
+	if len(out) != 1 || out[0]["receiver_fp"] != desk.id.Fingerprint() {
+		t.Fatalf("resumable %v", out)
+	}
+
+	p.ts.Close() // the desktop is away
+	ev = newEvents(t)
+	nid, err := phone.Resume(tid, src(), ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := ev.wait("error"); e.Data["transfer_id"] != nid || e.Data["result"] == "interrupted" {
+		t.Fatalf("end %v", e.Data)
+	}
+	if out := resumable(t, phone); len(out) != 1 || out[0]["transfer_id"] != tid {
+		t.Fatalf("after a resume that was never accepted: %v", out)
+	}
+}

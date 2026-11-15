@@ -172,10 +172,16 @@ type PickedFile struct {
 }
 
 // Outbox is the sender's list of interrupted sends, in <data-dir>/outgoing.
+// A record being resumed (Claim) is hidden from Get and List until the
+// resumed send releases it; that send removes it once the receiver accepts
+// it, so a resume that fails before then leaves the record in place.
 type Outbox struct {
 	dir *Dir
 	// Now is the clock; tests override it.
 	Now func() time.Time
+
+	mu      sync.Mutex
+	claimed map[string]bool // records a running send resumes
 }
 
 // OutboxDir is the Outbox folder inside the data folder.
@@ -197,8 +203,48 @@ func (b *Outbox) Put(o Outgoing) error {
 	return b.dir.Save(o.ID, o)
 }
 
-// Get returns record id, or false when there is none (or it expired).
+// Get returns record id, or false when there is none, it expired, or a
+// send is resuming it (Claim).
 func (b *Outbox) Get(id string) (Outgoing, bool) {
+	b.mu.Lock()
+	claimed := b.claimed[id]
+	b.mu.Unlock()
+	if claimed {
+		return Outgoing{}, false
+	}
+	return b.load(id)
+}
+
+// Claim returns record id for a send that resumes it, and hides it (Get,
+// List) until Release, so that it is resumed or discarded only once at a
+// time. It reports false when there is no such live record or it is
+// already claimed. The resuming send removes the record once the receiver
+// accepts it, and releases it however it ends.
+func (b *Outbox) Claim(id string) (Outgoing, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.claimed[id] {
+		return Outgoing{}, false
+	}
+	o, ok := b.load(id)
+	if !ok {
+		return Outgoing{}, false
+	}
+	if b.claimed == nil {
+		b.claimed = map[string]bool{}
+	}
+	b.claimed[id] = true
+	return o, true
+}
+
+// Release ends a Claim: a record still there is listed again.
+func (b *Outbox) Release(id string) {
+	b.mu.Lock()
+	delete(b.claimed, id)
+	b.mu.Unlock()
+}
+
+func (b *Outbox) load(id string) (Outgoing, bool) {
 	var o Outgoing
 	if b.dir.Load(id, &o) != nil || o.ID != id || b.Now().After(o.Expires) {
 		return Outgoing{}, false
@@ -209,7 +255,8 @@ func (b *Outbox) Get(id string) (Outgoing, bool) {
 // Remove forgets record id.
 func (b *Outbox) Remove(id string) error { return b.dir.Remove(id) }
 
-// List returns the live records, most recently interrupted first.
+// List returns the live records no send is resuming, most recently
+// interrupted first.
 func (b *Outbox) List() []Outgoing {
 	ids, _ := b.dir.IDs()
 	out := []Outgoing{}

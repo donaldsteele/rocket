@@ -25,8 +25,8 @@ Encrypted transfers and resume.
   offer carries a fresh X25519 key, the receiver answers with its own in a
   reply signed with its ed25519 key, and the file contents travel as a
   ChaCha20-Poly1305 stream in 64 KiB frames under a key derived (HKDF-SHA256)
-  for that one transfer. A changed, reordered, cut or extended stream fails
-  and the transfer is thrown away. Only Go's standard library and
+  for that one transfer. A changed, reordered or extended stream fails
+  and the transfer is thrown away; one cut short is kept for a resume. Only Go's standard library and
   `golang.org/x/crypto` are used. See `docs/protocol.md`.
 - **Signed replies.** Every answer to an offer, accepted or not, is signed by
   the receiver and bound to the offer it answers.
@@ -40,7 +40,9 @@ Encrypted transfers and resume.
   for receiving on both desktop and Android. Files picked in the desktop
   page stay in the browser: the page makes the retries itself, and after a
   reload Resume asks for the same files or folder again and refuses
-  different ones. Cancel or decline never keeps anything.
+  different ones. Cancel or decline never keeps anything. Retries and
+  Resume go only to the receiver that accepted the transfer, also for a
+  send to a bare address.
 - **Status in the UI**: an **Encrypted** / **Not encrypted** badge on offers,
   transfers and history, **Needs update** peers, **Reconnecting n/5**, and
   **Interrupted** in History, on the desktop and on Android.

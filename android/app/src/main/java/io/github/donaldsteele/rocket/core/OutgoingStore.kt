@@ -32,9 +32,31 @@ data class SavedSend(
  * The items of interrupted sends, by the Go core's transfer ID, one JSON
  * file each in [dir] (the app's private storage). The Go core keeps the
  * rest (peer, manifest hash) for 24 hours; [prune] drops what it no longer
- * has. Grants are released once no saved send uses them.
+ * has. Grants are released once no saved send uses them and no running
+ * send holds them ([hold]): Android keeps one persistable grant per URI
+ * for the whole app, so releasing it takes access away from every send of
+ * that URI.
  */
 class OutgoingStore(private val dir: File, private val grants: GrantKeeper) {
+    /** How many running sends hold each grant. */
+    private val held = HashMap<String, Int>()
+
+    /** A send that reads through list starts: its grants stay until [unhold]. */
+    @Synchronized
+    fun hold(list: List<String>) {
+        list.forEach { held[it] = (held[it] ?: 0) + 1 }
+    }
+
+    /** A send that held list ended: releases the grants nothing uses any more. */
+    @Synchronized
+    fun unhold(list: List<String>) {
+        list.forEach {
+            val n = (held[it] ?: 0) - 1
+            if (n <= 0) held.remove(it) else held[it] = n
+        }
+        releaseUnused(list)
+    }
+
     @Synchronized
     fun save(s: SavedSend) {
         if (!validId(s.id)) return
@@ -78,11 +100,11 @@ class OutgoingStore(private val dir: File, private val grants: GrantKeeper) {
         ids().filter { it !in live }.forEach { remove(it) }
     }
 
-    /** Whether a saved send uses grant uri. */
+    /** Whether a running send holds grant uri or a saved send uses it. */
     @Synchronized
-    fun uses(uri: String): Boolean = ids().any { id -> load(id)?.grants?.contains(uri) == true }
+    fun uses(uri: String): Boolean = (held[uri] ?: 0) > 0 || ids().any { id -> load(id)?.grants?.contains(uri) == true }
 
-    /** Releases the grants in list that no saved send uses. */
+    /** Releases the grants in list that no saved or running send uses. */
     @Synchronized
     fun releaseUnused(list: List<String>) {
         list.filter { !uses(it) }.forEach { runCatching { grants.release(it) } }

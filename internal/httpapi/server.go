@@ -54,6 +54,8 @@ type Server struct {
 	relayMu   sync.Mutex
 	relays    map[string]*relaySession
 	relayWait time.Duration
+	// renewAfter overrides transfer.RenewAfter for sends (tests).
+	renewAfter time.Duration
 	// Version is reported by /api/hello and /api/self.
 	Version string
 	// OS is reported by /api/hello.

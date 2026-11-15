@@ -429,6 +429,13 @@ live kept transfer, after its signature checks out, is accepted at once
 with `resume` in the signed reply. Any other sender, or other files, gets
 the normal decision; a decline leaves the kept transfer alone.
 
+The same goes, without `resume`, for an offer that continues a transfer
+the person accepted but that stored nothing yet: its upload token is still
+unused and good (the upload never arrived), or its upload broke for a
+network reason before anything was stored (remembered in memory for 24
+hours). Such an offer is accepted at once too, and the old unused token is
+dropped.
+
 If an upload from the same sender key of the same manifest is still being
 received when such an offer arrives (this side has not seen the old
 connection break), the receiver waits up to 3 s for it to end. If it moved
@@ -454,6 +461,16 @@ point or `(0,0)`:
   resume point; otherwise at `(0,0)`. Files before the point are trusted as
   they are: their sizes match the manifest and the receiver authenticated
   their content when it got them.
+- **Slow checks.** The upload token is good for 10 minutes from the reply.
+  When hashing the prefix took more than 5 of them (a long prefix on a slow
+  disk), the sender offers the same manifest once more before uploading;
+  the receiver accepts it without asking and names the same point, so the
+  checked hash still applies (if it names another point, the body starts at
+  `(0,0)`).
+- **Pinned receiver.** Every retry and every Resume must reach the receiver
+  that accepted the transfer: after the first accepted attempt the sender
+  requires that receiver's fingerprint in hello, also when it was given a
+  bare `host:port` (the outbox record keeps it as `receiver_fp`).
 - **Retries.** On a network failure after an accepted offer, the sender
   offers the same manifest again (new hello, new offer with a new nonce and
   `eph`, so new keys) after **2, 5, 10, 20 and 30 seconds**. Meanwhile the
@@ -465,7 +482,10 @@ point or `(0,0)`:
   `<data-dir>/outgoing/<id>.json` with what is needed to send it again: the
   peer, the manifest hash, and on the desktop the local paths. The person
   can then **Resume** (the files are listed again; unchanged files continue
-  where they stopped) or **Discard** it.
+  where they stopped) or **Discard** it. The record is hidden while its
+  Resume runs and removed only once the receiver accepts the resumed send,
+  so a Resume that fails before that (the peer is asleep) leaves it to be
+  resumed or discarded again.
 - **Files picked in the desktop page** live only in the browser, so the
   page drives the attempts and the desktop keeps the rest (see
   [Sends from the desktop page](#sends-from-the-desktop-page)): the same
@@ -587,7 +607,7 @@ loopback, Host allowlist, `X-Rocket-CSRF: 1` on POST; see
 | route | does |
 |-------|------|
 | `GET /api/resumable` | `{"outgoing": [interrupted sends], "incoming": [transfers kept here]}` |
-| `POST /api/resume {transfer_id}` | sends an interrupted send again; answers `{ok, transfer_id}` with the new transfer's ID |
+| `POST /api/resume {transfer_id}` | sends an interrupted send again; answers `{ok, transfer_id}` with the new transfer's ID (404 while that send is already being resumed) |
 | `POST /api/discard {transfer_id}` | forgets an interrupted send (and sends its receiver a cancel notice) or removes a kept transfer with its files |
 | `POST /api/relay/offer`, `POST /api/relay/upload`, `GET /api/relay/result` | sends of files picked in the desktop page, with their retries and resume (see [Sends from the desktop page](#sends-from-the-desktop-page)) |
 

@@ -92,8 +92,10 @@ Every file body between rocket apps travels encrypted and authenticated
   decrypt it.
 - The body is ChaCha20-Poly1305 in frames of 64 KiB with a counter and a
   "last frame" flag in each nonce. A changed, reordered, repeated or dropped
-  frame, a body cut short, or anything added after the end fails, and the
-  receiver removes everything that transfer wrote.
+  frame, or anything added after the end, fails, and the receiver removes
+  everything that transfer wrote. A body cut short fails too, but counts as
+  a broken connection: the receiver keeps what it authenticated so far for
+  a resume (see below).
 - The crypto is Go's standard library (`crypto/ecdh`, `crypto/hkdf`,
   `crypto/ed25519`) and `golang.org/x/crypto/chacha20poly1305`; rocket
   adds no primitives of its own. Known-answer vectors computed outside rocket,
@@ -280,9 +282,14 @@ still:
   public), and which hosts send to which, when and how much,
 - read and change files dropped from a **browser** (the drop page is not
   encrypted), and copy a drop cookie,
-- block or cut off a transfer (the sender retries; the receiver keeps the
-  authenticated part as a `.rocket-part` file for up to 24 hours so the
-  transfer can resume, and never as a finished file).
+- block or cut off a transfer (the sender retries; the receiver keeps what
+  arrived for up to 24 hours so the transfer can resume: the files that
+  arrived whole under their final names, the file in flight as a
+  `.rocket-part` file). Every byte kept was authenticated, so cutting a
+  transfer can leave it incomplete but never with content the sender did
+  not send. Retries go only to the receiver that accepted the transfer
+  (its fingerprint is pinned, also for a send to a bare address), so
+  cutting the connection does not let someone else take the rest.
 
 They cannot read or undetectably change the contents of a transfer between
 rocket apps, make your computer accept an offer from a trusted sender without

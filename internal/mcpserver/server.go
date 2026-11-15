@@ -195,8 +195,11 @@ func (t *tools) sendFile(ctx context.Context, _ *mcp.CallToolRequest, in sendFil
 	if n := len(plan.Skipped); n > 0 {
 		notes = append(notes, fmt.Sprintf("skipped %d symlink(s) or special file(s)", n))
 	}
-	sendCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer cancel()
+	// No overall deadline: a deadline would end a large send like a
+	// cancel (the receiver drops what arrived). The offer wait, the hello
+	// timeout, the stall watchdog and the bounded retries end a send that
+	// cannot go on; the client cancelling the call cancels it.
+	sendCtx := ctx
 	target := transfer.Target{Addr: peer.Addr, FP: peer.Fingerprint}
 	tid := newID()
 	// The same books as a send from the UI: history (under tid), retries

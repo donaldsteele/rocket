@@ -108,3 +108,48 @@ func TestOutboxSupersede(t *testing.T) {
 		t.Fatalf("left %+v", l)
 	}
 }
+
+// TestOutboxClaim: a record being resumed is hidden and cannot be claimed
+// twice; released, it is listed again unless the resumed send removed it.
+func TestOutboxClaim(t *testing.T) {
+	b, err := OpenOutbox(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := Outgoing{ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "a"}
+	if err := b.Put(a); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.Claim("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"); ok {
+		t.Fatal("claimed a missing record")
+	}
+	got, ok := b.Claim(a.ID)
+	if !ok || got.Name != "a" {
+		t.Fatalf("claim: %+v %v", got, ok)
+	}
+	if _, ok := b.Claim(a.ID); ok {
+		t.Fatal("claimed twice")
+	}
+	if _, ok := b.Get(a.ID); ok {
+		t.Fatal("a claimed record is returned by Get")
+	}
+	if l := b.List(); len(l) != 0 {
+		t.Fatalf("a claimed record is listed: %+v", l)
+	}
+	// The resumed send failed before the receiver accepted it.
+	b.Release(a.ID)
+	if l := b.List(); len(l) != 1 || l[0].ID != a.ID {
+		t.Fatalf("after release %+v", l)
+	}
+	// This time the receiver accepted it: the record goes.
+	if _, ok := b.Claim(a.ID); !ok {
+		t.Fatal("claim after release failed")
+	}
+	if err := b.Remove(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	b.Release(a.ID)
+	if l := b.List(); len(l) != 0 {
+		t.Fatalf("after accept %+v", l)
+	}
+}

@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /** Where a send goes: an address and the fingerprint expected there. */
@@ -153,6 +154,9 @@ class Transfers(
     )
 
     private val jobs = ConcurrentHashMap<Long, Job>()
+
+    /** Interrupted sends a running send resumes: their saved items stay until it ends. */
+    private val resuming = ConcurrentHashMap.newKeySet<String>()
     private val nextJob = AtomicLong()
     private val nextLocal = AtomicLong()
     private val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "rocket-send").apply { isDaemon = true } }
@@ -186,6 +190,8 @@ class Transfers(
     /** Queues a send; pass the returned job ID to [start]. grants are URIs with persistable access it holds. */
     fun enqueue(target: SendTarget, items: List<SendItem>, grants: List<String> = emptyList(), resumeOf: String? = null): Long {
         val id = nextJob.incrementAndGet()
+        store.hold(grants)
+        if (resumeOf != null) resuming.add(resumeOf)
         jobs[id] = Job(target, items, grants, resumeOf)
         _starting.update { it + 1 }
         return id
@@ -204,9 +210,10 @@ class Transfers(
             try {
                 val tid = if (job.resumeOf != null) {
                     node.resume(job.resumeOf, source, listener).also {
-                        // The core forgot the interrupted send; its grants
-                        // now belong to this one, and its card gives way.
-                        store.remove(job.resumeOf, release = false)
+                        // The core hides the interrupted send while this
+                        // one runs and forgets it once the receiver takes
+                        // this one on; its saved items stay until this one
+                        // ends, in case it ends before that.
                         dropInterrupted(job.resumeOf)
                         reloadResumable()
                     }
@@ -218,7 +225,7 @@ class Transfers(
                 listener.started(tid)
             } catch (e: Exception) {
                 source.close()
-                if (job.resumeOf == null) store.releaseUnused(job.grants)
+                ended(job)
                 val why = e.message ?: e.toString()
                 _messages.tryEmit("Could not send to ${job.target.name}: $why")
                 val s = summarize(job.items)
@@ -241,8 +248,19 @@ class Transfers(
     /** Drops a queued job that will never start (its service start failed). */
     fun forget(jobId: Long) {
         val job = jobs.remove(jobId) ?: return
-        if (job.resumeOf == null) store.releaseUnused(job.grants)
+        ended(job)
         _starting.update { it - 1 }
+    }
+
+    /**
+     * Job ended: it no longer holds its grants (released if nothing else
+     * uses them), and the interrupted send it resumed is no longer being
+     * resumed (its saved items go with the next [reloadResumable] if the
+     * core forgot it).
+     */
+    private fun ended(job: Job) {
+        job.resumeOf?.let { resuming.remove(it) }
+        runCatching { store.unhold(job.grants) }
     }
 
     fun cancel(id: String): Boolean = node.cancel(id)
@@ -276,7 +294,7 @@ class Transfers(
         background.execute {
             val r = runCatching { parseResumable(node.resumableJSON()) }.getOrDefault(Resumable())
             _resumable.value = r
-            runCatching { store.prune(r.outgoing.map { it.transferId }.toSet()) }
+            runCatching { store.prune(r.outgoing.map { it.transferId }.toSet() + resuming) }
         }
     }
 
@@ -300,6 +318,8 @@ class Transfers(
         private val summary: SendSummary,
         private val source: GoSource,
     ) : ProgressListener {
+        private val over = AtomicBoolean()
+
         private fun fresh(tid: String) = Transfer(
             id = tid, peerName = job.target.name, name = summary.label, sent = 0, total = summary.bytes,
             file = "", fileIndex = 0, files = summary.files, state = TransferState.Waiting, error = "",
@@ -322,12 +342,12 @@ class Transfers(
             }
             if (ev is TransferEvent.Progress || ev is TransferEvent.Retrying) return
             source.close()
+            if (!over.compareAndSet(false, true)) return
             if (ev is TransferEvent.Failed && ev.interrupted) {
                 // Kept by the core for 24 hours: keep what Resume needs.
                 runCatching { store.save(SavedSend(tid, job.items, job.grants)) }
-            } else {
-                store.releaseUnused(job.grants)
             }
+            ended(job)
             reloadResumable()
             _ended.update { it + 1 }
         }

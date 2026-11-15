@@ -305,7 +305,13 @@ function app() {
         this.say(this.resumeError);
       } finally {
         this.setBusy(o.transfer_id, false);
-        this.loadResumable();
+        await this.loadResumable();
+        // A resume that ended before the receiver took it on (the peer was
+        // away) leaves the interrupted send listed: keep holding its files.
+        if (!HELD.has(o.transfer_id) && this.resumable.outgoing.some((x) => x.transfer_id === o.transfer_id)) {
+          HELD.set(o.transfer_id, named);
+          this.held = Object.assign({}, this.held, { [o.transfer_id]: true });
+        }
       }
     },
     // drop forgets the files this tab holds for a send.

@@ -12,6 +12,7 @@ import (
 	"github.com/donaldsteele/rocket/internal/history"
 	"github.com/donaldsteele/rocket/internal/protocol"
 	"github.com/donaldsteele/rocket/internal/receiver"
+	"github.com/donaldsteele/rocket/internal/resume"
 	"github.com/donaldsteele/rocket/internal/transfer"
 )
 
@@ -114,22 +115,25 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	tid := s.startSend(plan, target, peerName, body.Paths)
+	tid := s.startSend(plan, target, peerName, body.Paths, nil)
 	writeJSON(w, map[string]any{"ok": true, "transfer_id": tid, "files": transfer.Files(plan.Manifest), "total": plan.Manifest.Total})
 }
 
 // startSend sends plan (built from paths) to target in the background and
 // returns its transfer ID. After a network failure it retries and resumes;
-// when it gives up it is kept in the outbox for POST /api/resume.
-func (s *Server) startSend(plan *transfer.Plan, target transfer.Target, peerName string, paths []string) string {
+// when it gives up it is kept in the outbox for POST /api/resume. rec, when
+// not nil, is the outbox record it resumes, claimed by the caller.
+func (s *Server) startSend(plan *transfer.Plan, target transfer.Target, peerName string, paths []string, rec *resume.Outgoing) string {
 	tid := randToken()
 	ctx := s.startOutgoing(context.Background(), tid, peerName, target, plan.Manifest, nil)
-	go func() {
-		_ = s.ledger.Send(ctx, s.id, receiver.Outgoing{
-			ID: tid, PeerName: peerName, Target: target, Manifest: plan.Manifest, Open: plan.Open,
-			Resumable: true, Delays: s.retryDelays, Outbox: s.outbox, Paths: paths,
-		})
-	}()
+	o := receiver.Outgoing{
+		ID: tid, PeerName: peerName, Target: target, Manifest: plan.Manifest, Open: plan.Open,
+		Resumable: true, Delays: s.retryDelays, Outbox: s.outbox, Paths: paths, RenewAfter: s.renewAfter,
+	}
+	if rec != nil {
+		o.Resumes, o.Pin = rec.ID, rec.ReceiverFP
+	}
+	go func() { _ = s.ledger.Send(ctx, s.id, o) }()
 	return tid
 }
 
@@ -142,24 +146,29 @@ func (s *Server) handleResumable(w http.ResponseWriter, _ *http.Request) {
 // handleResume sends an interrupted send again: POST /api/resume
 // {transfer_id}. The files are listed again from the paths it was given;
 // when they are unchanged the receiver continues where it stopped. The peer
-// is looked up by fingerprint first (it may have a new address). It answers
-// {ok, transfer_id} with the new transfer's ID.
+// is looked up by fingerprint first (it may have a new address); a send to
+// a bare address must reach the receiver that accepted it before. It
+// answers {ok, transfer_id} with the new transfer's ID. The interrupted
+// send stays listed (hidden while the new one runs) until the receiver
+// accepts the new one.
 func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	id, ok := transferIDBody(w, r)
 	if !ok {
 		return
 	}
-	rec, ok := s.outbox.Get(id)
+	rec, ok := s.outbox.Claim(id)
 	if !ok {
 		http.Error(w, "nothing to resume with that id", http.StatusNotFound)
 		return
 	}
 	if len(rec.Picked) > 0 {
+		s.outbox.Release(id)
 		http.Error(w, "this send was started from the rocket page with files picked there; resume it from the page, which asks for the same files again", http.StatusConflict)
 		return
 	}
 	plan, err := transfer.PlanPaths(rec.Paths)
 	if err != nil {
+		s.outbox.Release(id)
 		http.Error(w, "cannot send these files again: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -167,8 +176,7 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	if p, found := s.reg.Find(rec.PeerFP); rec.PeerFP != "" && found {
 		target.Addr = p.Addr
 	}
-	_ = s.outbox.Remove(id)
-	tid := s.startSend(plan, target, rec.PeerName, rec.Paths)
+	tid := s.startSend(plan, target, rec.PeerName, rec.Paths, &rec)
 	writeJSON(w, map[string]any{"ok": true, "transfer_id": tid, "files": transfer.Files(plan.Manifest), "total": plan.Manifest.Total})
 }
 
