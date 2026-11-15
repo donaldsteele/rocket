@@ -10,13 +10,21 @@
 // real `rocket send` CLI and the real loopback API, and a headless browser
 // driven over the DevTools protocol takes the shots (2x scale).
 //
+// For rocket 1.1 the beacons also announce a fourth computer, Den-PC, as a
+// rocket 1.0 host (no "proto"), so the peer list shows "Needs update"; nothing
+// listens on its port. A send from Studio-PC to Laptop goes through
+// POST /api/send (which retries), and Laptop's proxy then resets every
+// connection, so the send shows "Reconnecting n/5" and finally "Interrupted"
+// with Resume in History.
+//
 // usage:
-//   go build -o <tmp>\rocket.exe -ldflags "-X github.com/donaldsteele/rocket/internal/buildinfo.Version=1.0.0" ./cmd/rocket
+//   go build -o <tmp>\rocket.exe -ldflags "-X github.com/donaldsteele/rocket/internal/buildinfo.Version=1.1.0" ./cmd/rocket
 //   subst R: <work dir>\drive & set CAPTURE_DRIVE=R:   (optional: the UI shows "R:\Downloads\rocket")
 //   node tools/site/capture.mjs <tmp>\rocket.exe <work dir> site\assets\shots [browser exe]
 //   subst R: /d
 // The whole run takes about three minutes: one offer is left unanswered until
-// it times out, for the "No answer" line in History.
+// it times out, for the "No answer" line in History, and the cut-off send
+// needs about 70 seconds of retries before it counts as interrupted.
 
 import { spawn, execFileSync } from 'node:child_process';
 import dgram from 'node:dgram';
@@ -47,6 +55,10 @@ const procs = [];
 for (const h of Object.values(hosts)) {
   h.data = path.join(WORK, 'data', h.name);
   fs.mkdirSync(h.data, { recursive: true });
+  // Start from a clean slate but keep node.key, so a rerun with the same work
+  // folder keeps the fingerprints the site shows (no trust, history or kept
+  // transfers left over from the last run).
+  for (const e of fs.readdirSync(h.data)) if (e !== 'node.key') fs.rmSync(path.join(h.data, e), { recursive: true, force: true });
   const out = fs.openSync(path.join(WORK, `${h.name}.log`), 'w');
   h.proc = spawn(BIN, ['ui', '--no-browser', '--no-mdns', '--port', h.port, '--beacon-port', h.beacon,
     '--data-dir', h.data, '--download-dir', h.dl, '--name', h.name].map(String), { stdio: ['ignore', out, out] });
@@ -74,14 +86,21 @@ for (let i = 0; i < 24; i++) mk(`vacation-photos/IMG_${2041 + i * 3}.jpg`, Math.
 const drone = mk('drone-footage.mp4', 640 * MB);
 const mix = mk('mix-final.wav', 96 * MB);
 const backup = mk('old-backup.zip', 12 * MB);
+const session = mk('studio-session.mov', 220 * MB);
 const recipes = mk('recipes.pdf', Math.round(1.3 * MB));
 const phoneFiles = [mk('phone/IMG_4410.HEIC', Math.round(2.8 * MB)), mk('phone/IMG_4411.HEIC', Math.round(3.1 * MB)),
   mk('phone/receipt-hardware-store.pdf', 240000)];
 
 // ---- throttling proxies: client->server bytes at `rate` bytes/s ----
+// cut() resets every open connection and, from then on, every new one, as if
+// the computer had dropped off the network.
 function proxy(listen, target) {
-  const ctl = { rate: Infinity };
+  const ctl = { rate: Infinity, cutOff: false, conns: new Set() };
+  ctl.cut = () => { ctl.cutOff = true; for (const c of ctl.conns) c.resetAndDestroy(); };
   const srv = net.createServer((c) => {
+    if (ctl.cutOff) { c.resetAndDestroy(); return; }
+    ctl.conns.add(c);
+    c.on('close', () => ctl.conns.delete(c));
     const s = net.connect({ port: target, host: HOSTIP, localAddress: HOSTIP });
     let allow = 0; let last = Date.now();
     c.on('data', (chunk) => {
@@ -145,6 +164,8 @@ for (const h of Object.values(hosts)) {
   const hello = await until(() => api(h, 'api/hello'), `${h.name} to start`);
   Object.assign(h, { fp: hello.fp, ver: hello.version, os: hello.os });
 }
+// Den-PC still runs rocket 1.0: its beacon has no "proto". Nothing listens on its port.
+const den = { name: 'Den-PC', fp: 'fc2409036877eb7e', proxy: 29339, ver: '1.0.0', os: 'windows' };
 const udp = dgram.createSocket('udp4');
 await new Promise((r) => udp.bind({ address: HOSTIP, port: 0 }, r));
 function beacons() {
@@ -154,12 +175,13 @@ function beacons() {
       const pkt = Buffer.from(JSON.stringify({ name: p.name, fp: p.fp, port: p.proxy, ver: p.ver, os: p.os, proto: 2 }));
       udp.send(pkt, to.beacon, HOSTIP);
     }
+    udp.send(Buffer.from(JSON.stringify({ name: den.name, fp: den.fp, port: den.proxy, ver: den.ver, os: den.os })), to.beacon, HOSTIP);
   }
 }
 beacons();
 const beaconTimer = setInterval(beacons, 1500);
 const { S, L, K } = hosts;
-await until(async () => (await api(S, 'api/peers')).length === 2, 'peers on Studio-PC');
+await until(async () => (await api(S, 'api/peers')).length === 3, 'peers on Studio-PC');
 log('peers visible');
 
 // ---- browser over the DevTools protocol ----
@@ -237,21 +259,33 @@ try {
   await decide(S, o2, false);
   await tax;
 
-  // Phase D: transfers in flight, both directions, through the throttles.
+  // Phase D: transfers in flight, both directions, through the throttles, and
+  // a send to Laptop that loses its connection halfway.
   S.throttle.rate = 9 * MB;
   K.throttle.rate = 3 * MB;
+  L.throttle.rate = 8 * MB;
   // A fresh page: the Recent activity log restarts empty.
   await app.send('Page.reload'); await sleep(2000);
   const droneDone = cliSend(L, `${HOSTIP}:${S.proxy}`, [drone]); // Laptop is trusted: no prompt
   const mixDone = relay(S, K, [{ name: 'mix-final.wav', path: mix }]);
   const o3 = await offerFor(K, (o) => o.name === 'mix-final.wav');
   await decide(K, o3, true);
+  await api(S, 'api/send', { peer: L.fp, paths: [session] });
+  const o6 = await offerFor(L, (o) => o.name === 'studio-session.mov');
+  await decide(L, o6, true);
+  const cutDone = until(async () => {
+    const x = (await api(S, 'api/transfers')).find((t) => t.name === 'studio-session.mov');
+    if (x && x.sent / x.total > 0.45) { L.throttle.cut(); return true; }
+    return false;
+  }, 'the send to Laptop to move', 90000);
   await view(app, 'transfers');
   await until(async () => {
     const xs = await api(S, 'api/transfers');
     const d = xs.find((x) => x.name === 'drone-footage.mp4'); const m = xs.find((x) => x.name === 'mix-final.wav');
-    return d && m && d.sent / d.total > 0.3 && m.sent / m.total > 0.22;
+    const r = xs.find((x) => x.name === 'studio-session.mov');
+    return d && m && r && d.sent / d.total > 0.3 && m.sent / m.total > 0.22 && r.state === 'reconnecting' && r.attempt >= 2;
   }, 'transfers to move', 90000);
+  await cutDone;
   S.throttle.rate = 1.5 * MB; K.throttle.rate = 0.6 * MB; // hold the bars while shooting
   await theme(app, 'dark'); await shot(app, 'transfers-dark');
   await theme(app, 'light'); await shot(app, 'transfers-light');
@@ -295,6 +329,8 @@ try {
 
   log('waiting for the unanswered offer to time out');
   await backupDone;
+  log('waiting for the send to Laptop to give up');
+  await until(async () => (await api(S, 'api/resumable')).outgoing.length > 0, 'an interrupted send', 180000);
   await sleep(1500);
 
   // History and settings.

@@ -26,6 +26,11 @@ The long number must match the line for your zip (or the APK).
 Run rocket on two or more computers or Android phones on the same network
 to send files between them.
 
+Update every device to 1.1: rocket 1.1 cannot send to or receive from
+rocket 1.0 (it encrypts transfers with a new protocol). A device that still
+runs 1.0 shows "Needs update". Unzip or install 1.1 over 1.0; your
+settings, trusted senders and history stay.
+
 
 WINDOWS
 -------
@@ -121,6 +126,10 @@ To update, install the new APK over the old one the same way; your
 trusted senders and history stay. Uninstalling removes them, and the
 phone gets a new fingerprint when you install again.
 
+If the Wi-Fi drops during a transfer, rocket reconnects by itself and
+carries on where it stopped. If it gives up, the send shows "Interrupted"
+with Resume for 24 hours.
+
 
 WHERE DO FILES GO?
 ------------------
@@ -134,7 +143,9 @@ SENDING FROM A PHONE WITHOUT THE APP
 rocket prints a "drop page" address such as http://192.168.1.20:29005/ .
 Open it in the phone's browser (same Wi-Fi), tap "Choose files", and
 accept the offer on the computer. This works on any phone, including an
-iPhone, and on a guest's laptop.
+iPhone, and on a guest's laptop. Files sent this way are NOT encrypted
+(browsers only allow that on HTTPS pages), and an upload cut off by the
+network starts over.
 
 
 IS IT SAFE?
@@ -142,7 +153,12 @@ IS IT SAFE?
 rocket listens on your local network so other computers can send to it
 (on Android only while "Receive files" is on). The first transfer from a
 new computer or phone asks you to approve it. Only
-approve senders you recognise. Transfers are not encrypted, so use rocket
-on networks you trust (home, office), not public Wi-Fi. See the README
-and the security notes at
+approve senders you recognise, and compare the fingerprint before you
+choose "Always accept".
+
+The contents of files sent between rocket apps are encrypted. File
+names, sizes and device names are not, and neither is the browser drop
+page, so someone watching the network could still see what you send.
+Use rocket on networks you trust (home, office), not public Wi-Fi. See
+the README and the security notes at
 github.com/donaldsteele/rocket (docs/security.md).

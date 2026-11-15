@@ -18,6 +18,15 @@ same protocol.
   choose files or a folder, send.
 - **Files and folders:** many files or a whole folder go as one transfer with
   one approval, with per-file progress. Either side can cancel.
+- **Encrypted transfers:** file contents between rocket apps (desktop and
+  Android) are encrypted and authenticated with keys made fresh for every
+  transfer. File names, sizes and device names are not encrypted, and the
+  browser drop page is not encrypted at all; see [Security](#security).
+- **Resume:** when the connection drops during an accepted transfer, the
+  receiver keeps what arrived for 24 hours, the sender reconnects by itself
+  (up to 5 tries) and only the missing bytes are sent, without a second
+  prompt. After the last try the send is **Interrupted**, with **Resume** and
+  **Discard**.
 - **Android app:** send from the phone (or its share sheet) and receive on it,
   with the same approval prompt and trusted senders. See
   [Android app](#android-app).
@@ -25,8 +34,8 @@ same protocol.
   browser and uploads straight to that computer.
 - **Trust on first use:** the first transfer from a new sender asks the receiver
   to approve it. Tick **Always accept from this host** to remember that
-  sender's key. Every offer is signed, so another computer cannot pretend to be
-  a sender you trust.
+  sender's key. Every offer and every reply is signed, so another computer
+  cannot pretend to be a sender you trust.
 - **History and settings:** see past transfers, change the device name and
   download folder, and revoke trusted senders.
 - **Received files** land in your **Downloads/rocket** folder.
@@ -60,6 +69,15 @@ same protocol.
 4. On the receiving computer, **Accept** or **Decline** the offer. Tick
    **Always accept from this host** to skip the prompt next time.
 
+Offers and transfers between rocket apps show a lock and **Encrypted**;
+uploads from a browser show **Not encrypted**.
+
+**rocket 1.1 does not talk to rocket 1.0**, in either direction: 1.1 encrypts
+transfers with protocol 2. Update every computer and phone. A 1.0 device shows
+as **Needs update** in the peer list, and a 1.0 sender is told to update.
+Installing 1.1 over 1.0 keeps settings, trusted senders, history and the
+phone's fingerprint.
+
 To send from a phone without the app (an iPhone, or a guest's phone), open the
 **drop page** address rocket prints (for example `http://192.168.1.20:29005/`)
 in the phone's browser and choose files.
@@ -67,9 +85,9 @@ in the phone's browser and choose files.
 ## Android app
 
 <p>
-<picture><source media="(prefers-color-scheme: light)" srcset="site/assets/shots/android-send-light.png"><img src="site/assets/shots/android-send-dark.png" width="200" alt="Send tab: three computers on the network, each with Files and Folder buttons"></picture>
-<picture><source media="(prefers-color-scheme: light)" srcset="site/assets/shots/android-offer-light.png"><img src="site/assets/shots/android-offer-dark.png" width="200" alt="Incoming offer sheet: a computer wants to send 12 files, with Accept, Always accept from this device and Decline"></picture>
-<picture><source media="(prefers-color-scheme: light)" srcset="site/assets/shots/android-progress-light.png"><img src="site/assets/shots/android-progress-dark.png" width="200" alt="Transfers tab: one file receiving and one sending, each with a progress bar and Cancel"></picture>
+<picture><source media="(prefers-color-scheme: light)" srcset="site/assets/shots/android-send-light.png"><img src="site/assets/shots/android-send-dark.png" width="200" alt="Send tab: a note that files sent to these devices are encrypted, one computer that needs an update, and three computers, each with Files and Folder buttons"></picture>
+<picture><source media="(prefers-color-scheme: light)" srcset="site/assets/shots/android-offer-light.png"><img src="site/assets/shots/android-offer-dark.png" width="200" alt="Incoming offer sheet: a computer wants to send 12 files, marked Encrypted, with Accept, Always accept from this device and Decline"></picture>
+<picture><source media="(prefers-color-scheme: light)" srcset="site/assets/shots/android-progress-light.png"><img src="site/assets/shots/android-progress-dark.png" width="200" alt="Transfers tab: one transfer receiving and one send reconnecting after its connection was lost, both Encrypted, each with a progress bar and Cancel"></picture>
 <picture><source media="(prefers-color-scheme: light)" srcset="site/assets/shots/android-receive-light.png"><img src="site/assets/shots/android-receive-dark.png" width="200" alt="Receive tab: receiving is on, visible as Pixel with its fingerprint, port 29005, files saved in Download/rocket"></picture>
 </p>
 
@@ -94,7 +112,12 @@ same key.
   it off.
 - **Transfers, History, Settings:** progress with cancel, the last 1000
   transfers, the device name, trusted senders with revoke, and the auto-accept
-  switch, as on the desktop.
+  switch, as on the desktop. Transfers are encrypted like the desktop's, a
+  send that loses its connection shows **Reconnecting 2/5** and carries on,
+  and one that gave up is **Interrupted** with **Resume**. The app keeps its
+  permission to read the files where the sharing app allows it; otherwise
+  Resume asks you to pick them again. A receive cut off by the network is kept
+  for 24 hours and continues when the sender tries again.
 - **Permissions:** network and Wi-Fi state, Wi-Fi multicast (to hear
   discovery), foreground services (for long transfers and for receiving),
   notifications (Android 13+ asks; without it offers show only in the app),
@@ -104,8 +127,9 @@ same key.
   so a new phone gets a new identity.
 
 The phone serves only the peer protocol (`/api/hello`, `/api/offer`,
-`/api/recv`): no drop page, no control API. Traffic is plain HTTP, as on the
-desktop (see [Security](#security)).
+`/api/recv`, `/api/recv/cancel`): no drop page, no control API. The
+transport is plain HTTP, as on the desktop, with the file contents encrypted
+(see [Security](#security)).
 
 ## Command line
 
@@ -135,6 +159,12 @@ A flag wins over the environment, which wins over Settings, which wins over the
 default. Every host on a network must use the same beacon port to see each
 other by beacon.
 
+`rocket send` reconnects by itself when the connection drops after the
+receiver accepted: it prints `connection lost (...); reconnecting 1/5 in 2s...`
+and then `reconnected; continuing where it stopped`. If it gives up after 5
+tries, run the same command again within 24 hours and the send continues
+where it stopped.
+
 ## Where the data is kept
 
 The data folder is `rocket` inside your user configuration folder
@@ -146,6 +176,10 @@ macOS, `~/.config/rocket` on Linux), unless `--data-dir` says otherwise:
 - `drop_tokens.json`: hashes of remembered drop-page browsers.
 - `settings.json`: device name, download folder, auto-accept.
 - `history.jsonl`: the last 1000 transfers.
+- `resume/`: transfers this computer received in part and keeps for 24
+  hours (the part files themselves stay in the download folder).
+- `outgoing/`: interrupted sends that can be resumed, with the paths of their
+  files, for 24 hours.
 
 ## Tray app
 
@@ -211,29 +245,50 @@ sudo ufw allow 5353/udp
 - **Discovery:** a UDP broadcast beacon on port 29006 and mDNS
   (`_rocket._tcp.local`) announce each host; both feed one peer list keyed by
   fingerprint, and silent peers expire.
-- **Transfer:** a two-phase push on the HTTP port: the sender sends a signed
-  offer listing every file, the receiver approves (trust on first use), then
-  the sender streams the bytes (one file raw, several as a tar stream) straight
-  to disk. Nothing is held whole in memory. See
+- **Transfer:** a two-phase push on the HTTP port (protocol 2): the sender
+  sends a signed offer listing every file with a fresh X25519 key, the receiver
+  approves (trust on first use) and answers with a signed reply and its own
+  fresh X25519 key, then the sender streams the bytes of every file in order,
+  encrypted with ChaCha20-Poly1305 under a key derived for this transfer,
+  straight to disk. Nothing is held whole in memory. See
   [docs/protocol.md](docs/protocol.md).
+- **Resume:** after a network failure the receiver keeps the authenticated
+  part; the sender's next offer for the same files gets the point to continue
+  from in the signed reply, checks its own copy of that part, and sends only
+  the rest.
 
 ## Security
 
 rocket listens on your local network, so any host on your subnet can **offer**
 you files; nothing is saved until you accept. The full UI and every control
-API answer only on this computer. Offers are signed and trusted senders are
-pinned by key.
+API answer only on this computer. Offers and replies are signed and trusted
+senders are pinned by key (trust on first use: compare the fingerprint before
+you choose Always accept).
 
-Traffic is **plain HTTP**: someone who can watch your network can see what is
-sent. Use rocket on networks you trust. The full threat model is in
-[docs/security.md](docs/security.md).
+**What is encrypted:** the contents of every file sent between rocket apps
+(desktop and Android, 1.1 and later), with ChaCha20-Poly1305 under a key made
+from fresh X25519 keys for each transfer. A change in transit is caught and
+the transfer thrown away, and a recorded transfer stays unreadable even if a
+device key is stolen later.
+
+**What is not:** the transport is plain HTTP. Anyone who can watch your
+network can still see file and folder names, sizes and the folder layout,
+device names, fingerprints and versions, and who sends to whom and when. Files
+dropped from a browser (the drop page) are not encrypted at all, because
+browsers allow web encryption only on HTTPS pages. Sending to a typed
+`host:port` encrypts to whoever answers there; pick peers from the list, or
+compare fingerprints, when it matters. Use rocket on networks you trust, and
+put files in an encrypted archive first if their names must stay private. The
+full threat model is in [docs/security.md](docs/security.md).
 
 ## Status
 
-Version 1.0. Not included: encryption in transit (HTTPS), resuming an
-interrupted transfer, code signing of the desktop binaries, macOS tray
-binaries, an iPhone app, a Play Store listing, and transfers over the
-internet. See [CHANGELOG.md](CHANGELOG.md).
+Version 1.1. Not included: encryption of file names, sizes and device names
+(HTTPS), encryption and resume for the browser drop page, resume for files
+picked in the desktop page (they are uploaded through the browser and start
+over), code signing of the desktop binaries, macOS tray binaries, an iPhone
+app, a Play Store listing, and transfers over the internet. See
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Building from source
 
@@ -241,8 +296,8 @@ Go 1.26 or later.
 
 ```
 go build ./cmd/rocket                         # this platform
-VERSION=1.0.0 bash scripts/build.sh           # all release zips into dist/
-pwsh scripts/build.ps1 -Version 1.0.0         # same, from PowerShell
+VERSION=1.1.0 bash scripts/build.sh           # all release zips into dist/
+pwsh scripts/build.ps1 -Version 1.1.0         # same, from PowerShell
 go run ./tools/licenses                       # refresh THIRD_PARTY_LICENSES.txt
 ```
 

@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>rocket · send files across your local network</title>
-<meta name="description" content="rocket sends files and folders straight from one computer to another on your local network, with a quick approval on the receiving end. One binary for Windows, macOS and Linux, and an Android app that sends and receives. No cloud, no account, no internet. Other phones use a browser drop page, and Claude can send files over MCP.">
+<meta name="description" content="rocket sends files and folders straight from one computer to another on your local network, with a quick approval on the receiving end and the file contents encrypted on the way. One binary for Windows, macOS and Linux, and an Android app that sends and receives. No cloud, no account, no internet. Other phones use a browser drop page, and Claude can send files over MCP.">
 <meta name="color-scheme" content="dark light">
 <meta property="og:title" content="rocket: send files across your local network">
-<meta property="og:description" content="Files and folders straight from one computer or Android phone to another on the LAN. Finds the others by itself, asks the receiver first, signs every offer. One binary, no cloud, no account.">
+<meta property="og:description" content="Files and folders straight from one computer or Android phone to another on the LAN. Finds the others by itself, asks the receiver first, encrypts the files on the way and picks up where it stopped when the connection drops. One binary, no cloud, no account.">
 <meta property="og:image" content="https://donaldsteele.github.io/rocket/assets/shots/send-dark.png">
 <meta property="og:type" content="website">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
@@ -47,7 +47,7 @@
       <p class="pill"><span class="pulse" aria-hidden="true"></span> Open source · Windows, macOS, Linux &amp; Android</p>
       <h1>Send files to the computer <em>across&nbsp;the&nbsp;room</em>.</h1>
       <p class="capability">Files and whole folders, straight from one computer to another on your local network. No cloud, no account, no internet.</p>
-      <p class="lede">Run rocket on each computer. It finds the others by itself, and the person receiving says yes before anything is saved. The Android app sends and receives too, other phones and guests send from a page in their browser, and Claude can send files for you over MCP.</p>
+      <p class="lede">Run rocket on each computer. It finds the others by itself, and the person receiving says yes before anything is saved. Files between rocket apps are encrypted on the way, and a transfer cut off by a dropped connection carries on where it stopped. The Android app sends and receives too, other phones and guests send from a page in their browser, and Claude can send files for you over MCP.</p>
       <div class="cta">
         <a class="button primary" href="#download"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-download"></use></svg>Download</a>
         <a class="button ghost" href="https://github.com/donaldsteele/rocket">View on GitHub<svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-external-link"></use></svg></a>
@@ -58,8 +58,8 @@
       <div class="window">
         <div class="chrome" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">http://127.0.0.1:29005/ · rocket on Studio-PC</span></div>
         <button type="button" class="zoom" aria-label="Enlarge screenshot: an incoming offer">
-          <img class="t-dark" src="assets/shots/send-dark.png" width="2560" height="1600" alt="rocket on Studio-PC in the dark theme: at the top, Laptop wants to send you 24 files (82.0 MB) from vacation-photos, with its fingerprint and the buttons Accept, Always accept from this host and Decline. Below, the Send view lists two computers on the network, Living-Room-PC and Laptop, each with Send files and Send folder">
-          <img class="t-light" src="assets/shots/send-light.png" width="2560" height="1600" alt="The same incoming offer and peer list in the light theme" loading="lazy">
+          <img class="t-dark" src="assets/shots/send-dark.png" width="2560" height="1600" alt="rocket on Studio-PC in the dark theme: at the top, Laptop wants to send you 24 files (82.0 MB) from vacation-photos, marked Encrypted, with its fingerprint and the buttons Accept, Always accept from this host and Decline. Below, the Send view says files sent to these computers are encrypted on the way but names and sizes are not, and lists Living-Room-PC and Laptop, each with Send files and Send folder, and Den-PC marked Needs update because it runs rocket 1.0.0">
+          <img class="t-light" src="assets/shots/send-light.png" width="2560" height="1600" alt="The same incoming offer, marked Encrypted, and peer list in the light theme" loading="lazy">
         </button>
       </div>
     </figure>
@@ -86,7 +86,7 @@
       </ol>
       <div class="term console">
         <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">rocket</span></div>
-        <div class="out" tabindex="0" role="region" aria-label="What rocket prints when it starts"><code><span class="hl">rocket 1.0.0</span>
+        <div class="out" tabindex="0" role="region" aria-label="What rocket prints when it starts"><code><span class="hl">rocket 1.1.0</span>
   name:        <span class="hl">Studio-PC</span>
   fingerprint: <span class="ok">cfe4dd4a4437c183</span>
   received to: C:\Users\you\Downloads\rocket
@@ -109,6 +109,19 @@
             <figcaption><b>Every view.</b> The prompt stays at the top until you answer.</figcaption></figure>
         </div>
       </div>
+
+      <div class="resume">
+        <p class="reading-label">When the connection drops</p>
+        <h3>It carries on where it stopped.</h3>
+        <p class="sub">Wi-Fi drops out, a laptop goes to sleep, someone walks out of range. Once a transfer has been accepted, rocket keeps what already arrived and sends only the rest.</p>
+        <ol class="timeline" aria-label="An interrupted transfer, step by step">
+          <li class="tick go"><span class="t">sending</span><b>Accepted</b><span>The receiver said yes and the files are on their way, encrypted.</span></li>
+          <li class="tick ask"><span class="t">cut</span><b>Connection lost</b><span>The receiver keeps what arrived as <code>.rocket-part</code> files, for up to 24 hours.</span></li>
+          <li class="tick go"><span class="t">retry</span><b>Reconnecting 1/5</b><span>The sender tries again after 2, 5, 10, 20 and 30 seconds, with a new signed offer.</span></li>
+          <li class="tick ok"><span class="t">done</span><b>Carries on</b><span>No second prompt. Only the missing bytes are sent, once the sender has checked that what already arrived still matches its file.</span></li>
+        </ol>
+        <p class="note">After the fifth try the send shows <b>Interrupted</b>, with <b>Resume</b> and <b>Discard</b>, for 24 hours; with <code>rocket send</code>, run the same command again. Sends from the Android app, <code>rocket send</code> and Claude carry on like this. Files you pick in the desktop page are uploaded through your browser and start over instead, and so do drops from the browser drop page. Cancel or Decline on either side never keeps anything.</p>
+      </div>
     </div>
   </section>
 
@@ -121,9 +134,9 @@
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-radar"></use></svg><h3>Finds the others</h3><p>A UDP beacon and mDNS (<code>_rocket._tcp.local</code>) announce each computer. Both feed one list keyed by fingerprint, and computers that go quiet drop off.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-folder"></use></svg><h3>Files and whole folders</h3><p>Many files or a whole folder go as one transfer with one approval and per-file progress. Empty folders, unicode names and 0-byte files arrive intact.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-shield-check"></use></svg><h3>You say yes first</h3><p>The first transfer from a new sender asks you. Received files land in <code>Downloads/rocket</code>, or any folder you choose in Settings.</p></article>
-        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-fingerprint-pattern"></use></svg><h3>Signed offers</h3><p>Every offer is ed25519-signed, so another computer cannot pretend to be a sender you trust. A new name or IP address does not change who a computer is.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-lock"></use></svg><h3>Encrypted on the way</h3><p>File contents between rocket apps are encrypted with keys made fresh for every transfer, and a change in transit is caught. Offers and replies are signed, so nobody can pose as a sender you trust. Names and sizes are not encrypted.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-smartphone"></use></svg><h3>Phones too</h3><p>The Android app sends and receives like a computer. Any other phone, or a guest without rocket, opens the computer's drop page in a browser and uploads straight to it.</p></article>
-        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-history"></use></svg><h3>History and cancel</h3><p>Either side can cancel, and partial files are removed. History keeps the last 1000 transfers and how each one ended.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-refresh-cw"></use></svg><h3>Picks up where it stopped</h3><p>When the connection drops, the sender reconnects by itself and sends only what is missing, without a second prompt. Either side can still cancel, and History keeps the last 1000 transfers.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-bell-dot"></use></svg><h3>Tray icon</h3><p>On Windows and Linux, <code>rocket-tray</code> shows whether rocket runs and how many peers it sees, and gets a red badge when someone is waiting for your answer.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-bot"></use></svg><h3>Claude can help</h3><p>Over MCP, Claude can list the computers on your network and send files. It can never accept a transfer: that stays with you.</p></article>
       </div>
@@ -140,17 +153,19 @@
         <div class="copy">
           <p class="reading-label">Transfers</p>
           <h3>Watch it move, stop it any time.</h3>
-          <p>Sending and receiving side by side, each with a progress bar and a Cancel button. Cancel from either computer and the receiver removes what it wrote. A send that is still waiting for an answer says so.</p>
+          <p>Sending and receiving side by side, each with a progress bar, a lock that says it is encrypted, and a Cancel button. Cancel from either computer and the receiver removes what it wrote. A send that is still waiting for an answer says so, and one that lost its connection says it is reconnecting.</p>
           <ul class="states" aria-label="Transfer states">
             <li class="chip warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-clock"></use></svg>Waiting</li>
             <li class="chip info"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-arrow-up"></use></svg>Sending</li>
             <li class="chip info"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-arrow-down"></use></svg>Receiving</li>
+            <li class="chip warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-refresh-cw"></use></svg>Reconnecting 3/5</li>
+            <li class="chip ok"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-lock"></use></svg>Encrypted</li>
           </ul>
         </div>
         <figure class="shot"><div class="window"><div class="chrome" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">rocket · Transfers</span></div>
           <button type="button" class="zoom" aria-label="Enlarge screenshot: transfers in progress">
-            <img class="t-dark" src="assets/shots/transfers-dark.png" width="2560" height="1600" loading="lazy" alt="The Transfers view: old-backup.zip to Living-Room-PC is Waiting, mix-final.wav to Living-Room-PC is Sending, and drone-footage.mp4 from Laptop is Receiving, each with a progress bar, a percentage and a Cancel button">
-            <img class="t-light" src="assets/shots/transfers-light.png" width="2560" height="1600" loading="lazy" alt="The Transfers view in the light theme with one waiting, one sending and one receiving transfer">
+            <img class="t-dark" src="assets/shots/transfers-dark.png" width="2560" height="1600" loading="lazy" alt="The Transfers view: old-backup.zip to Living-Room-PC is Waiting, mix-final.wav to Living-Room-PC is Sending, drone-footage.mp4 from Laptop is Receiving, and studio-session.mov to Laptop is Reconnecting 3/5 after its connection was lost, all marked Encrypted, each with a progress bar, a percentage and a Cancel button. Below, Recent activity lists the reconnect attempts">
+            <img class="t-light" src="assets/shots/transfers-light.png" width="2560" height="1600" loading="lazy" alt="The Transfers view in the light theme with one waiting, one sending, one receiving and one reconnecting transfer">
           </button></div></figure>
       </div>
 
@@ -158,19 +173,20 @@
         <div class="copy">
           <p class="reading-label">History</p>
           <h3>Every transfer, and how it ended.</h3>
-          <p>Sent and received, with the other computer, the size and the time. Each outcome is a shape and a word, never colour alone.</p>
+          <p>Sent and received, with the other computer, the size, the time and whether it was encrypted. A send that gave up after five tries is <b>Interrupted</b>, with <b>Resume</b> and <b>Discard</b> for 24 hours. Each outcome is a shape and a word, never colour alone.</p>
           <ul class="states" aria-label="Transfer outcomes">
             <li class="chip ok"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-circle-check"></use></svg>Done</li>
             <li class="chip warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-circle-x"></use></svg>Declined</li>
             <li class="chip warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-square"></use></svg>Cancelled</li>
             <li class="chip warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-clock"></use></svg>No answer</li>
+            <li class="chip warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-unplug"></use></svg>Interrupted</li>
             <li class="chip bad"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-triangle-alert"></use></svg>Failed</li>
           </ul>
         </div>
         <figure class="shot"><div class="window"><div class="chrome" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">rocket · History</span></div>
           <button type="button" class="zoom" aria-label="Enlarge screenshot: transfer history">
-            <img class="t-dark" src="assets/shots/history-dark.png" width="2560" height="1600" loading="lazy" alt="The History view, newest first: transfers to and from Laptop, Living-Room-PC and a web browser, marked Done, Declined, Cancelled or No answer, each with a size and a time">
-            <img class="t-light" src="assets/shots/history-light.png" width="2560" height="1600" loading="lazy" alt="The History view in the light theme">
+            <img class="t-dark" src="assets/shots/history-dark.png" width="2560" height="1600" loading="lazy" alt="The History view, newest first: old-backup.zip marked No answer, studio-session.mov to Laptop marked Interrupted with the reason, Can be resumed until a time, and Resume and Discard buttons, then transfers to and from Laptop, Living-Room-PC and a web browser marked Done, Cancelled or Declined. Transfers between rocket apps are marked Encrypted and the one from the web browser Not encrypted">
+            <img class="t-light" src="assets/shots/history-light.png" width="2560" height="1600" loading="lazy" alt="The History view in the light theme, with the interrupted send and its Resume button">
           </button></div></figure>
       </div>
 
@@ -197,9 +213,9 @@
         </div>
         <div class="phones">
           <figure class="shot"><div class="window">
-            <button type="button" class="zoom" aria-label="Enlarge screenshot: transfers in a narrow window"><img src="assets/shots/phone-transfers-dark.png" width="780" height="1688" loading="lazy" alt="The Transfers view in a phone-sized window, dark theme, with waiting, sending and receiving transfers"></button></div></figure>
+            <button type="button" class="zoom" aria-label="Enlarge screenshot: transfers in a narrow window"><img src="assets/shots/phone-transfers-dark.png" width="780" height="1688" loading="lazy" alt="The Transfers view in a phone-sized window, dark theme, with waiting, sending, receiving and reconnecting transfers, each marked Encrypted"></button></div></figure>
           <figure class="shot"><div class="window">
-            <button type="button" class="zoom" aria-label="Enlarge screenshot: history in a narrow window"><img src="assets/shots/phone-history-light.png" width="780" height="1688" loading="lazy" alt="The History view in a phone-sized window, light theme"></button></div></figure>
+            <button type="button" class="zoom" aria-label="Enlarge screenshot: history in a narrow window"><img src="assets/shots/phone-history-light.png" width="780" height="1688" loading="lazy" alt="The History view in a phone-sized window, light theme, starting with the unanswered and the interrupted send"></button></div></figure>
         </div>
       </div>
     </div>
@@ -209,7 +225,7 @@
     <div class="wrap">
       <p class="eyebrow">Android</p>
       <h2>rocket in your pocket.</h2>
-      <p class="sub">The Android app sends to and receives from every rocket computer and phone on the Wi-Fi, with the same signed offers and the same yes-first prompt. It runs the desktop's own protocol code, so a phone is just another peer. Android 8.0 or later.</p>
+      <p class="sub">The Android app sends to and receives from every rocket computer and phone on the Wi-Fi, with the same signed offers, the same encryption and the same yes-first prompt. It runs the desktop's own protocol code, so a phone is just another peer. Android 8.0 or later.</p>
 
       <div class="phones three">
         <figure class="shot"><div class="window">
@@ -229,7 +245,7 @@
             <img class="t-dark" src="assets/shots/android-progress-dark.png" width="720" height="1600" loading="lazy" alt="The Android Transfers tab, dark theme: vacation-photos (12 files) from Studio-PC Receiving, and VID_1116.mp4 to Laptop marked Reconnecting 2/5 after its connection was lost, both Encrypted, each with a progress bar and Cancel">
             <img class="t-light" src="assets/shots/android-progress-light.png" width="720" height="1600" loading="lazy" alt="The Android Transfers tab in the light theme: a receive in progress and a send reconnecting by itself">
           </button></div>
-          <figcaption><b>Transfers.</b> Progress both ways; cancel from either end.</figcaption></figure>
+          <figcaption><b>Transfers.</b> Progress both ways; reconnects by itself; cancel from either end.</figcaption></figure>
       </div>
 
       <div class="phones-feature android-receive">
@@ -279,6 +295,7 @@
           <button type="button" class="zoom" aria-label="Enlarge screenshot: drop page done"><img src="assets/shots/phone-drop-done-dark.png" width="780" height="1688" loading="lazy" alt="The drop page on a phone, dark theme: Done, 3 files sent, each file marked Sent"></button></div>
           <figcaption><b>Done.</b> Every file says Sent.</figcaption></figure>
       </div>
+      <p class="honest warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-lock-open"></use></svg><span><b>The drop page is not encrypted.</b> Browsers only allow web encryption on HTTPS pages, and rocket serves plain HTTP, so files dropped from a browser cross the Wi-Fi in clear: someone on the network could read or change them. The computer marks these offers and transfers <b>Not encrypted</b>, and a drop cut off by the network starts over. For private files, use the app on both ends.</span></p>
       <p class="note">After your first accept, that browser can drop again for 30 days without asking while <b>Accept files from trusted senders without asking</b> is on. Turn it off in Settings to be asked every time.</p>
     </div>
   </section>
@@ -287,7 +304,7 @@
     <div class="wrap">
       <p class="eyebrow">Connect Claude</p>
       <h2>Ask Claude to send it over.</h2>
-      <p class="sub"><code>rocket mcp</code> is a Model Context Protocol server over stdio. Claude can see the rocket computers on your network, send files and folders to one of them, and read this computer's status and history. Accepting stays with you.</p>
+      <p class="sub"><code>rocket mcp</code> is a Model Context Protocol server over stdio. Claude can see the rocket computers on your network, send files and folders to one of them (encrypted, and resumed if the connection drops), and read this computer's status and history. Accepting stays with you.</p>
       <div class="split">
         <div>
           <div class="term">
@@ -305,7 +322,7 @@
           <ul class="plays">
             <li><code>list_peers</code> rocket computers on the network</li>
             <li><code>send_file</code> Files and folders to a peer, one approval</li>
-            <li><code>get_status</code> This computer's name and fingerprint</li>
+            <li><code>get_status</code> This computer, transfers in progress and interrupted sends</li>
             <li><code>list_history</code> Recent transfers, newest first</li>
             <li class="never"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-ban"></use></svg><span><b>Never:</b> accept a transfer, trust or revoke a sender, change settings or quit rocket. A test pins the set.</span></li>
           </ul>
@@ -318,22 +335,24 @@
     <div class="wrap">
       <p class="eyebrow">Security</p>
       <h2>Made for networks you trust.</h2>
-      <p class="sub">Anyone on your network can <b>offer</b> you files; nothing is saved until you accept. Here is what rocket protects against, and what it does not.</p>
+      <p class="sub">Anyone on your network can <b>offer</b> you files; nothing is saved until you accept, and the files themselves travel encrypted between rocket apps. Here is exactly what rocket protects, and what it does not.</p>
       <div class="secgrid">
         <figure class="shot"><div class="window"><div class="chrome" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">rocket · an offer from a web browser</span></div>
-          <button type="button" class="zoom" aria-label="Enlarge screenshot: an offer from a web browser"><img src="assets/shots/drop-offer-dark.png" width="2560" height="1600" loading="lazy" alt="rocket on Studio-PC: browser guest (172.17.160.1) wants to send you 3 files (6.1 MB) from a web browser, listing the three file names, with only Accept and Decline buttons: no fingerprint and no Always accept"></button></div>
-          <figcaption><b>Every offer asks.</b> A browser has no key, so it gets no fingerprint and no Always accept.</figcaption></figure>
+          <button type="button" class="zoom" aria-label="Enlarge screenshot: an offer from a web browser"><img src="assets/shots/drop-offer-dark.png" width="2560" height="1600" loading="lazy" alt="rocket on Studio-PC: browser guest (172.17.160.1) wants to send you 3 files (6.1 MB) from a web browser, marked Not encrypted, listing the three file names, with only Accept and Decline buttons: no fingerprint and no Always accept. Below, the peer list says files sent to these computers are encrypted on the way, and Den-PC needs an update"></button></div>
+          <figcaption><b>Every offer asks.</b> A browser has no key, so it gets no fingerprint, no Always accept and no encryption, and the offer says so.</figcaption></figure>
         <ul class="safety">
-          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-fingerprint-pattern"></use></svg><span><b>Trust on first use, pinned by key.</b> Each computer has an ed25519 key made on first run. Always accept from this host pins that sender's full public key, not its name or IP address.</span></li>
-          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-key-round"></use></svg><span><b>Signed offers.</b> The signature covers the receiver, the sender, a timestamp, a one-time nonce and a hash of the file list. Offers meant for another computer, replays and stale offers are refused.</span></li>
-          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-lock"></use></svg><span><b>Controls stay on this computer.</b> The full page and every control API answer only on loopback, with a Host header allowlist and an <code>X-Rocket-CSRF</code> header on every change. Other computers reach only the peer protocol and the drop page.</span></li>
-          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-folder"></use></svg><span><b>Safe on disk.</b> Paths that climb out of the download folder, symlinks, devices and Windows reserved names are refused or made safe. Files are written as <code>.rocket-part</code> and renamed when complete.</span></li>
-          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-list-checks"></use></svg><span><b>Limits.</b> An offer waits at most 2 minutes, at most 16 wait at once (4 per address), and a transfer is capped at 10,000 entries and 1 TiB.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-lock"></use></svg><span><b>Encrypted file contents.</b> Between rocket apps (desktop and Android, 1.1 and later) every file is encrypted with ChaCha20-Poly1305 under a key made for that one transfer from fresh X25519 keys. A changed, missing or reordered byte fails the check and the receiver throws the transfer away. A recorded transfer stays unreadable even if a device key is stolen later.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-fingerprint-pattern"></use></svg><span><b>Trust on first use, pinned by key.</b> Each device has an ed25519 key made on first run. Always accept from this host pins that sender's full public key, not its name or IP address. The first offer from a new device is only a claim: compare the fingerprint before you trust it.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-key-round"></use></svg><span><b>Signed offers and replies.</b> The offer signature covers the receiver, the sender, a timestamp, a one-time nonce, the sender's encryption key and a hash of the file list; the receiver signs its answer and its own encryption key. Redirected, replayed and stale offers are refused, and nobody in between can swap in their own key.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-shield-check"></use></svg><span><b>Controls stay on this computer.</b> The full page and every control API answer only on loopback, with a Host header allowlist and an <code>X-Rocket-CSRF</code> header on every change. Other computers reach only the peer protocol and the drop page.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-folder"></use></svg><span><b>Safe on disk.</b> Paths that climb out of the download folder, symlinks, devices and Windows reserved names are refused or made safe. Files are written as <code>.rocket-part</code> and renamed when complete. A transfer resumes only for the same sender key and the same files, and only at the point the receiver offered.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-list-checks"></use></svg><span><b>Limits.</b> An offer waits at most 2 minutes, at most 16 wait at once (4 per address), and a transfer is capped at 10,000 entries and 1 TiB. Kept partial transfers are removed after 24 hours.</span></li>
           <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-smartphone"></use></svg><span><b>Phones listen only when asked.</b> The Android app runs its receiver only while Receive files is on, with a notification that says so, and serves only the peer protocol: no drop page, no control API. Its key stays out of backups.</span></li>
         </ul>
       </div>
-      <p class="honest warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-lock-open"></use></svg><span><b>Plain HTTP, honestly:</b> transfers are not encrypted. Someone who can watch your network can see what is sent and could change it in transit. Use rocket on networks you trust, such as home or the office, not public Wi-Fi. If you need confidentiality, encrypt the files first.</span></p>
-      <p class="honest"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-info"></use></svg><span><b>Also worth knowing:</b> an interrupted transfer starts again from the beginning, and the desktop binaries are not code-signed, so check them against <code>SHA256SUMS</code>. The Android APK is signed with the project's release key, which never leaves the maintainer's machine. The full threat model is in <a href="https://github.com/donaldsteele/rocket/blob/main/docs/security.md">docs/security.md</a>.</span></p>
+      <p class="honest warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-eye"></use></svg><span><b>What is not encrypted:</b> rocket runs over plain HTTP and encrypts the file contents only. Anyone who can watch your network can still see <b>file and folder names, sizes and the folder layout</b> (offers are signed, not encrypted), <b>device names</b>, fingerprints and versions, and who sends to whom, when and how much. Files from the <b>browser drop page</b> are not encrypted at all. Someone on the network can also cut a transfer off. Use rocket on networks you trust, such as home or the office, and put files in an encrypted archive first if their names must stay private.</span></p>
+      <p class="honest warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-fingerprint-pattern"></use></svg><span><b>Encrypted to the device you picked:</b> there are no certificates, so rocket trusts a device's key the first time it sees it. Picking a computer or phone from the list encrypts to that device's fingerprint; sending to a typed address encrypts to whoever answers there. Compare fingerprints when it matters.</span></p>
+      <p class="honest"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-info"></use></svg><span><b>Also worth knowing:</b> rocket 1.1 does not talk to rocket 1.0 in either direction, and says which side needs updating. The desktop binaries are not code-signed, so check them against <code>SHA256SUMS</code>. The Android APK is signed with the project's release key, which never leaves the maintainer's machine. The full threat model is in <a href="https://github.com/donaldsteele/rocket/blob/main/docs/security.md">docs/security.md</a>.</span></p>
       <ul class="ports" aria-label="Firewall ports, private networks only">
         <li><b>TCP 29005</b>Transfers and the drop page (the page itself answers only on this computer)</li>
         <li><b>UDP 29006</b>The discovery beacon</li>
@@ -347,6 +366,7 @@
       <p class="eyebrow">Download</p>
       <h2>Unzip it, run it, send.</h2>
       <p class="sub">One file per platform, no installer and no runtime to add. Put rocket on every computer and Android phone you want to send between. The Windows and Linux zips include the tray app.</p>
+      <p class="honest warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-triangle-alert"></use></svg><span><b>Update every device to 1.1.</b> rocket 1.1 encrypts transfers with a new protocol and cannot send to or receive from rocket 1.0, in either direction. Older devices show as <b>Needs update</b>, and an old sender is told to update. Install 1.1 over 1.0: settings, trusted senders, history and the phone's fingerprint stay.</span></p>
       <div class="dl">
         <div class="plat">
           <h3><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-monitor"></use></svg>Windows</h3>

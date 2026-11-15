@@ -4,6 +4,82 @@ All notable changes to rocket are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and rocket uses
 [semantic versioning](https://semver.org/).
 
+## [1.1.0] - 2026-11-15
+
+Encrypted transfers and resume.
+
+### Breaking
+
+- **Protocol 2. rocket 1.1 does not talk to rocket 1.0**, in either
+  direction, and there is no unencrypted fallback. Update every computer and
+  phone. Sending to a 1.0 device fails with "<name> runs an older rocket
+  (protocol 1); update it to 1.1 or later", and a 1.0 sender's offer is
+  answered 426 "this device runs rocket 1.1 or later; update the sender".
+  Peer lists show 1.0 devices as **Needs update** and they cannot be picked.
+  Settings, trusted senders and history carry over when 1.1 is installed over
+  1.0.
+
+### Added
+
+- **Encrypted transfers** between rocket apps (desktop and Android). Each
+  offer carries a fresh X25519 key, the receiver answers with its own in a
+  reply signed with its ed25519 key, and the file contents travel as a
+  ChaCha20-Poly1305 stream in 64 KiB frames under a key derived (HKDF-SHA256)
+  for that one transfer. A changed, reordered, cut or extended stream fails
+  and the transfer is thrown away. Only Go's standard library and
+  `golang.org/x/crypto` are used. See `docs/protocol.md`.
+- **Signed replies.** Every answer to an offer, accepted or not, is signed by
+  the receiver and bound to the offer it answers.
+- **Resume.** When an accepted transfer breaks for a network reason, the
+  receiver keeps what arrived for 24 hours, the sender retries by itself after
+  2, 5, 10, 20 and 30 seconds (**Reconnecting n/5**), and only the missing
+  bytes are sent, without a second prompt. After the last try the send is
+  **Interrupted**, with **Resume** and **Discard**; the receiver lists what it
+  kept with **Discard**. Works for sends from `rocket send`, MCP and the
+  Android app, and for receiving on both desktop and Android. Cancel or
+  decline never keeps anything.
+- **Status in the UI**: an **Encrypted** / **Not encrypted** badge on offers,
+  transfers and history, **Needs update** peers, **Reconnecting n/5**, and
+  **Interrupted** in History, on the desktop and on Android.
+- `rocket send` prints its reconnect attempts, and running the same command
+  again continues a send that gave up.
+- MCP: `send_file` reports `encrypted`, retries and `interrupted`;
+  `get_status` reports the protocol, transfers in progress, interrupted sends
+  and peers that need an update; `list_peers` reports `proto` and
+  `needsUpdate`.
+- Discovery announces the protocol (beacon `"proto":2`, mDNS TXT
+  `proto=2`); a missing value means protocol 1.
+- Android: persistable read permission for shared files where the provider
+  allows it, so Resume works after the app was closed; otherwise Resume asks
+  for the files again. versionCode 2.
+
+### Changed
+
+- The transfer body is the files' bytes in manifest order behind a 16-byte
+  start header, instead of a tar stream (the signed file list already fixes
+  names, order and sizes).
+- History entries record `encrypted`, and a new result `interrupted`.
+- The data folder gains `resume/` and `outgoing/` for kept and
+  interrupted transfers.
+
+### Fixed
+
+- Transfers that were reported "cancelled by the receiver" when built with
+  Go 1.27 (connection reuse after a completed transfer). CI now tests Go 1.26
+  and 1.27.
+
+### Security
+
+- The browser drop page stays plain HTTP and is **not encrypted** (browsers
+  only allow Web Crypto on HTTPS pages); offers and history mark it **Not
+  encrypted**, and it does not resume. Files picked in the desktop page are
+  uploaded through the browser and do not resume either.
+- File names, sizes, folder layout and device names are still visible on the
+  network: offers are signed, not encrypted. See `docs/security.md`.
+- A transfer resumes only for an offer signed by the same sender key for the
+  same file list, and only at the point the receiver offered in its signed
+  reply; the sender checks its copy of the kept part first.
+
 ## [1.0.0] - 2026-11-14
 
 The first release.
@@ -81,4 +157,5 @@ The first release.
   never enters the repository or CI; CI builds only a debug APK.
 - Traffic is plain HTTP; see `docs/security.md`.
 
+[1.1.0]: https://github.com/donaldsteele/rocket/releases/tag/v1.1.0
 [1.0.0]: https://github.com/donaldsteele/rocket/releases/tag/v1.0.0
