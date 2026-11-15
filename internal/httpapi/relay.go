@@ -170,13 +170,6 @@ func (s *Server) relayWaitFor() time.Duration {
 	return relayWaitDefault
 }
 
-func (s *Server) renewAfterFor() time.Duration {
-	if s.renewAfter > 0 {
-		return s.renewAfter
-	}
-	return transfer.RenewAfter
-}
-
 func (s *Server) delays() []time.Duration {
 	if s.retryDelays != nil {
 		return s.retryDelays
@@ -623,7 +616,7 @@ func (s *Server) relayBody(r *http.Request, rs *relaySession, acc *transfer.Acce
 			}
 			return s.relayFailed(rs, err)
 		}
-		if acc.Age() > s.renewAfterFor() {
+		if acc.Stale(s.renewAfter) {
 			// The upload token may have expired meanwhile: offer again.
 			// The receiver still keeps the same part, so it accepts
 			// without asking and names the same point.

@@ -188,7 +188,7 @@ func TestResumeIsPinnedAndKeptUntilAccepted(t *testing.T) {
 func TestSlowResumeCheckRenewsTheOffer(t *testing.T) {
 	a, b := newTestHost(t, "alice"), newTestHost(t, "bob")
 	a.srv.retryDelays = []time.Duration{}
-	a.srv.renewAfter = time.Nanosecond
+	a.srv.renewAfter = -1 // always renew
 	data := randomBytes(600 << 10)
 	src := writeTemp(t, "film.bin", data)
 	p := newCutProxy(t, b.ts.URL, 200<<10)
@@ -367,7 +367,7 @@ func TestRelayResumePinnedRenewedAndKeptUntilAccepted(t *testing.T) {
 	}
 
 	front.set(cut.ts.URL)
-	a.srv.renewAfter = time.Nanosecond
+	a.srv.renewAfter = -1 // always renew
 	drain(bEv)
 	pg.answers, pg.froms, pg.upBytes = nil, nil, nil
 	if end := pg.run(map[string]any{"resume": old, "files": pg.list()}); end.Result != "sent" {

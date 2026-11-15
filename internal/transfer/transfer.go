@@ -144,7 +144,8 @@ type SendOptions struct {
 	// OnAccepted is told of every accepted attempt: the receiver's
 	// fingerprint and its transfer ID, which a later cancel notice names.
 	OnAccepted func(receiverFP, remoteID string)
-	// RenewAfter overrides the package's RenewAfter when positive (tests).
+	// RenewAfter overrides the package's RenewAfter when non-zero (tests);
+	// a negative value renews every time (see Accepted.Stale).
 	RenewAfter time.Duration
 }
 
@@ -230,11 +231,7 @@ func sendAttempt(ctx context.Context, id *node.Identity, t Target, m protocol.Ma
 	start := Start{}
 	if opts.Retry && a.resume != nil {
 		start = resumeStart(m, a.resume, open)
-		renew := RenewAfter
-		if opts.RenewAfter > 0 {
-			renew = opts.RenewAfter
-		}
-		if a.Age() > renew {
+		if a.Stale(opts.RenewAfter) {
 			// The prefix check took so long that the upload token may have
 			// expired: offer again. The receiver still keeps the same part,
 			// so it accepts without asking and names the same point.
@@ -347,6 +344,20 @@ func (a *Accepted) RemoteID() string { return a.r.id }
 // Age is the time since the receiver accepted. Its upload token is good for
 // protocol.TokenTTL from then; past RenewAfter, Renew before Upload.
 func (a *Accepted) Age() time.Duration { return time.Since(a.at) }
+
+// Stale reports whether the upload token should be renewed before Upload:
+// Age is past RenewAfter, or past override when override is positive. A
+// negative override always renews (tests: the monotonic clock on Windows
+// can be too coarse for a tiny positive threshold to have passed).
+func (a *Accepted) Stale(override time.Duration) bool {
+	switch {
+	case override < 0:
+		return true
+	case override > 0:
+		return a.Age() > override
+	}
+	return a.Age() > RenewAfter
+}
 
 // Renew offers the same files to the same receiver again (pinned to the
 // fingerprint that accepted) for an accepted offer whose body has not gone
