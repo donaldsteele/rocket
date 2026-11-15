@@ -117,6 +117,19 @@ class DownloadSinkTest {
         assertEquals(listOf("a.txt"), saved)
     }
 
+    // fd() has no error result in the Go binding, so an exception must never
+    // escape it (it would stay pending on the Go thread): it falls back to
+    // write() instead.
+    @Test
+    fun descriptorThatCannotBeOpenedFallsBackToWrite() {
+        val sink = FileSink(root, openFd = { throw java.io.FileNotFoundException("gone") })
+        val f = sink.begin("t1", "{}").create("a.txt", 2)
+        assertEquals(-1L, f.fd())
+        f.write("hi".toByteArray())
+        f.commit()
+        assertEquals("hi", File(root, "a.txt").readText())
+    }
+
     @Test
     fun missingRootIsMade() {
         val nested = File(root, "Download/rocket")

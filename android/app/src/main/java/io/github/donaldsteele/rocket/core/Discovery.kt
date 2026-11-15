@@ -55,7 +55,7 @@ class Discovery(context: Context, private val node: Node, private val ownService
     private data class Sighting(val name: String, val fp: String, val host: String, val port: Int, val ver: String, val os: String)
 
     private val peerListener = object : PeerListener {
-        override fun onPeers(peersJSON: String) {
+        override fun onPeers(peersJSON: String) = goCallback("onPeers", Unit) {
             _peers.value = parsePeers(peersJSON)
         }
     }

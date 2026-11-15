@@ -176,14 +176,19 @@ class Receiver(
 
     // --- Go callbacks (Go threads; they must return at once) ---
 
-    override fun ask(offerJSON: String) {
-        val offer = parseOffer(offerJSON) ?: return
+    // Neither callback has an error result, so nothing may be thrown back
+    // into Go (goCallback). An offer whose notification fails still shows
+    // in the app.
+    override fun ask(offerJSON: String) = goCallback("ask", Unit) {
+        val offer = parseOffer(offerJSON) ?: return@goCallback
         synchronized(seen) { seen[offer.transferId] = offer }
         _offers.update { l -> if (l.any { it.id == offer.id }) l else l + offer }
-        OfferNotifications.showOffer(app, offer)
+        goCallback("offer notification", Unit) { OfferNotifications.showOffer(app, offer) }
     }
 
-    override fun onEvent(eventJSON: String) {
+    override fun onEvent(eventJSON: String) = goCallback("receive event", Unit) { handleEvent(eventJSON) }
+
+    private fun handleEvent(eventJSON: String) {
         parseOfferGone(eventJSON)?.let { gone ->
             removeOffer(gone.transferId)
             return

@@ -43,6 +43,11 @@ class ReceiveService : Service() {
     /** Set once a start command was handled; before that "off" is just the initial state. */
     private var started = false
 
+    /** The newest start command handled; stopping with it never drops a newer one. */
+    private var lastStartId = 0
+
+    private val locks by lazy { TransferLocks(this, "receive") }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -56,13 +61,11 @@ class ReceiveService : Service() {
             }
                 .conflate()
                 .collect { s ->
+                    // Awake only while receiving files, not while just listening.
+                    locks.hold(s.state != ReceiverState.Off && s.active.isNotEmpty())
                     if (s.state == ReceiverState.Off) {
                         if (!started) return@collect
-                        if (foreground) {
-                            ServiceCompat.stopForeground(this@ReceiveService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                            foreground = false
-                        }
-                        stopSelf()
+                        stopIfLatest()
                         return@collect
                     }
                     notifyStatus(s)
@@ -72,6 +75,7 @@ class ReceiveService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        lastStartId = startId
         val c = core
         when (intent?.action) {
             // "Turn off" on the notification: no new foreground start needed.
@@ -85,19 +89,28 @@ class ReceiveService : Service() {
             }
         }
         started = true
-        if (c.receiver.state.value == ReceiverState.Off) {
-            // Nothing to stop (receiving was already off).
-            if (foreground) {
-                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                foreground = false
-            }
-            stopSelf()
-        }
+        // Nothing to stop (receiving was already off).
+        if (c.receiver.state.value == ReceiverState.Off) stopIfLatest()
         return START_NOT_STICKY
+    }
+
+    /**
+     * Stops the service unless a newer start command is queued: receiving
+     * turned off and straight back on queues a startForegroundService whose
+     * onStartCommand has not run yet, and stopping under it would make the
+     * system kill the app for not calling startForeground in time.
+     */
+    private fun stopIfLatest() {
+        if (foreground) {
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            foreground = false
+        }
+        stopSelfResult(lastStartId)
     }
 
     override fun onDestroy() {
         scope.cancel()
+        locks.release()
         super.onDestroy()
     }
 

@@ -29,6 +29,10 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
+        // The ABIs the Go core is built for (scripts/build-android.*). Without
+        // this, a library's 32-bit x86 .so would make the APK installable
+        // on x86 devices that have no libgojni.so, where it would crash.
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
 
     signingConfigs {

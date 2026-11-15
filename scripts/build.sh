@@ -73,6 +73,28 @@ if [ -n "$APK_SKIP" ] && [ "${RELEASE:-}" = 1 ]; then
   exit 1
 fi
 
+# check_apk_cert APKSIGNER APK: fail unless APK is signed by exactly the
+# release certificate in android/release-cert.sha256 (docs/security.md).
+# apksigner verify alone accepts any key, and a wrong ROCKET_KEYSTORE_PROPS
+# would otherwise ship an APK that cannot update installs of the real one.
+check_apk_cert() {
+  local expected certs digests
+  expected="$(tr -d ' :\r\n\t' < android/release-cert.sha256 | tr 'A-F' 'a-f')"
+  case "$expected" in
+    *[!0-9a-f]* | "") echo "error: android/release-cert.sha256 does not hold a SHA-256 digest" >&2; exit 1 ;;
+  esac
+  [ "${#expected}" -eq 64 ] || { echo "error: android/release-cert.sha256 does not hold a SHA-256 digest" >&2; exit 1; }
+  certs="$("$1" verify --print-certs "$2")" || { echo "error: apksigner rejected $2" >&2; exit 1; }
+  digests="$(printf '%s\n' "$certs" | tr -d '\r' | sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: *//p' |
+    tr -d ':' | tr 'A-F' 'a-f' | sort -u)"
+  if [ "$digests" != "$expected" ]; then
+    echo "error: $2 is signed with ${digests:-no certificate}, not the release certificate $expected" >&2
+    echo "       (android/release-cert.sha256). Check ROCKET_KEYSTORE_PROPS." >&2
+    exit 1
+  fi
+  echo "signer certificate matches android/release-cert.sha256"
+}
+
 # build_apk: build the signed release APK into $DIST/rocket-android.apk, or
 # warn and skip when the SDK or the keystore is missing.
 build_apk() {
@@ -91,11 +113,11 @@ build_apk() {
   bt="$(ls -1 "$sdk/build-tools" 2>/dev/null | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)"
   apksigner="$sdk/build-tools/$bt/apksigner"
   [ -f "$apksigner.bat" ] && apksigner="$apksigner.bat"
-  if [ -n "$bt" ] && [ -f "$apksigner" ]; then
-    "$apksigner" verify "$out/app-release.apk" || { echo "error: apksigner rejected the APK" >&2; exit 1; }
-  else
-    echo "WARNING: apksigner not found under $sdk/build-tools; signature not verified." >&2
+  if [ -z "$bt" ] || [ ! -f "$apksigner" ]; then
+    echo "error: apksigner not found under $sdk/build-tools; cannot check the APK's signer." >&2
+    exit 1
   fi
+  check_apk_cert "$apksigner" "$out/app-release.apk"
   cp "$out/app-release.apk" "$DIST/rocket-android.apk"
   echo "wrote $DIST/rocket-android.apk"
 }

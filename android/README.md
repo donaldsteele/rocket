@@ -34,7 +34,9 @@ passwords never go into this repository or CI.
 
 For a release, `scripts/build.sh` / `scripts/build.ps1` (repository root) run
 `assembleRelease` through `scripts/build-android.*`, check the APK with
-`apksigner verify`, copy it to `dist/rocket-android.apk` (universal: arm64-v8a,
+`apksigner verify --print-certs` and stop unless its signer certificate's
+SHA-256 equals `android/release-cert.sha256` (the digest published in
+`docs/security.md`), copy it to `dist/rocket-android.apk` (universal: arm64-v8a,
 armeabi-v7a and x86_64 in one APK) and list it in `dist/SHA256SUMS`. Without
 `ANDROID_HOME` or the properties file they warn and skip the APK; with
 `RELEASE=1` (PowerShell: `-Release`) they stop instead. CI
@@ -86,3 +88,9 @@ from this setup (720x1600 at 280 dpi, SystemUI demo mode).
 - `res/font/` holds Inter and JetBrains Mono (SIL OFL 1.1), the Latin subsets
   in `web/vendor/fonts` converted from WOFF2 to TTF.
 - Icons in the UI are Lucide (ISC), the same path data as `web/icons.svg`.
+- `assets/licenses/THIRD_PARTY_LICENSES.txt` (shown in Settings > About >
+  Open-source licences) is written by `go run ./tools/licenses` from the
+  repository root: the Go toolchain, the Go modules linked into
+  `mobile/rocketcore` for Android, the gomobile runtime, the fonts, Lucide and
+  AndroidX/Compose/Kotlin. `go run ./tools/licenses -check` (run by CI and the
+  release scripts) fails when it is out of date.

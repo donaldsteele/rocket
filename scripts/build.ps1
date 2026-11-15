@@ -63,6 +63,31 @@ if (-not $AndroidSdk -or -not (Test-Path $AndroidSdk -PathType Container)) {
 }
 if ($ApkSkip -and $Release) { throw "-Release needs rocket-android.apk, but $ApkSkip" }
 
+# The SHA-256 digest of the release signing certificate (docs/security.md).
+# Kept in a file so build.sh and build.ps1 check the same one.
+$ApkCertFile = Join-Path $PSScriptRoot '../android/release-cert.sha256'
+
+# Fails unless apk is signed by exactly the release certificate: apksigner
+# verify alone accepts any key, and a wrong ROCKET_KEYSTORE_PROPS would
+# otherwise ship an APK that cannot update installs of the real one.
+function Assert-ApkCert {
+    param([string]$Apksigner, [string]$Apk)
+    $expected = ((Get-Content $ApkCertFile -Raw) -replace '[:\s]', '').ToLowerInvariant()
+    if ($expected -notmatch '^[0-9a-f]{64}$') { throw "$ApkCertFile does not hold a SHA-256 digest" }
+    $certs = & $Apksigner verify --print-certs $Apk
+    if ($LASTEXITCODE -ne 0) { throw "apksigner rejected $Apk (exit $LASTEXITCODE)" }
+    $digests = @($certs | ForEach-Object {
+            if ($_ -match '^Signer #\d+ certificate SHA-256 digest:\s*([0-9A-Fa-f:]+)') {
+                ($Matches[1] -replace ':', '').ToLowerInvariant()
+            }
+        } | Sort-Object -Unique)
+    if ($digests.Count -ne 1 -or $digests[0] -ne $expected) {
+        $got = if ($digests.Count) { $digests -join ', ' } else { 'no certificate' }
+        throw "$Apk is signed with $got, not the release certificate $expected ($ApkCertFile). Check ROCKET_KEYSTORE_PROPS."
+    }
+    Write-Host "signer certificate matches $ApkCertFile"
+}
+
 # Build the signed release APK into $Dist/rocket-android.apk, or warn and skip
 # when the SDK or the keystore is missing.
 function Build-Apk {
@@ -88,11 +113,8 @@ function Build-Apk {
         $apksigner = @('apksigner.bat', 'apksigner') | ForEach-Object { Join-Path $bt.FullName $_ } |
             Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
     }
-    if ($apksigner) {
-        Invoke-Native $apksigner @('verify', $apk)
-    } else {
-        Write-Warning "apksigner not found under $sdk/build-tools; signature not verified."
-    }
+    if (-not $apksigner) { throw "apksigner not found under $sdk/build-tools; cannot check the APK's signer." }
+    Assert-ApkCert $apksigner $apk
     Copy-Item $apk (Join-Path $Dist 'rocket-android.apk')
     Write-Host "wrote $Dist/rocket-android.apk"
 }

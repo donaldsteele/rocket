@@ -3,6 +3,16 @@ package io.github.donaldsteele.rocket.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -71,6 +81,8 @@ fun SettingsScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
     val autoAccept by core.autoAccept.collectAsStateWithLifecycle()
     val trustChanged by core.receiver.trustChanged.collectAsStateWithLifecycle()
     var revoking by remember { mutableStateOf<TrustedSender?>(null) }
+    var showLicenses by rememberSaveable { mutableStateOf(false) }
+    if (showLicenses) LicensesDialog(onDismiss = { showLicenses = false })
     LaunchedEffect(trustChanged) { core.reloadTrusted() }
     var draft by rememberSaveable(name) { mutableStateOf(name) }
     val focus = LocalFocusManager.current
@@ -240,11 +252,15 @@ fun SettingsScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Fonts: Inter and JetBrains Mono (SIL Open Font License 1.1). Icons: Lucide (ISC). " +
-                        "Licence texts are in the app's assets and the project repository.",
+                    "Includes the Go standard library and Go modules (BSD, MIT, Apache 2.0), AndroidX, Jetpack " +
+                        "Compose and Kotlin (Apache 2.0), the Inter and JetBrains Mono fonts (SIL Open Font " +
+                        "License 1.1) and Lucide icons (ISC).",
                     style = MaterialTheme.typography.bodySmall,
                     color = c.fgMuted,
                 )
+                TextButton(onClick = { showLicenses = true }, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("Open-source licences")
+                }
                 TextButton(onClick = { uri.openUri(PROJECT_URL) }, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("Project page")
                 }
@@ -252,6 +268,52 @@ fun SettingsScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
         }
     }
 }
+
+/** The licence texts of everything the app bundles (assets/licenses, made by tools/licenses). */
+@Composable
+private fun LicensesDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val c = Rocket.colors
+    val paragraphs by produceState<List<String>?>(initialValue = null) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                context.assets.open(LICENSES_ASSET).bufferedReader().use { it.readText() }
+                    .replace("\r\n", "\n")
+                    .split(Regex("\n{2,}"))
+                    .map { it.trimEnd() }
+                    .filter { it.isNotBlank() }
+            }.getOrElse { listOf("The licence texts could not be read: ${it.message}. They are in THIRD_PARTY_LICENSES.txt on the project page.") }
+        }
+    }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(color = c.bg, modifier = Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 16.dp, end = 4.dp)) {
+                    Text(
+                        "Open-source licences",
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.weight(1f).semantics { heading() },
+                    )
+                    TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Close") }
+                }
+                val list = paragraphs
+                if (list == null) {
+                    Text("Loading…", modifier = Modifier.padding(16.dp))
+                } else {
+                    LazyColumn(
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        items(list) { p -> Text(p, fontFamily = Mono, fontSize = 11.sp, color = c.fg) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private const val LICENSES_ASSET = "licenses/THIRD_PARTY_LICENSES.txt"
 
 /** Confirms revoking a trusted sender. */
 @Composable

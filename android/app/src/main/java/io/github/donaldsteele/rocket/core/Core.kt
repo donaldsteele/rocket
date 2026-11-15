@@ -33,7 +33,7 @@ class Core(context: Context) {
         BuildConfig.VERSION_NAME,
     )
 
-    val items = ContentItems(app.contentResolver)
+    val items = ContentItems(app)
     val transfers = Transfers(node, items)
     val receiver = Receiver(app, node, transfers)
     val discovery = Discovery(app, node, ownService = { receiver.serviceName })

@@ -230,7 +230,9 @@ class Transfers(private val node: Node, private val opener: ItemOpener) {
             _list.update { l -> if (l.any { it.id == tid }) l else listOf(fresh(tid)) + l }
         }
 
-        override fun onEvent(eventJSON: String) {
+        override fun onEvent(eventJSON: String) = goCallback("send event", Unit) { apply(eventJSON) }
+
+        private fun apply(eventJSON: String) {
             val ev = parseTransferEvent(eventJSON) ?: return
             val tid = ev.transferId
             _list.update { l ->

@@ -13,13 +13,15 @@ class GoSource(
 ) : Source {
     private val chunks = ChunkReader(opener)
 
-    override fun count(): Long = items.size.toLong()
+    // These four have no error result: an exception must not reach Go
+    // (goCallback). A bad index gives values the core's checks refuse.
+    override fun count(): Long = goCallback("count", 0L) { items.size.toLong() }
 
-    override fun path(i: Long): String = item(i).path
+    override fun path(i: Long): String = goCallback("path", "") { item(i).path }
 
-    override fun size(i: Long): Long = if (item(i).isDir) 0 else item(i).size
+    override fun size(i: Long): Long = goCallback("size", -1L) { if (item(i).isDir) 0 else item(i).size }
 
-    override fun isDir(i: Long): Boolean = item(i).isDir
+    override fun isDir(i: Long): Boolean = goCallback("isDir", false) { item(i).isDir }
 
     override fun openFd(i: Long): Long {
         val ref = item(i).ref ?: throw IllegalArgumentException("${item(i).path} is a folder")

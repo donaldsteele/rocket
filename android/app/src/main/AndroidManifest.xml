@@ -12,6 +12,9 @@
     <!-- The receiver serves other devices on the local network. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Keeps the CPU and Wi-Fi awake while a transfer runs with the screen
+         off (service/TransferLocks). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Android 8 and 9 save received files to Download/rocket through the
          file system; later versions use MediaStore and need no permission. -->
     <uses-permission

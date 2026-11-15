@@ -63,12 +63,12 @@ import kotlinx.coroutines.withContext
 class ShareActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val uris = sharedUris(intent)
+        val shared = runCatching { sharedUris(intent, core.items::readable) }.getOrElse { Shared(emptyList(), 0) }
         setContent {
             val mode by core.theme.collectAsStateWithLifecycle()
             RocketTheme(mode) {
                 SystemBars(mode.isDark())
-                ShareScreen(uris, onSent = { name ->
+                ShareScreen(shared.uris, shared.refused, onSent = { name ->
                     Toast.makeText(this, "Sending to $name", Toast.LENGTH_SHORT).show()
                     finish()
                 })
@@ -77,19 +77,31 @@ class ShareActivity : ComponentActivity() {
     }
 }
 
-/** The content URIs of an ACTION_SEND or ACTION_SEND_MULTIPLE intent. */
-private fun sharedUris(intent: Intent): List<Uri> {
-    val out = LinkedHashSet<Uri>()
+/**
+ * What an ACTION_SEND or ACTION_SEND_MULTIPLE intent shares: the content
+ * URIs rocket may read for the sharer, and how many others it left out.
+ */
+private class Shared(val uris: List<Uri>, val refused: Int)
+
+/**
+ * The URIs of a share intent. Only content URIs from other apps are kept
+ * ([io.github.donaldsteele.rocket.core.ContentItems.readable]): ShareActivity
+ * is exported, and a file:// URI would be read with rocket's own access, so
+ * any app could otherwise make rocket send its private files.
+ */
+private fun sharedUris(intent: Intent, readable: (Uri) -> Boolean): Shared {
+    val all = LinkedHashSet<Uri>()
     when (intent.action) {
         Intent.ACTION_SEND ->
-            IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let { out += it }
+            IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let { all += it }
         Intent.ACTION_SEND_MULTIPLE ->
-            IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let { out += it }
+            IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let { all += it }
     }
     intent.clipData?.let { clip ->
-        for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let { out += it }
+        for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let { all += it }
     }
-    return out.toList()
+    val ok = all.filter(readable)
+    return Shared(ok, all.size - ok.size)
 }
 
 sealed interface ShareState {
@@ -103,11 +115,17 @@ class ShareModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<ShareState> = _state.asStateFlow()
     private var loaded = false
 
-    fun load(uris: List<Uri>) {
+    fun load(uris: List<Uri>, refused: Int) {
         if (loaded) return
         loaded = true
         if (uris.isEmpty()) {
-            _state.value = ShareState.Problem("There are no files in what was shared. rocket sends files, not text or links.")
+            _state.value = ShareState.Problem(
+                if (refused > 0) {
+                    "rocket cannot send what was shared: it only sends files that other apps share as content, not file links."
+                } else {
+                    "There are no files in what was shared. rocket sends files, not text or links."
+                },
+            )
             return
         }
         viewModelScope.launch {
@@ -122,11 +140,11 @@ class ShareModel(app: Application) : AndroidViewModel(app) {
 }
 
 @Composable
-private fun ShareScreen(uris: List<Uri>, onSent: (String) -> Unit) {
+private fun ShareScreen(uris: List<Uri>, refused: Int, onSent: (String) -> Unit) {
     val context = LocalContext.current
     val core = context.core
     val model: ShareModel = viewModel()
-    LaunchedEffect(model) { model.load(uris) }
+    LaunchedEffect(model) { model.load(uris, refused) }
     val state by model.state.collectAsStateWithLifecycle()
     val peers by core.discovery.peers.collectAsStateWithLifecycle()
     val problem by core.discovery.problem.collectAsStateWithLifecycle()
@@ -172,6 +190,12 @@ private fun ShareScreen(uris: List<Uri>, onSent: (String) -> Unit) {
                     }
                     is ShareState.Problem -> Notice(s.message, Tone.Bad)
                     is ShareState.Ready -> SharedSummary(s)
+                }
+            }
+            if (refused > 0 && uris.isNotEmpty()) {
+                item {
+                    val what = if (refused == 1) "1 item that is" else "$refused items that are"
+                    Notice("Left out $what not shared as content (file links cannot be sent).", Tone.Warn)
                 }
             }
             error?.let { e -> item { Notice(e, Tone.Bad) } }

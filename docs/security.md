@@ -165,6 +165,10 @@ limits, manifest and path checks. The differences:
   or the file system (Android 8 and 9, with `WRITE_EXTERNAL_STORAGE`). Paths
   are checked and made safe in Go before the app sees them; a cancelled or
   failed receive removes its pending entry.
+- **Share sheet.** rocket sends only what another app shares as content
+  (`content://` from that app's provider). `file://` links and rocket's own
+  providers are refused, and so is a file that turns out to be in rocket's
+  private storage, so no app can make rocket send its key or records.
 - **Identity and records.** `node.key`, trusted senders and history live in
   the app's private storage. Backups and device-to-device transfers leave them
   out (`allowBackup="false"`, data extraction rules), so another device cannot
@@ -177,8 +181,9 @@ limits, manifest and path checks. The differences:
   like, check the signer with
   `apksigner verify --print-certs rocket-android.apk`; the certificate SHA-256
   digest is
-  `46:3A:4E:FF:1B:66:1D:BA:36:FB:68:8F:0E:A6:08:90:3F:17:7E:24:B8:D6:F5:59:78:26:0E:B7:89:F4:68:E4`.
-  Android refuses to install an update signed with any other key over the
+  `46:3A:4E:FF:1B:66:1D:BA:36:FB:68:8F:0E:A6:08:90:3F:17:7E:24:B8:D6:F5:59:78:26:0E:B7:89:F4:68:E4`
+  (also in `android/release-cert.sha256`; the release scripts refuse an APK
+  signed with any other certificate). Android refuses to install an update signed with any other key over the
   installed app.
 
 ## Not protected: plain HTTP

@@ -1,24 +1,73 @@
 package io.github.donaldsteele.rocket.core
 
 import android.content.ContentResolver
+import android.content.Context
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
 import android.provider.OpenableColumns
+import android.system.Os
 import androidx.core.net.toUri
+import java.io.File
+import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.io.InputStream
+import java.util.Locale
 
 /**
  * Turns Storage Access Framework picks and share-sheet URIs into
  * [SendItem]s, and opens them for the Go core. Queries block: call off the
  * main thread.
+ *
+ * Only content URIs served by other apps are read ([readable]). Anything
+ * else would be opened with rocket's own permissions: a file:// URI (or one
+ * of rocket's own providers) in a share intent would let any app make rocket
+ * send its private files, node.key among them. As a second guard, a
+ * descriptor that turns out to point into rocket's private storage is
+ * refused.
  */
-class ContentItems(private val cr: ContentResolver) : ItemOpener {
+class ContentItems(context: Context) : ItemOpener {
+    private val app = context.applicationContext
+    private val cr: ContentResolver = app.contentResolver
+    private val ownPackage: String = app.packageName
+
+    /** rocket's private storage (credential- and device-protected), as given and resolved. */
+    private val privateRoots: List<String> by lazy {
+        val dirs = listOfNotNull(
+            app.dataDir,
+            runCatching { app.createDeviceProtectedStorageContext().dataDir }.getOrNull(),
+        )
+        dirs.flatMap { d -> listOf(d.absolutePath, runCatching { d.canonicalPath }.getOrDefault(d.absolutePath)) }.distinct()
+    }
+
+    /**
+     * Whether uri may be read on behalf of whoever handed it over: a content
+     * URI whose provider belongs to another app.
+     */
+    fun readable(uri: Uri): Boolean {
+        if (!isForeignContentUri(uri.scheme, uri.authority, ownPackage)) return false
+        val authority = authorityWithoutUser(uri.authority ?: return false)
+        val owner = runCatching { app.packageManager.resolveContentProvider(authority, 0)?.packageName }.getOrNull()
+        return owner != ownPackage
+    }
+
+    private fun requireReadable(uri: Uri) {
+        if (!readable(uri)) {
+            throw SecurityException("rocket only sends files that other apps share as content, not ${uri.scheme ?: "plain"} links.")
+        }
+    }
+
+    /** Refuses a descriptor that points into rocket's private storage. */
+    private fun requireNotPrivate(fd: Int) {
+        val path = runCatching { Os.readlink("/proc/self/fd/$fd") }.getOrNull() ?: return
+        if (isUnderAny(path, privateRoots)) throw SecurityException("rocket does not send its own private files.")
+    }
 
     /** Files picked one by one (or shared): each is a top-level item. */
     fun fromUris(uris: List<Uri>): List<SendItem> {
         if (uris.size > MAX_ITEMS) throw tooMany()
+        uris.forEach { requireReadable(it) }
         val found = uris.map { uri ->
             var name: String? = null
             var size = -1L
@@ -43,6 +92,7 @@ class ContentItems(private val cr: ContentResolver) : ItemOpener {
      * then everything inside, each folder listed before its contents.
      */
     fun fromTree(tree: Uri): List<SendItem> {
+        requireReadable(tree)
         val rootId = DocumentsContract.getTreeDocumentId(tree)
         val rootUri = DocumentsContract.buildDocumentUriUsingTree(tree, rootId)
         val rootName = queryName(rootUri) ?: rootId.substringAfterLast(':').substringAfterLast('/')
@@ -86,22 +136,66 @@ class ContentItems(private val cr: ContentResolver) : ItemOpener {
     }.getOrNull()
 
     override fun openFd(ref: String): Int {
+        val uri = ref.toUri()
+        requireReadable(uri)
         // A provider that serves only part of a file (an asset) or no
         // descriptor at all fails here; the stream fallback copes.
         val pfd = try {
-            cr.openFileDescriptor(ref.toUri(), "r")
+            cr.openFileDescriptor(uri, "r")
         } catch (_: FileNotFoundException) {
             null
         } catch (_: IllegalArgumentException) {
             null
         } catch (_: UnsupportedOperationException) {
             null
+        } ?: return -1
+        try {
+            requireNotPrivate(pfd.fd)
+        } catch (e: SecurityException) {
+            pfd.closeQuietly()
+            throw e
         }
-        return pfd?.detachFd() ?: -1
+        return pfd.detachFd()
     }
 
-    override fun openStream(ref: String): InputStream =
-        cr.openInputStream(ref.toUri()) ?: throw FileNotFoundException("cannot open $ref")
+    override fun openStream(ref: String): InputStream {
+        val uri = ref.toUri()
+        requireReadable(uri)
+        val s = cr.openInputStream(uri) ?: throw FileNotFoundException("cannot open $ref")
+        try {
+            (s as? FileInputStream)?.let { f -> ParcelFileDescriptor.dup(f.fd).use { requireNotPrivate(it.fd) } }
+        } catch (e: SecurityException) {
+            s.closeQuietly()
+            throw e
+        }
+        return s
+    }
 
     private fun tooMany() = IllegalStateException("More than ${"%,d".format(MAX_ITEMS)} items: rocket sends at most that many at once.")
+}
+
+/**
+ * Whether a URI with this scheme and authority is a content URI served by
+ * some app other than ownPackage, judged by the authority (rocket's own
+ * providers are named after its package). ContentResolver opens file://
+ * URIs itself, with the caller's permissions, so they never qualify.
+ */
+fun isForeignContentUri(scheme: String?, authority: String?, ownPackage: String): Boolean {
+    if (scheme != ContentResolver.SCHEME_CONTENT) return false
+    val a = authorityWithoutUser(authority ?: return false).lowercase(Locale.ROOT)
+    if (a.isEmpty()) return false
+    val own = ownPackage.lowercase(Locale.ROOT)
+    return a != own && !a.startsWith("$own.")
+}
+
+/** An authority without the "<user>@" prefix of a cross-user URI. */
+internal fun authorityWithoutUser(authority: String): String = authority.substringAfterLast('@')
+
+/** Whether path is one of roots or inside one ("/" separated, normalized). */
+fun isUnderAny(path: String, roots: List<String>): Boolean {
+    val p = File(path).normalize().invariantSeparatorsPath
+    return roots.any { r ->
+        val root = File(r).normalize().invariantSeparatorsPath.trimEnd('/')
+        root.isNotEmpty() && (p == root || p.startsWith("$root/"))
+    }
 }

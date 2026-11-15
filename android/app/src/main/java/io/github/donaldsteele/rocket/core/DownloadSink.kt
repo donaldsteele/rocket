@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.content.ContentValues
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
@@ -139,21 +140,23 @@ class FileSink(
             throw IOException("no free name for ${target.name}")
         }
 
-        override fun abort() {
+        override fun abort() = goCallback("abort", Unit) {
             val (outs, files, dirs) = synchronized(this) { Triple(open.toList(), saved.toList(), made.toList()) }
             outs.forEach { it.abort() }
-            files.forEach { it.delete() }
+            files.forEach { runCatching { it.delete() } }
             // Children before parents; delete() leaves a folder that is not
             // empty, so nothing that was there before goes.
-            dirs.asReversed().forEach { it.delete() }
+            dirs.asReversed().forEach { runCatching { it.delete() } }
         }
 
-        override fun location(): String = where
+        override fun location(): String = goCallback("location", "") { where }
 
         private inner class Out(private val part: File, private val final: File) : SinkFile {
             private var stream: OutputStream? = null
 
-            override fun fd(): Long = openFd(part).toLong()
+            // No error result: a descriptor that cannot be opened means -1,
+            // and the bytes come through write(), which can report it.
+            override fun fd(): Long = goCallback("fd", -1L) { openFd(part).toLong() }
 
             override fun write(data: ByteArray) {
                 val s = stream ?: part.outputStream().also { stream = it }
@@ -178,10 +181,10 @@ class FileSink(
                 return dest.path
             }
 
-            override fun abort() {
+            override fun abort() = goCallback("abort", Unit) {
                 runCatching { stream?.close() }
                 stream = null
-                part.delete()
+                runCatching { part.delete() }
                 synchronized(this@Tx) { open -= this }
             }
         }
@@ -215,14 +218,35 @@ class MediaStoreSink(
 
     override fun finished(transferId: String) = claims.release(transferId)
 
-    /** Whether top-level name is used in Download/rocket, as a folder or a file. */
+    /**
+     * Whether top-level name is used in Download/rocket, as a folder or a
+     * file. The file system shows every folder from Android 11 on; MediaStore
+     * adds this app's own items, pending and trashed ones too (a receive cut
+     * off by a crash leaves pending items behind, and those still hold their
+     * folder). Android 10 hides other apps' folders from both, so a folder
+     * another app made there can still be written into; names never clash,
+     * as MediaStore numbers a taken file name itself.
+     */
     private fun taken(name: String): Boolean {
         if (runCatching { File(disk, name).exists() }.getOrDefault(false)) return true
         val esc = likeEscape(name)
         val sel = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? ESCAPE '\\' OR " +
             "(${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? ESCAPE '\\' AND ${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ? ESCAPE '\\')"
         val args = arrayOf("${likeEscape(base)}$esc/%", likeEscape(base), esc)
-        return resolver.query(collection, arrayOf(MediaStore.MediaColumns._ID), sel, args, null)?.use { it.count > 0 } ?: false
+        val cols = arrayOf(MediaStore.MediaColumns._ID)
+        val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val q = Bundle().apply {
+                putString(ContentResolver.QUERY_ARG_SQL_SELECTION, sel)
+                putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
+                putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+                putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE)
+            }
+            resolver.query(collection, cols, q, null)
+        } else {
+            @Suppress("DEPRECATION")
+            resolver.query(MediaStore.setIncludePending(collection), cols, sel, args, null)
+        }
+        return cursor?.use { it.count > 0 } ?: false
     }
 
     private inner class Tx(private val id: String) : SinkTransfer {
@@ -268,21 +292,24 @@ class MediaStoreSink(
             return Item(uri)
         }
 
-        override fun abort() {
+        override fun abort() = goCallback("abort", Unit) {
             val (items, folders) = synchronized(this) { uris.toList() to dirs.toList() }
             items.forEach { runCatching { resolver.delete(it, null, null) } }
             folders.asReversed().forEach { runCatching { it.delete() } }
         }
 
-        override fun location(): String = where
+        override fun location(): String = goCallback("location", "") { where }
 
         private inner class Item(private val uri: Uri) : SinkFile {
             private var stream: OutputStream? = null
 
             // The descriptor is detached for Go, which closes it; close()
-            // on the emptied ParcelFileDescriptor is then a no-op.
-            override fun fd(): Long =
+            // on the emptied ParcelFileDescriptor is then a no-op. fd() has
+            // no error result: when the pending item cannot be opened, -1
+            // sends the bytes through write(), which reports the failure.
+            override fun fd(): Long = goCallback("fd", -1L) {
                 resolver.openFileDescriptor(uri, "w")?.use { it.detachFd().toLong() } ?: -1L
+            }
 
             override fun write(data: ByteArray) {
                 val s = stream ?: (resolver.openOutputStream(uri, "w") ?: throw IOException("cannot write $uri")).also { stream = it }
@@ -297,7 +324,7 @@ class MediaStoreSink(
                 return uri.toString()
             }
 
-            override fun abort() {
+            override fun abort() = goCallback("abort", Unit) {
                 runCatching { stream?.close() }
                 stream = null
                 runCatching { resolver.delete(uri, null, null) }

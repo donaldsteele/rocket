@@ -38,6 +38,7 @@ class TransferService : Service() {
     private val scope = MainScope()
     private var lastStartId = 0
     private var foreground = false
+    private val locks by lazy { TransferLocks(this, "send") }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -52,6 +53,7 @@ class TransferService : Service() {
                 .conflate()
                 .collect { (list, starting) ->
                     val active = list.filter { it.state.active && !it.incoming }
+                    locks.hold(active.isNotEmpty() || starting > 0)
                     if (active.isEmpty() && starting == 0) {
                         if (foreground) {
                             ServiceCompat.stopForeground(this@TransferService, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -90,6 +92,7 @@ class TransferService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        locks.release()
         super.onDestroy()
     }
 
