@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rocket · send files across your local network</title>
+<meta name="description" content="rocket sends files and folders straight from one computer to another on your local network, with a quick approval on the receiving end. One binary for Windows, macOS and Linux. No cloud, no account, no internet. Phones use a browser drop page, and Claude can send files over MCP.">
+<meta name="color-scheme" content="dark light">
+<meta property="og:title" content="rocket: send files across your local network">
+<meta property="og:description" content="Files and folders straight from one computer to another on the LAN. Finds the other computers by itself, asks the receiver first, signs every offer. One binary, no cloud, no account.">
+<meta property="og:image" content="https://donaldsteele.github.io/rocket/assets/shots/send-dark.png">
+<meta property="og:type" content="website">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+<script>
+  // Apply the saved theme before first paint; no saved choice follows the system.
+  try { var t = localStorage.getItem('rocket-site-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="wordmark" href="#top" aria-label="rocket home"><img class="logo" src="assets/favicon.svg" alt="" width="28" height="28">rocket<span class="caret" aria-hidden="true"></span></a>
+    <nav aria-label="Sections">
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#tour">Tour</a>
+      <a href="#drop">Phones</a>
+      <a href="#claude">Claude</a>
+      <a href="#security">Security</a>
+      <a href="#download" class="persist">Download</a>
+      <a href="https://github.com/donaldsteele/rocket" class="persist">GitHub</a>
+    </nav>
+    <button type="button" class="themebtn" id="themebtn" aria-label="Switch to light theme">
+      <svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-sun"></use></svg>
+    </button>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" id="top">
+    <div class="rings" aria-hidden="true"><span></span><span></span><span></span></div>
+    <div class="wrap narrow">
+      <p class="pill"><span class="pulse" aria-hidden="true"></span> Open source · Windows, macOS &amp; Linux · one binary</p>
+      <h1>Send files to the computer <em>across&nbsp;the&nbsp;room</em>.</h1>
+      <p class="capability">Files and whole folders, straight from one computer to another on your local network. No cloud, no account, no internet.</p>
+      <p class="lede">Run rocket on each computer. It finds the others by itself, and the person receiving says yes before anything is saved. Phones and guests send from a page in their browser, and Claude can send files for you over MCP.</p>
+      <div class="cta">
+        <a class="button primary" href="#download"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-download"></use></svg>Download</a>
+        <a class="button ghost" href="https://github.com/donaldsteele/rocket">View on GitHub<svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-external-link"></use></svg></a>
+      </div>
+      <p class="micro">Free · Apache-2.0 · Works offline · No account · No installer</p>
+    </div>
+    <figure class="shot hero-shot">
+      <div class="window">
+        <div class="chrome" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">http://127.0.0.1:29005/ · rocket on Studio-PC</span></div>
+        <button type="button" class="zoom" aria-label="Enlarge screenshot: an incoming offer">
+          <img class="t-dark" src="assets/shots/send-dark.png" width="2560" height="1600" alt="rocket on Studio-PC in the dark theme: at the top, Laptop wants to send you 24 files (82.0 MB) from vacation-photos, with its fingerprint and the buttons Accept, Always accept from this host and Decline. Below, the Send view lists two computers on the network, Living-Room-PC and Laptop, each with Send files and Send folder">
+          <img class="t-light" src="assets/shots/send-light.png" width="2560" height="1600" alt="The same incoming offer and peer list in the light theme" loading="lazy">
+        </button>
+      </div>
+    </figure>
+  </section>
+
+  <section class="stats" aria-label="At a glance">
+    <div class="wrap grid4">
+      <div class="stat"><b>1 file</b><span>to run, on Windows, macOS, Linux and Raspberry Pi</span></div>
+      <div class="stat"><b>2 ways</b><span>to find peers: a UDP beacon and mDNS</span></div>
+      <div class="stat"><b>1 prompt</b><span>per transfer, however many files</span></div>
+      <div class="stat"><b>0</b><span>cloud accounts or internet needed</span></div>
+    </div>
+  </section>
+
+  <section class="band" id="how">
+    <div class="wrap">
+      <p class="eyebrow">How it works</p>
+      <h2>Send in three steps.</h2>
+      <p class="sub">Every computer runs rocket. There is no server to set up and nothing to pair: the computers on your network show up by themselves within a few seconds.</p>
+      <ol class="steps">
+        <li><b>Run rocket</b> on each computer. It prints its addresses and opens its page in your browser.</li>
+        <li><b>Pick a computer</b> under Computers on your network, then <b>Send files</b> or <b>Send folder</b>.</li>
+        <li><b>Accept on the other end.</b> Tick Always accept from this host to skip the prompt next time.</li>
+      </ol>
+      <div class="term console">
+        <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">rocket</span></div>
+        <div class="out" tabindex="0" role="region" aria-label="What rocket prints when it starts"><code><span class="hl">rocket 1.0.0</span>
+  name:        <span class="hl">Studio-PC</span>
+  fingerprint: <span class="ok">cfe4dd4a4437c183</span>
+  received to: C:\Users\you\Downloads\rocket
+  open:        http://127.0.0.1:29005/
+  drop page:   http://192.168.1.20:29005/</code></div>
+      </div>
+      <div class="feature">
+        <div class="copy">
+          <p class="reading-label">Trust on first use</p>
+          <h3>Nothing is saved until you say yes.</h3>
+          <p>The first offer from a new sender asks you, with the sender's name, its fingerprint, the number of files, the total size and the first few names. <b>Always accept from this host</b> remembers that sender's key, so the next transfer just arrives.</p>
+          <ul class="readings"><li>Accept</li><li>Always accept</li><li>Decline</li></ul>
+        </div>
+        <div class="phones">
+          <figure class="shot"><div class="window">
+            <button type="button" class="zoom" aria-label="Enlarge screenshot: the offer prompt on a narrow window"><img src="assets/shots/phone-offer-light.png" width="780" height="1688" loading="lazy" alt="The rocket page in a phone-sized window, light theme: Laptop wants to send you 24 files (82.0 MB), with Accept, Always accept from this host and Decline buttons"></button></div>
+            <figcaption><b>The prompt.</b> Who, what, how big, and the fingerprint.</figcaption></figure>
+          <figure class="shot"><div class="window">
+            <button type="button" class="zoom" aria-label="Enlarge screenshot: the offer prompt in the dark theme"><img src="assets/shots/phone-offer-dark.png" width="780" height="1688" loading="lazy" alt="The same offer prompt in the dark theme, above the list of computers on the network"></button></div>
+            <figcaption><b>Every view.</b> The prompt stays at the top until you answer.</figcaption></figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="features">
+    <div class="wrap">
+      <p class="eyebrow">What it does</p>
+      <h2>Everything you need to move files across the room.</h2>
+      <p class="sub">And nothing in between: the bytes go from one computer straight to the other, written to disk as they arrive.</p>
+      <div class="cards">
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-radar"></use></svg><h3>Finds the others</h3><p>A UDP beacon and mDNS (<code>_rocket._tcp.local</code>) announce each computer. Both feed one list keyed by fingerprint, and computers that go quiet drop off.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-folder"></use></svg><h3>Files and whole folders</h3><p>Many files or a whole folder go as one transfer with one approval and per-file progress. Empty folders, unicode names and 0-byte files arrive intact.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-shield-check"></use></svg><h3>You say yes first</h3><p>The first transfer from a new sender asks you. Received files land in <code>Downloads/rocket</code>, or any folder you choose in Settings.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-fingerprint-pattern"></use></svg><h3>Signed offers</h3><p>Every offer is ed25519-signed, so another computer cannot pretend to be a sender you trust. A new name or IP address does not change who a computer is.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-smartphone"></use></svg><h3>Drop page for phones</h3><p>A phone or a guest without rocket opens the computer's address in a browser and uploads straight to it.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-history"></use></svg><h3>History and cancel</h3><p>Either side can cancel, and partial files are removed. History keeps the last 1000 transfers and how each one ended.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-bell-dot"></use></svg><h3>Tray icon</h3><p>On Windows and Linux, <code>rocket-tray</code> shows whether rocket runs and how many peers it sees, and gets a red badge when someone is waiting for your answer.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-bot"></use></svg><h3>Claude can help</h3><p>Over MCP, Claude can list the computers on your network and send files. It can never accept a transfer: that stays with you.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="tour">
+    <div class="wrap">
+      <p class="eyebrow">A tour</p>
+      <h2>Real screens from the app.</h2>
+      <p class="sub">Captured from three real rocket instances, Studio-PC, Laptop and Living-Room-PC, sending real files to each other. The page is the same in a light and a dark theme, and it works with the keyboard and a screen reader.</p>
+
+      <div class="feature">
+        <div class="copy">
+          <p class="reading-label">Transfers</p>
+          <h3>Watch it move, stop it any time.</h3>
+          <p>Sending and receiving side by side, each with a progress bar and a Cancel button. Cancel from either computer and the receiver removes what it wrote. A send that is still waiting for an answer says so.</p>
+          <ul class="states" aria-label="Transfer states">
+            <li class="chip warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-clock"></use></svg>Waiting</li>
+            <li class="chip info"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-arrow-up"></use></svg>Sending</li>
+            <li class="chip info"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-arrow-down"></use></svg>Receiving</li>
+          </ul>
+        </div>
+        <figure class="shot"><div class="window"><div class="chrome" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">rocket · Transfers</span></div>
+          <button type="button" class="zoom" aria-label="Enlarge screenshot: transfers in progress">
+            <img class="t-dark" src="assets/shots/transfers-dark.png" width="2560" height="1600" loading="lazy" alt="The Transfers view: old-backup.zip to Living-Room-PC is Waiting, mix-final.wav to Living-Room-PC is Sending, and drone-footage.mp4 from Laptop is Receiving, each with a progress bar, a percentage and a Cancel button">
+            <img class="t-light" src="assets/shots/transfers-light.png" width="2560" height="1600" loading="lazy" alt="The Transfers view in the light theme with one waiting, one sending and one receiving transfer">
+          </button></div></figure>
+      </div>
+
+      <div class="feature flip">
+        <div class="copy">
+          <p class="reading-label">History</p>
+          <h3>Every transfer, and how it ended.</h3>
+          <p>Sent and received, with the other computer, the size and the time. Each outcome is a shape and a word, never colour alone.</p>
+          <ul class="states" aria-label="Transfer outcomes">
+            <li class="chip ok"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-circle-check"></use></svg>Done</li>
+            <li class="chip warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-circle-x"></use></svg>Declined</li>
+            <li class="chip warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-square"></use></svg>Cancelled</li>
+            <li class="chip warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-clock"></use></svg>No answer</li>
+            <li class="chip bad"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-triangle-alert"></use></svg>Failed</li>
+          </ul>
+        </div>
+        <figure class="shot"><div class="window"><div class="chrome" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">rocket · History</span></div>
+          <button type="button" class="zoom" aria-label="Enlarge screenshot: transfer history">
+            <img class="t-dark" src="assets/shots/history-dark.png" width="2560" height="1600" loading="lazy" alt="The History view, newest first: transfers to and from Laptop, Living-Room-PC and a web browser, marked Done, Declined, Cancelled or No answer, each with a size and a time">
+            <img class="t-light" src="assets/shots/history-light.png" width="2560" height="1600" loading="lazy" alt="The History view in the light theme">
+          </button></div></figure>
+      </div>
+
+      <div class="feature">
+        <div class="copy">
+          <p class="reading-label">Settings</p>
+          <h3>Your name, your folder, your trusted list.</h3>
+          <p>Change the name other computers see and the folder received files go to. Every sender you chose to always accept is listed by name and fingerprint, with <b>Revoke</b>. Turn off auto-accept to be asked every time.</p>
+          <ul class="readings"><li>device name</li><li>download folder</li><li>revoke</li></ul>
+        </div>
+        <figure class="shot"><div class="window"><div class="chrome" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">rocket · Settings</span></div>
+          <button type="button" class="zoom" aria-label="Enlarge screenshot: settings">
+            <img class="t-dark" src="assets/shots/settings-dark.png" width="2560" height="1600" loading="lazy" alt="The Settings view: device name Studio-PC, the download folder, Accept files from trusted senders without asking turned on, and two trusted senders, Laptop and Living-Room-PC, each with a Revoke button">
+            <img class="t-light" src="assets/shots/settings-light.png" width="2560" height="1600" loading="lazy" alt="The Settings view in the light theme with two trusted senders">
+          </button></div></figure>
+      </div>
+
+      <div class="phones-feature">
+        <div class="copy">
+          <p class="reading-label">Any window size</p>
+          <h3>Down to a phone-sized window.</h3>
+          <p>The sidebar folds into a Menu button on narrow windows, and the layout works down to 360 px. Offers and finished transfers are announced to screen readers, and every control works from the keyboard.</p>
+          <ul class="readings"><li>light &amp; dark</li><li>keyboard</li><li>screen reader</li></ul>
+        </div>
+        <div class="phones">
+          <figure class="shot"><div class="window">
+            <button type="button" class="zoom" aria-label="Enlarge screenshot: transfers in a narrow window"><img src="assets/shots/phone-transfers-dark.png" width="780" height="1688" loading="lazy" alt="The Transfers view in a phone-sized window, dark theme, with waiting, sending and receiving transfers"></button></div></figure>
+          <figure class="shot"><div class="window">
+            <button type="button" class="zoom" aria-label="Enlarge screenshot: history in a narrow window"><img src="assets/shots/phone-history-light.png" width="780" height="1688" loading="lazy" alt="The History view in a phone-sized window, light theme"></button></div></figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band drop-band" id="drop">
+    <div class="wrap">
+      <p class="eyebrow">Phones and guests</p>
+      <h2>No app on the phone. Just a page.</h2>
+      <p class="sub">A phone, or a guest's laptop without rocket, opens the <b>drop page</b> address rocket prints, such as <code>http://192.168.1.20:29005/</code>, on the same Wi-Fi. They choose files, you accept on the computer, and the files land in your download folder.</p>
+
+      <ol class="timeline" aria-label="Sending from a phone, step by step">
+        <li class="tick go"><span class="t">open</span><b>The address</b><span>The drop page says which computer it sends to.</span></li>
+        <li class="tick go"><span class="t">choose</span><b>Choose files</b><span>Or drag them onto the page. Any number at once.</span></li>
+        <li class="tick ask"><span class="t">accept</span><b>You say yes</b><span>The offer appears on the computer, marked from a web browser.</span></li>
+        <li class="tick ok"><span class="t">done</span><b>Sent</b><span>Each file shows its own progress, then Sent.</span></li>
+      </ol>
+
+      <div class="phones three">
+        <figure class="shot"><div class="window">
+          <button type="button" class="zoom" aria-label="Enlarge screenshot: drop page waiting for the computer"><img src="assets/shots/phone-drop-waiting-dark.png" width="780" height="1688" loading="lazy" alt="The drop page on a phone, dark theme: Send files to Studio-PC, waiting for the person at the computer to accept 3 files, and three files each marked Waiting"></button></div>
+          <figcaption><b>Waiting.</b> The person at the computer is asked first.</figcaption></figure>
+        <figure class="shot"><div class="window">
+          <button type="button" class="zoom" aria-label="Enlarge screenshot: drop page sending"><img src="assets/shots/phone-drop-sending-light.png" width="780" height="1688" loading="lazy" alt="The drop page on a phone, light theme: accepted, sending 3 files, with per-file progress"></button></div>
+          <figcaption><b>Sending.</b> Progress for every file.</figcaption></figure>
+        <figure class="shot"><div class="window">
+          <button type="button" class="zoom" aria-label="Enlarge screenshot: drop page done"><img src="assets/shots/phone-drop-done-dark.png" width="780" height="1688" loading="lazy" alt="The drop page on a phone, dark theme: Done, 3 files sent, each file marked Sent"></button></div>
+          <figcaption><b>Done.</b> Every file says Sent.</figcaption></figure>
+      </div>
+      <p class="note">After your first accept, that browser can drop again for 30 days without asking while <b>Accept files from trusted senders without asking</b> is on. Turn it off in Settings to be asked every time.</p>
+    </div>
+  </section>
+
+  <section class="band claude-band" id="claude">
+    <div class="wrap">
+      <p class="eyebrow">Connect Claude</p>
+      <h2>Ask Claude to send it over.</h2>
+      <p class="sub"><code>rocket mcp</code> is a Model Context Protocol server over stdio. Claude can see the rocket computers on your network, send files and folders to one of them, and read this computer's status and history. Accepting stays with you.</p>
+      <div class="split">
+        <div>
+          <div class="term">
+            <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">Terminal · connect Claude Code</span></div>
+            <div class="cmd"><code><span class="prompt">$</span>claude mcp add rocket -- "C:\path\to\rocket.exe" mcp  <span class="cmt"># Windows</span></code><button type="button" class="copybtn" data-copy='claude mcp add rocket -- "C:\path\to\rocket.exe" mcp' aria-label="Copy the Windows command">Copy</button></div>
+            <div class="cmd"><code><span class="prompt">$</span>claude mcp add rocket -- /path/to/rocket mcp  <span class="cmt"># macOS / Linux</span></code><button type="button" class="copybtn" data-copy="claude mcp add rocket -- /path/to/rocket mcp" aria-label="Copy the macOS and Linux command">Copy</button></div>
+            <div class="out ask"><code><span class="you">&gt;</span>Send the photos folder on my desktop to Laptop.</code></div>
+            <div class="out"><code>list_peers → send_file {peer: "Laptop", paths: [...]} → <span class="ok">waits for Laptop to accept</span></code></div>
+          </div>
+          <p class="note">Claude Desktop and other clients: add a stdio server with the command <code>rocket</code> and the argument <code>mcp</code>. It runs its own discovery, so the rocket window does not need to be open. Full reference: <a href="https://github.com/donaldsteele/rocket/blob/main/docs/mcp.md">docs/mcp.md</a>.</p>
+        </div>
+        <div>
+          <h3 class="minor">MCP tools, exactly four</h3>
+          <ul class="plays">
+            <li><code>list_peers</code> rocket computers on the network</li>
+            <li><code>send_file</code> Files and folders to a peer, one approval</li>
+            <li><code>get_status</code> This computer's name and fingerprint</li>
+            <li><code>list_history</code> Recent transfers, newest first</li>
+            <li class="never"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-ban"></use></svg><span><b>Never:</b> accept a transfer, trust or revoke a sender, change settings or quit rocket. A test pins the set.</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="security">
+    <div class="wrap">
+      <p class="eyebrow">Security</p>
+      <h2>Made for networks you trust.</h2>
+      <p class="sub">Anyone on your network can <b>offer</b> you files; nothing is saved until you accept. Here is what rocket protects against, and what it does not.</p>
+      <div class="secgrid">
+        <figure class="shot"><div class="window"><div class="chrome" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">rocket · an offer from a web browser</span></div>
+          <button type="button" class="zoom" aria-label="Enlarge screenshot: an offer from a web browser"><img src="assets/shots/drop-offer-dark.png" width="2560" height="1600" loading="lazy" alt="rocket on Studio-PC: browser guest (172.17.160.1) wants to send you 3 files (6.1 MB) from a web browser, listing the three file names, with only Accept and Decline buttons: no fingerprint and no Always accept"></button></div>
+          <figcaption><b>Every offer asks.</b> A browser has no key, so it gets no fingerprint and no Always accept.</figcaption></figure>
+        <ul class="safety">
+          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-fingerprint-pattern"></use></svg><span><b>Trust on first use, pinned by key.</b> Each computer has an ed25519 key made on first run. Always accept from this host pins that sender's full public key, not its name or IP address.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-key-round"></use></svg><span><b>Signed offers.</b> The signature covers the receiver, the sender, a timestamp, a one-time nonce and a hash of the file list. Offers meant for another computer, replays and stale offers are refused.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-lock"></use></svg><span><b>Controls stay on this computer.</b> The full page and every control API answer only on loopback, with a Host header allowlist and an <code>X-Rocket-CSRF</code> header on every change. Other computers reach only the peer protocol and the drop page.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-folder"></use></svg><span><b>Safe on disk.</b> Paths that climb out of the download folder, symlinks, devices and Windows reserved names are refused or made safe. Files are written as <code>.rocket-part</code> and renamed when complete.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-list-checks"></use></svg><span><b>Limits.</b> An offer waits at most 2 minutes, at most 16 wait at once (4 per address), and a transfer is capped at 10,000 entries and 1 TiB.</span></li>
+        </ul>
+      </div>
+      <p class="honest warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-lock-open"></use></svg><span><b>Plain HTTP, honestly:</b> transfers are not encrypted. Someone who can watch your network can see what is sent and could change it in transit. Use rocket on networks you trust, such as home or the office, not public Wi-Fi. If you need confidentiality, encrypt the files first.</span></p>
+      <p class="honest"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-info"></use></svg><span><b>Also worth knowing:</b> an interrupted transfer starts again from the beginning, and the release binaries are not code-signed, so check them against <code>SHA256SUMS</code>. The full threat model is in <a href="https://github.com/donaldsteele/rocket/blob/main/docs/security.md">docs/security.md</a>.</span></p>
+      <ul class="ports" aria-label="Firewall ports, private networks only">
+        <li><b>TCP 29005</b>Transfers and the drop page (the page itself answers only on this computer)</li>
+        <li><b>UDP 29006</b>The discovery beacon</li>
+        <li><b>UDP 5353</b>mDNS, optional (<code>--no-mdns</code> turns it off)</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="band" id="download">
+    <div class="wrap">
+      <p class="eyebrow">Download</p>
+      <h2>Unzip it, run it, send.</h2>
+      <p class="sub">One file per platform, no installer and no runtime to add. Put rocket on every computer you want to send between. The Windows and Linux zips include the tray app.</p>
+      <div class="dl">
+        <div class="plat">
+          <h3><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-monitor"></use></svg>Windows</h3>
+          <div class="btns">
+            <a class="button primary" href="https://github.com/donaldsteele/rocket/releases/latest/download/rocket-windows-amd64.zip">Most PCs <small>amd64</small></a>
+            <a class="button ghost" href="https://github.com/donaldsteele/rocket/releases/latest/download/rocket-windows-arm64.zip">Windows on ARM <small>arm64</small></a>
+          </div>
+          <p><b>SmartScreen</b> may say “Windows protected your PC” because rocket is not code-signed: click More info, then Run anyway. Allow it on Private networks when the firewall asks.</p>
+        </div>
+        <div class="plat">
+          <h3><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-laptop"></use></svg>macOS</h3>
+          <div class="btns">
+            <a class="button primary" href="https://github.com/donaldsteele/rocket/releases/latest/download/rocket-darwin-arm64.zip">Apple chip <small>arm64</small></a>
+            <a class="button ghost" href="https://github.com/donaldsteele/rocket/releases/latest/download/rocket-darwin-amd64.zip">Intel chip <small>amd64</small></a>
+          </div>
+          <p><b>Gatekeeper</b> warns about unsigned programs: Control-click rocket, choose Open, then Open again. Allow it to find devices on your local network. No tray binary for Mac; it builds from source.</p>
+        </div>
+        <div class="plat">
+          <h3><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-terminal"></use></svg>Linux</h3>
+          <div class="btns">
+            <a class="button primary" href="https://github.com/donaldsteele/rocket/releases/latest/download/rocket-linux-amd64.zip">Linux PC <small>amd64</small></a>
+            <a class="button ghost" href="https://github.com/donaldsteele/rocket/releases/latest/download/rocket-linux-arm64.zip">ARM, Raspberry Pi 4/5 <small>arm64</small></a>
+          </div>
+          <p>Run <code>./rocket</code> (<code>chmod +x rocket rocket-tray</code> if needed). <code>./rocket recv</code> runs without a browser, for example on a Pi. With a firewall on, open TCP 29005 and UDP 29006 (and UDP 5353 for mDNS).</p>
+        </div>
+      </div>
+      <p class="sums"><a href="https://github.com/donaldsteele/rocket/releases/latest/download/SHA256SUMS"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-list-checks"></use></svg>SHA256SUMS</a><a href="https://github.com/donaldsteele/rocket/blob/main/HOW-TO-OPEN.txt"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-info"></use></svg>HOW-TO-OPEN.txt</a><a href="https://github.com/donaldsteele/rocket/releases/latest"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-external-link"></use></svg>Latest release</a></p>
+      <ol class="steps">
+        <li><b>Download and check</b> the zip for each computer against <code>SHA256SUMS</code>, then unzip it.</li>
+        <li><b>Run rocket</b> on each one. Allow it on private networks; the page opens in your browser.</li>
+        <li><b>Send.</b> Pick a computer, choose files or a folder, and accept on the other end.</li>
+      </ol>
+      <p class="sub small">Ports: TCP <code>29005</code> and UDP <code>29006</code>, set with <code>--port</code> and <code>--beacon-port</code>; every computer must use the same beacon port. Received files go to <code>Downloads/rocket</code>. Build from source with Go 1.26: <code>go build ./cmd/rocket</code>. Guides: <a href="https://github.com/donaldsteele/rocket#readme">README</a>, <a href="https://github.com/donaldsteele/rocket/blob/main/docs/protocol.md">protocol</a>, <a href="https://github.com/donaldsteele/rocket/blob/main/CHANGELOG.md">changelog</a>.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span class="wordmark small"><img class="logo" src="assets/favicon.svg" alt="" width="24" height="24">rocket</span>
+    <span class="fine">Apache-2.0. A companion to <a href="https://donaldsteele.github.io/netdiag/">netdiag</a> and <a href="https://donaldsteele.github.io/bubbles/">bubbles</a>. Fonts: Inter and JetBrains Mono (SIL OFL). Icons: Lucide (ISC).</span>
+    <nav aria-label="Footer"><a href="https://github.com/donaldsteele/rocket">GitHub</a><a href="https://github.com/donaldsteele/rocket/releases">Releases</a><a href="https://github.com/donaldsteele/rocket/tree/main/docs">Docs</a><a href="https://donaldsteele.github.io/netdiag/">netdiag</a><a href="https://donaldsteele.github.io/bubbles/">bubbles</a></nav>
+  </div>
+</footer>
+
+<dialog id="lightbox" aria-label="Screenshot">
+  <form method="dialog"><button class="close" aria-label="Close"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-x"></use></svg></button></form>
+  <img alt="">
+</dialog>
+
+<script src="assets/site.js"></script>
+</body>
+</html>
