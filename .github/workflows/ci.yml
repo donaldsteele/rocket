@@ -134,7 +134,8 @@ jobs:
         shell: bash
         run: |
           sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$sdkmanager" --licenses > /dev/null
+          # yes dies of SIGPIPE when sdkmanager exits; don't let pipefail see it.
+          { yes || true; } | "$sdkmanager" --licenses > /dev/null
           "$sdkmanager" --install "platforms;android-36" "build-tools;36.1.0" "ndk;$NDK_VERSION" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
 

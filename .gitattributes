@@ -1,0 +1,19 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets and archives
+*.png binary
+*.ico binary
+*.jpg binary
+*.webp binary
+*.woff2 binary
+*.ttf binary
+*.jar binary
+*.syso binary
+*.zip binary
+*.gz binary
+*.exe binary
+*.apk binary
+*.aar binary
