@@ -490,12 +490,15 @@ func (a *Accepted) Upload(ctx context.Context, start Start, open OpenFunc, progr
 	switch {
 	case ctx.Err() != nil && (err != nil || werr != nil || resp.StatusCode != http.StatusOK):
 		return fmt.Errorf("send stopped: %w", ctx.Err())
-	case err == nil && resp.StatusCode == http.StatusGone:
-		return fmt.Errorf("%w by the receiver", ErrCancelled)
 	case werr != nil:
 		// A failure while reading local files is the real cause; report it
-		// rather than the aborted request it caused.
+		// rather than the aborted request it caused. This comes before the
+		// 410 check: the cancel notice the writer sent (abandon) makes the
+		// receiver answer 410, which would otherwise hide the cause. werr
+		// is never set by a receiver-side end, which closes the pipe.
 		return werr
+	case err == nil && resp.StatusCode == http.StatusGone:
+		return fmt.Errorf("%w by the receiver", ErrCancelled)
 	case err != nil && context.Cause(upCtx) == errStalled:
 		err = fmt.Errorf("%w: nothing moved for %s", ErrConnLost, StallTimeout)
 		if !keep {

@@ -142,6 +142,8 @@ func TestFolderProgressEvents(t *testing.T) {
 	a, b := trustedPair(t)
 	events := b.srv.hub.subscribe()
 	defer b.srv.hub.unsubscribe(events)
+	aEvents := a.srv.hub.subscribe()
+	defer a.srv.hub.unsubscribe(aEvents)
 	src := filepath.Join(t.TempDir(), "d")
 	_ = os.MkdirAll(src, 0o755)
 	for _, n := range []string{"1.txt", "2.txt", "3.txt"} {
@@ -173,6 +175,16 @@ func TestFolderProgressEvents(t *testing.T) {
 	}
 	if last["transfer_id"] != tid {
 		t.Fatalf("progress transfer_id %v, done %v", last["transfer_id"], tid)
+	}
+	// Alice writes her history after Bob is done; wait for it so the temp
+	// data dir is not removed under her.
+	for sent := false; !sent; {
+		select {
+		case ev := <-aEvents:
+			sent = ev.Type == "sent"
+		case <-time.After(10 * time.Second):
+			t.Fatal("no sent event on the sender")
+		}
 	}
 }
 
