@@ -74,3 +74,26 @@ func (w trackWriter) Write(b []byte) (int, error) {
 	w.t.add(n)
 	return n, err
 }
+
+// Tracker turns byte counts and file starts into throttled ProgressFn calls,
+// for an EntryWriter outside this package. It is used from one goroutine at
+// a time.
+type Tracker struct{ t *tracker }
+
+// NewTracker reports the progress of a transfer of total bytes in files
+// files to fn, which may be nil.
+func NewTracker(fn ProgressFn, total int64, files int) *Tracker {
+	return &Tracker{t: newTracker(fn, total, files)}
+}
+
+// File marks the start of the next file (its manifest path).
+func (t *Tracker) File(path string) { t.t.file(path) }
+
+// Writer returns w counting what is written to it.
+func (t *Tracker) Writer(w io.Writer) io.Writer { return trackWriter{w: w, t: t.t} }
+
+// Finish reports the final state unless it was just reported.
+func (t *Tracker) Finish() { t.t.finish() }
+
+// Sent is the number of bytes counted so far.
+func (t *Tracker) Sent() int64 { return t.t.p.Sent }

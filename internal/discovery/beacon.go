@@ -30,14 +30,36 @@ func (r *Registry) Run(ctx context.Context) error {
 	return conn.Close()
 }
 
-func (r *Registry) announce(ctx context.Context) {
-	bcast := &net.UDPAddr{IP: net.IPv4bcast, Port: r.beaconPort}
+// Listen records other hosts' beacons in the background until ctx is
+// cancelled, without announcing this host (Run does both). It returns an
+// error if the beacon port cannot be opened. Android listens while it looks
+// for peers and announces only while its receiver is on (see Announce).
+func (r *Registry) Listen(ctx context.Context) error {
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: r.beaconPort})
+	if err != nil {
+		return err
+	}
+	go r.listen(ctx, conn)
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
+	return nil
+}
+
+func (r *Registry) announce(ctx context.Context) { Announce(ctx, r.beaconPort, r.self) }
+
+// Announce broadcasts self on the UDP beacon port, at once and then every
+// two seconds, until ctx is cancelled. It returns at once if it cannot open
+// a socket.
+func Announce(ctx context.Context, port int, self Self) {
+	bcast := &net.UDPAddr{IP: net.IPv4bcast, Port: port}
 	out, err := net.DialUDP("udp4", nil, bcast)
 	if err != nil {
 		return
 	}
 	defer out.Close()
-	payload, _ := json.Marshal(r.self)
+	payload, _ := json.Marshal(self)
 	t := time.NewTicker(announceInterval)
 	defer t.Stop()
 	_, _ = out.Write(payload) // announce immediately

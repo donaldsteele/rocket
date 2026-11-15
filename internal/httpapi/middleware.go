@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/donaldsteele/rocket/internal/receiver"
 )
 
 // surface says who may call a route.
@@ -109,10 +111,4 @@ func hostAllowed(host string, port int) bool {
 }
 
 // remoteIP is the peer IP of r, used for per-IP limits and token binding.
-func remoteIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
+func remoteIP(r *http.Request) string { return receiver.RemoteIP(r) }

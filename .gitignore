@@ -13,3 +13,13 @@ Thumbs.db
 
 # go-winres output (scripts/build.* generate and delete it)
 /cmd/rocket/rsrc_windows_*.syso
+
+# Android: gomobile AAR (scripts/build-android.*), Gradle and build outputs
+/android/app/libs/*.aar
+/android/app/libs/*-sources.jar
+/android/.gradle/
+/android/.kotlin/
+/android/**/build/
+/android/local.properties
+*.apk
+*.aab

@@ -7,87 +7,37 @@ import (
 	"sync"
 	"time"
 
-	"github.com/donaldsteele/rocket/internal/protocol"
+	"github.com/donaldsteele/rocket/internal/receiver"
 )
 
 // offerReadTimeout bounds how long an offer body (/api/offer, /drop/offer,
 // at most protocol.MaxOfferBytes) may take to arrive, so a trickled body
-// cannot hold a connection open for ever. A variable for tests.
-var offerReadTimeout = 30 * time.Second
+// cannot hold a connection open for ever. A variable for tests, read when a
+// Server is built.
+var offerReadTimeout = receiver.DefaultOfferReadTimeout
 
 // Resource limits for the LAN surface.
 const (
-	// offerBurst and offerRefill rate-limit offers per remote IP: a burst of
-	// offerBurst, then one more every offerRefill. A real sender makes one
-	// offer per send; the limit keeps one host from spending the receiver's
-	// replay cache or flooding it with prompts.
-	offerBurst  = 30
-	offerRefill = 2 * time.Second
+	// offerBurst and offerRefill rate-limit offers per remote IP (see
+	// receiver.OfferBurst).
+	offerBurst  = receiver.OfferBurst
+	offerRefill = receiver.OfferRefill
 	// MaxConnsPerIP caps the open connections from one non-loopback address
 	// (see LimitListener).
 	MaxConnsPerIP = 32
 )
 
-// limitOfferRead gives an offer body offerReadTimeout to arrive. Call the
-// returned func once the body decoded, before waiting for the person's
-// decision: it moves the deadline past protocol.OfferWait, because an expired
-// read deadline would end the request. The deadline is never lifted, so the
-// server's drain of any unread body after the handler is bounded too. (The
-// server sets a fresh deadline for the next request on the connection.)
+// limitOfferRead gives an offer body offerReadTimeout to arrive (see
+// receiver.LimitOfferRead).
 func limitOfferRead(w http.ResponseWriter) (decoded func()) {
-	rc := http.NewResponseController(w)
-	_ = rc.SetReadDeadline(time.Now().Add(offerReadTimeout))
-	return func() { _ = rc.SetReadDeadline(time.Now().Add(protocol.OfferWait + offerReadTimeout)) }
+	return receiver.LimitOfferRead(w, offerReadTimeout)
 }
 
-// rateLimiter is a per-key token bucket.
-type rateLimiter struct {
-	burst  float64
-	refill time.Duration
-	now    func() time.Time
-
-	mu sync.Mutex
-	m  map[string]*bucket
-}
-
-type bucket struct {
-	tokens float64
-	last   time.Time
-}
+// rateLimiter is a per-key token bucket (receiver.RateLimiter).
+type rateLimiter = receiver.RateLimiter
 
 func newRateLimiter(burst int, refill time.Duration) *rateLimiter {
-	return &rateLimiter{burst: float64(burst), refill: refill, now: time.Now, m: map[string]*bucket{}}
-}
-
-// allow takes one token from key's bucket and reports whether there was one.
-func (l *rateLimiter) allow(key string) bool {
-	now := l.now()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if len(l.m) >= 4096 {
-		// Forget buckets that have refilled completely: they behave exactly
-		// like a new one.
-		for k, b := range l.m {
-			if l.fill(b, now) >= l.burst {
-				delete(l.m, k)
-			}
-		}
-	}
-	b := l.m[key]
-	if b == nil {
-		b = &bucket{tokens: l.burst, last: now}
-		l.m[key] = b
-	}
-	b.tokens, b.last = l.fill(b, now), now
-	if b.tokens < 1 {
-		return false
-	}
-	b.tokens--
-	return true
-}
-
-func (l *rateLimiter) fill(b *bucket, now time.Time) float64 {
-	return min(l.burst, b.tokens+float64(now.Sub(b.last))/float64(l.refill))
+	return receiver.NewRateLimiter(burst, refill)
 }
 
 // LimitListener wraps ln so that one remote IP holds at most perIP open

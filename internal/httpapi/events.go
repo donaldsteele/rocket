@@ -4,19 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+
+	"github.com/donaldsteele/rocket/internal/receiver"
 )
 
-// Event is a message pushed to connected browsers over SSE. Types: "offer"
-// (an IncomingOffer), "offer_gone" {transfer_id, reason: accepted, declined,
-// timed out or withdrawn}, "progress", "done", "sent", "error" {result,
-// error, dir} and "cancelled" {dir, by: local or peer, error}; each carries a
-// transfer_id. "name" is the transfer label (the first top-level file or
-// folder); "progress" adds dir, sent, total, file, file_index (1-based) and
-// files, and "done"/"sent" add files and bytes.
-type Event struct {
-	Type string `json:"type"`
-	Data any    `json:"data,omitempty"`
-}
+// Event is a message pushed to connected browsers over SSE; see
+// receiver.Event for the types and their data.
+type Event = receiver.Event
 
 // eventHub fans out events to all connected SSE clients.
 type eventHub struct {

@@ -25,9 +25,9 @@ Go modules
   github.com/vishvananda/netlink@v1.2.1-beta.2 (rocket)
   github.com/vishvananda/netns@v0.0.0-20200728191858-db3c7e526aae (rocket)
   github.com/yosida95/uritemplate/v3@v3.0.2 (rocket)
-  golang.org/x/net@v0.50.0 (rocket)
+  golang.org/x/net@v0.61.0 (rocket)
   golang.org/x/oauth2@v0.35.0 (rocket)
-  golang.org/x/sync@v0.20.0 (rocket)
+  golang.org/x/sync@v0.24.0 (rocket)
   golang.org/x/sys@v0.15.0 (rocket-tray)
   golang.org/x/sys@v0.49.0 (rocket)
   golang.org/x/time@v0.15.0 (rocket)
@@ -1331,7 +1331,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ==============================================================================
-golang.org/x/net@v0.50.0
+golang.org/x/net@v0.61.0
 ==============================================================================
 
 Copyright 2009 The Go Authors.
@@ -1397,7 +1397,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ==============================================================================
-golang.org/x/sync@v0.20.0
+golang.org/x/sync@v0.24.0
 ==============================================================================
 
 Copyright 2009 The Go Authors.

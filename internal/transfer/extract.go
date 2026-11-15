@@ -218,13 +218,32 @@ func (x *Extractor) writeFile(e protocol.Entry, dest string, unique bool, src io
 	return final, nil
 }
 
+// EntryWriter stores the entries of one accepted manifest, in manifest
+// order. *Extractor is the one that writes to a folder on disk; a receiver
+// that stores files elsewhere (Android's MediaStore) supplies its own.
+type EntryWriter interface {
+	// Write stores entry i, which must be the next entry of the manifest.
+	// For a file it reads exactly the entry's size from src, which must then
+	// be at EOF; for a folder it does not read src.
+	Write(i int, src io.Reader) error
+	// Finish checks that every entry was written and returns what was
+	// created.
+	Finish() (Result, error)
+	// Abort removes everything written so far.
+	Abort()
+}
+
 // ReceiveTar extracts a kind:multi body: a tar archive whose entries must
 // match m exactly, in order (same names, folder or regular-file type, same
 // sizes, same count). Any other entry type, a mismatch, a short body or an
 // extra entry aborts the receive and removes everything written. m must
 // already be validated.
 func ReceiveTar(dir string, m protocol.Manifest, src io.Reader, progress ProgressFn) (Result, error) {
-	x := NewExtractor(dir, m, progress)
+	return ExtractTar(NewExtractor(dir, m, progress), m, src)
+}
+
+// ExtractTar is ReceiveTar writing through x, which was prepared for m.
+func ExtractTar(x EntryWriter, m protocol.Manifest, src io.Reader) (Result, error) {
 	fail := func(err error) (Result, error) {
 		x.Abort()
 		return Result{}, err

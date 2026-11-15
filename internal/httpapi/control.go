@@ -40,13 +40,7 @@ func (s *Server) handlePeers(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleIncoming(w http.ResponseWriter, _ *http.Request) {
-	s.mu.Lock()
-	out := make([]IncomingOffer, 0, len(s.pending))
-	for _, p := range s.pending {
-		out = append(out, p.view)
-	}
-	s.mu.Unlock()
-	writeJSON(w, out)
+	writeJSON(w, s.rx.PendingOffers())
 }
 
 // --- control endpoints (loopback + CSRF header) ---
@@ -62,15 +56,10 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	s.mu.Lock()
-	po := s.pending[body.ID]
-	delete(s.pending, body.ID)
-	s.mu.Unlock()
-	if po == nil {
+	if !s.rx.Answer(body.ID, body.Accept, body.Trust) {
 		http.Error(w, "unknown offer", http.StatusNotFound)
 		return
 	}
-	po.reply <- decision{accept: body.Accept, trust: body.Trust}
 	writeJSON(w, map[string]bool{"ok": true})
 }
 

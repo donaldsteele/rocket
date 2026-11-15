@@ -2,8 +2,9 @@
 
 This is the wire protocol rocket hosts use to find each other and send files.
 The code that implements it is `internal/protocol` (types, signing bytes,
-checks, manifest rules), `internal/transfer` (sending and receiving) and
-`internal/httpapi` (the HTTP handlers). Where this page and the code disagree,
+checks, manifest rules), `internal/transfer` (sending and receiving),
+`internal/receiver` (the peer-facing receive handlers, shared by desktop and
+Android) and `internal/httpapi` (the desktop HTTP server). Where this page and the code disagree,
 the code is right and this page has a bug.
 
 Everything runs on one TCP port (default **29005**) plus discovery on UDP
@@ -50,7 +51,7 @@ clashes with the computer's own `.local` name) and TXT records:
 |---------|-----------------------------|
 | `fp`    | fingerprint                 |
 | `ver`   | rocket version              |
-| `os`    | `windows`, `darwin`, `linux` |
+| `os`    | `windows`, `darwin`, `linux`, `android` |
 | `proto` | `1`                         |
 
 Hosts browse the same type and merge results by `fp`. IPv4 addresses are

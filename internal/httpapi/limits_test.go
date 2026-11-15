@@ -61,22 +61,6 @@ func TestOfferRateLimitedPerIP(t *testing.T) {
 	}
 }
 
-func TestRateLimiterRefills(t *testing.T) {
-	now := time.Unix(1000, 0)
-	l := newRateLimiter(2, time.Second)
-	l.now = func() time.Time { return now }
-	if !l.allow("a") || !l.allow("a") || l.allow("a") {
-		t.Fatal("burst of 2 not enforced")
-	}
-	if !l.allow("b") {
-		t.Fatal("another IP was limited")
-	}
-	now = now.Add(time.Second)
-	if !l.allow("a") || l.allow("a") {
-		t.Fatal("one token per refill interval expected")
-	}
-}
-
 // TestUntrustedOfferRefusedBeforeSpendingNonce: while the pending limits are
 // reached, an untrusted sender's offer is refused before its nonce is
 // recorded, so throwaway keys cannot churn the replay cache that way.

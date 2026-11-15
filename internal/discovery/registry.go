@@ -120,6 +120,10 @@ func (r *Registry) Observe(via string, p Peer) {
 	byVia[via] = sighting{peer: p, seen: now}
 }
 
+// Forget drops source via's sighting of the peer with fingerprint fp, as
+// when Android's NsdManager reports a service lost.
+func (r *Registry) Forget(via, fp string) { r.forget(via, fp) }
+
 // forget drops source via's sighting of the peer with fingerprint fp (an mDNS
 // goodbye, for example). Other sources' sightings are kept.
 func (r *Registry) forget(via, fp string) {

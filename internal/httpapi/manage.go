@@ -42,15 +42,10 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true})
 		return
 	}
-	s.mu.Lock()
-	po := s.pending[body.TransferID]
-	delete(s.pending, body.TransferID)
-	s.mu.Unlock()
-	if po == nil {
+	if !s.rx.Answer(body.TransferID, false, false) {
 		http.Error(w, "no such transfer", http.StatusNotFound)
 		return
 	}
-	po.reply <- decision{accept: false}
 	writeJSON(w, map[string]any{"ok": true, "declined": true})
 }
 

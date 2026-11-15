@@ -298,3 +298,50 @@ func BrowserManifest(files []BrowserFile, folders bool) (protocol.Manifest, erro
 	}
 	return m, nil
 }
+
+// RelItem is one item to send named by a relative path, as a phone's file
+// picker lists a picked folder ("photos/2024/a.jpg"). Dir marks a folder,
+// which may be empty; a file's folders need not be listed.
+type RelItem struct {
+	Path string
+	Size int64
+	Dir  bool
+}
+
+// RelManifest builds a validated manifest from relative items: folders on
+// the way are created once and shared, names are sanitized and made unique
+// (see BrowserManifest), and empty, "." and ".." segments are dropped. One
+// bare file gives kind:file, anything else kind:multi. index[k] is the
+// position in items of the file behind manifest entry k, or -1 for a folder.
+func RelManifest(items []RelItem) (m protocol.Manifest, index []int, err error) {
+	if len(items) == 0 {
+		return protocol.Manifest{}, nil, fmt.Errorf("nothing to send")
+	}
+	if len(items) > protocol.MaxEntries {
+		return protocol.Manifest{}, nil, fmt.Errorf("too many files: at most %d per send", protocol.MaxEntries)
+	}
+	b := newBuilder()
+	for k, it := range items {
+		if it.Dir {
+			parent := ""
+			for _, s := range splitRel(it.Path) {
+				if parent, err = b.ensureDir(parent, s); err != nil {
+					return protocol.Manifest{}, nil, err
+				}
+			}
+		} else if _, err = b.addRelFile(it.Path, it.Size); err != nil {
+			return protocol.Manifest{}, nil, err
+		}
+		for len(index) < len(b.entries) {
+			index = append(index, -1)
+		}
+		if !it.Dir {
+			index[len(index)-1] = k
+		}
+	}
+	m = b.manifest()
+	if err := m.Validate(); err != nil {
+		return protocol.Manifest{}, nil, err
+	}
+	return m, index, nil
+}
