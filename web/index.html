@@ -13,7 +13,7 @@
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
-<div class="shell" :class="{navopen: navOpen}" x-data="app()" x-init="init()" @keydown.escape.window="navOpen && closeNav()">
+<div class="shell" :class="{navopen: navOpen}" x-data="app()" @keydown.escape.window="navOpen && closeNav()">
   <aside class="sidebar" id="sidebar">
     <div class="brand mono" aria-hidden="true"><img src="favicon.png" alt=""><span>rocket</span></div>
     <nav aria-label="Main">
