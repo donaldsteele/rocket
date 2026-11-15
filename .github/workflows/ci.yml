@@ -9,17 +9,20 @@ permissions:
 
 jobs:
   go:
-    name: go (${{ matrix.os }})
+    name: go ${{ matrix.go }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        # 1.26.x builds the releases (go.mod stays at go 1.26.0); 1.27.x
+        # makes sure the code and its tests hold on the newer toolchain too.
+        go: ['1.26.x', '1.27.x']
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.26.x'
+          go-version: ${{ matrix.go }}
           cache: true
           cache-dependency-path: |
             go.sum
@@ -77,17 +80,19 @@ jobs:
         working-directory: tray
         run: go build -o "$RUNNER_TEMP/rocket-tray" .
 
+      # Release zips are built with the release toolchain only.
       - name: release build (bash, 6 zips)
-        if: matrix.os != 'windows-latest'
+        if: matrix.go == '1.26.x' && matrix.os != 'windows-latest'
         shell: bash
         run: VERSION=ci-${GITHUB_SHA::7} bash scripts/build.sh
 
       - name: release build (PowerShell, 6 zips)
-        if: matrix.os == 'windows-latest'
+        if: matrix.go == '1.26.x' && matrix.os == 'windows-latest'
         shell: pwsh
         run: ./scripts/build.ps1 -Version "ci-$($env:GITHUB_SHA.Substring(0,7))"
 
       - name: check release zips
+        if: matrix.go == '1.26.x'
         shell: bash
         run: |
           ls -l dist
@@ -96,7 +101,7 @@ jobs:
           cd dist && if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi
 
       - name: upload release zips
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.go == '1.26.x' && matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v7
         with:
           name: rocket-dist

@@ -48,7 +48,8 @@ type Manager struct {
 
 type managed struct {
 	info      Info
-	cancel    func()
+	cancel    context.CancelFunc
+	abort     func() // nil, or what Cancel also calls (see Start)
 	cancelled bool
 }
 
@@ -56,10 +57,14 @@ type managed struct {
 func NewManager() *Manager { return &Manager{m: map[string]*managed{}} }
 
 // Start registers a transfer and returns a context, derived from parent,
-// that Cancel(info.ID) cancels. abort, if not nil, is also called on Cancel:
-// a receiver uses it to unblock a pending body read. Started and State are
-// filled when empty. Call Finish when the transfer ends, whatever the
-// outcome.
+// that Cancel(info.ID) cancels. abort, if not nil, is also called on Cancel,
+// and only then: a receiver uses it to unblock a pending body read by
+// setting a past read deadline on the connection. Finish must not do that:
+// after a body has been read to its end the server keeps a background read
+// on the connection, and a past deadline makes that read fail, which
+// cancels the connection's context and with it every later request the
+// client sends on that keep-alive connection. Started and State are filled
+// when empty. Call Finish when the transfer ends, whatever the outcome.
 func (mg *Manager) Start(parent context.Context, info Info, abort func()) context.Context {
 	ctx, cancel := context.WithCancel(parent)
 	if info.Started.IsZero() {
@@ -68,12 +73,8 @@ func (mg *Manager) Start(parent context.Context, info Info, abort func()) contex
 	if info.State == "" {
 		info.State = StateActive
 	}
-	stop := cancel
-	if abort != nil {
-		stop = func() { cancel(); abort() }
-	}
 	mg.mu.Lock()
-	mg.m[info.ID] = &managed{info: info, cancel: stop}
+	mg.m[info.ID] = &managed{info: info, cancel: cancel, abort: abort}
 	mg.mu.Unlock()
 	return ctx
 }
@@ -104,6 +105,9 @@ func (mg *Manager) Cancel(id string) bool {
 		return false
 	}
 	t.cancel()
+	if t.abort != nil {
+		t.abort()
+	}
 	return true
 }
 
@@ -115,8 +119,8 @@ func (mg *Manager) Cancelled(id string) bool {
 	return t != nil && t.cancelled
 }
 
-// Finish removes a transfer, releases its context and returns its last view
-// and whether it was cancelled here.
+// Finish removes a transfer, releases its context (without calling abort)
+// and returns its last view and whether it was cancelled here.
 func (mg *Manager) Finish(id string) (info Info, cancelled bool) {
 	mg.mu.Lock()
 	t := mg.m[id]

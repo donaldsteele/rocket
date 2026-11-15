@@ -3,7 +3,9 @@ package rocketcore
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -453,15 +455,39 @@ func keys(m map[string]string) []string {
 	return out
 }
 
-// waitEmpty waits until root holds nothing.
+// waitEmpty waits until root holds nothing. It looks at names only: reading
+// a part file the receiver is about to remove would race with the removal
+// (and on Windows, holding it open makes the removal fail).
 func waitEmpty(t *testing.T, root string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(snapshot(t, root)) == 0 {
+		if len(names(t, root)) == 0 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("left behind in %s: %v", root, keys(snapshot(t, root)))
+	t.Fatalf("left behind in %s: %v", root, names(t, root))
+}
+
+// names lists the paths under root, skipping entries that vanish while it
+// walks.
+func names(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(root, func(p string, _ fs.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) && p != root {
+			return nil
+		}
+		if err != nil || p == root {
+			return err
+		}
+		r, _ := filepath.Rel(root, p)
+		out = append(out, filepath.ToSlash(r))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

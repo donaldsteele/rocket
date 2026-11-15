@@ -361,17 +361,43 @@ func (rx *Receiver) failIncoming(w http.ResponseWriter, r *http.Request, up *Upl
 // goneDrain bounds how long answerGone keeps reading a cancelled upload.
 const goneDrain = 2 * time.Second
 
+// goneMsg is the body of the 410 answer to a cancelled upload.
+const goneMsg = "cancelled by the receiver"
+
 // answerGone tells the sender its upload was cancelled here. The 410 is
 // flushed first, then the rest of the body is read and dropped for up to
-// goneDrain. Returning with unread data would close the connection with
-// bytes still queued, and the kernel answers that with a reset; on Windows
-// the reset can destroy the 410 before the sender has read it, so the
-// sender would report a network error instead of the cancel. The sender
-// stops writing once it has the answer, which ends the drain early.
+// goneDrain, and the connection is closed. Returning with unread data would
+// close the connection with bytes still queued, and the kernel answers that
+// with a reset; on Windows the reset can destroy the 410 before the sender
+// has read it, so the sender would report a network error instead of the
+// cancel. The sender stops writing once it has the answer, which ends the
+// drain early.
+//
+// The drain reads the raw connection (hijacked): the cancel woke the body
+// read with a past read deadline, and the chunked decoder and
+// http.MaxBytesReader keep that timeout error for good, so draining through
+// r.Body would stop at once and bring the reset back. The connection is
+// never reused either: the failed read may have cancelled its context.
 func answerGone(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
+	if conn, brw, err := rc.Hijack(); err == nil {
+		defer conn.Close()
+		if conn.SetDeadline(time.Now().Add(goneDrain)) != nil {
+			return
+		}
+		fmt.Fprintf(brw, "HTTP/1.1 410 Gone\r\nContent-Type: text/plain; charset=utf-8\r\n"+
+			"X-Content-Type-Options: nosniff\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%s\n",
+			len(goneMsg)+1, goneMsg)
+		if brw.Flush() == nil {
+			_, _ = io.Copy(io.Discard, brw)
+		}
+		return
+	}
+	// Not hijackable (HTTP/2, a test recorder): answer through w and drain
+	// what r.Body still gives.
 	duplex := rc.EnableFullDuplex() == nil
-	http.Error(w, "cancelled by the receiver", http.StatusGone)
+	w.Header().Set("Connection", "close")
+	http.Error(w, goneMsg, http.StatusGone)
 	if !duplex || rc.Flush() != nil {
 		return
 	}

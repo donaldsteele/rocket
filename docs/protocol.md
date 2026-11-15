@@ -222,7 +222,11 @@ and a ` (n)` suffix still fit the 255-byte name limit. On any failure, or on can
 removed.
 
 Answers: **200** `{"ok":true}`; **400** on a size or archive mismatch; **410**
-when the receiving person cancelled; **500** on a disk error.
+when the receiving person cancelled; **500** on a disk error. The 410 may
+arrive while the sender is still writing the body; it carries
+`Connection: close`, the receiver drops the rest of the body for up to 2 s and
+then closes the connection, so the sender should stop writing once it has the
+answer.
 
 ## Browser drop (LAN guests)
 

@@ -43,6 +43,18 @@ func TestManagerLifecycle(t *testing.T) {
 	}
 }
 
+// Finish releases the context but never calls abort: a receiver's abort sets
+// a past read deadline on the connection, which on a finished transfer would
+// cancel the context of the next request on that keep-alive connection.
+func TestManagerFinishDoesNotAbort(t *testing.T) {
+	mg := NewManager()
+	aborted := false
+	ctx := mg.Start(context.Background(), Info{ID: "a"}, func() { aborted = true })
+	if _, cancelled := mg.Finish("a"); cancelled || aborted || ctx.Err() == nil {
+		t.Fatalf("finish: cancelled=%v aborted=%v ctx=%v", cancelled, aborted, ctx.Err())
+	}
+}
+
 func TestOutcome(t *testing.T) {
 	cases := map[error]history.Result{
 		nil:                                      history.ResultOK,
