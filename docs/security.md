@@ -17,6 +17,9 @@ it protects against, what it does not, and why. The wire details are in
   is sent and could change it in transit. Use rocket on networks you trust.
 - AI agents connected over MCP can list peers and send files. They can never
   accept a transfer, trust or revoke a sender, change settings or quit.
+- The Android app uses the same Go code for the protocol, listens only while
+  **Receive files** is on, and serves only the peer protocol. See
+  [Android](#android).
 
 ## What rocket listens on
 
@@ -140,6 +143,44 @@ from paths on this computer, so only connect agents you trust with your files.
 Names of peers and files come from other computers: agents should treat them
 as data, not instructions. See [mcp.md](mcp.md).
 
+## Android
+
+The Android app runs the same Go code as the desktop for everything on the
+wire (`internal/receiver`, `internal/transfer`, `internal/protocol`, through
+`mobile/rocketcore`): offer signing and checks, trust, the replay cache,
+limits, manifest and path checks. The differences:
+
+- **Listens only while you want it to.** The receiver, the beacon announce and
+  the NSD advertisement run only while **Receive files** is on in the Receive
+  tab, in a foreground service with an ongoing notification. Sending and
+  discovery work with receiving off.
+- **Only the LAN surface.** The phone serves `GET /api/hello`,
+  `POST /api/offer` and `POST /api/recv`. There is no drop page, no control
+  API and no UI over HTTP; the app itself is the UI. It listens on TCP 29005,
+  or another free port when that is taken (announced in the beacon and NSD).
+- **Offers.** Each offer raises a notification (Accept, Decline) and a sheet
+  in the app (Accept, Always accept from this device, Decline). "Always
+  accept" is only offered in the app, where the fingerprint is shown in full.
+- **Files** go to `Download/rocket` through MediaStore (Android 10 and later)
+  or the file system (Android 8 and 9, with `WRITE_EXTERNAL_STORAGE`). Paths
+  are checked and made safe in Go before the app sees them; a cancelled or
+  failed receive removes its pending entry.
+- **Identity and records.** `node.key`, trusted senders and history live in
+  the app's private storage. Backups and device-to-device transfers leave them
+  out (`allowBackup="false"`, data extraction rules), so another device cannot
+  inherit this phone's key; a reinstall or a new phone gets a new fingerprint.
+- **Plain HTTP** is allowed by the app's network security config, for the same
+  reason as on the desktop (below).
+- **Release APK.** `rocket-android.apk` is signed with the project's release
+  key, which is kept offline and never in the repository or CI (CI builds an
+  unsigned debug APK). Check the download against `SHA256SUMS`, and if you
+  like, check the signer with
+  `apksigner verify --print-certs rocket-android.apk`; the certificate SHA-256
+  digest is
+  `46:3A:4E:FF:1B:66:1D:BA:36:FB:68:8F:0E:A6:08:90:3F:17:7E:24:B8:D6:F5:59:78:26:0E:B7:89:F4:68:E4`.
+  Android refuses to install an update signed with any other key over the
+  installed app.
+
 ## Not protected: plain HTTP
 
 rocket does not encrypt traffic. Anyone who can see the packets (shared Wi-Fi
@@ -164,7 +205,8 @@ encrypt the files first.
 
 - **No resume.** An interrupted transfer starts again from the beginning.
 - **Unsigned binaries.** Release zips are not code-signed or notarized. Check
-  them against `SHA256SUMS` from the release page.
+  them against `SHA256SUMS` from the release page. (The Android APK is signed;
+  see [Android](#android).)
 - **Firewall.** rocket needs TCP 29005 and UDP 29006 (and UDP 5353 for mDNS)
   open on private networks. Do not open them on public networks.
 - **Your data folder** (`node.key`, `trusted.json`, `drop_tokens.json`,

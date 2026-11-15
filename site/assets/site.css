@@ -54,7 +54,7 @@ code{font-family:var(--mono);font-size:.88em;overflow-wrap:anywhere}
 .top nav{display:flex;gap:22px;margin-left:auto}
 .top nav a{color:var(--dim);font-size:14px;font-weight:500}
 .top nav a:hover{color:var(--fg);text-decoration:none}
-@media (max-width:860px){.top nav a:not(.persist){display:none}.top nav{gap:14px}.top .wrap{gap:14px}}
+@media (max-width:1040px){.top nav a:not(.persist){display:none}.top nav{gap:14px}.top .wrap{gap:14px}}
 @media (max-width:380px){.top .wrap{padding:0 16px}.wordmark .caret{display:none}}
 .themebtn{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;border:1px solid var(--line-strong);border-radius:999px;background:var(--panel);color:var(--dim);cursor:pointer;transition:border-color .15s,color .15s}
 .themebtn:hover{border-color:var(--accent);color:var(--fg)}
@@ -216,6 +216,13 @@ h2{margin:0 0 14px;font-size:clamp(30px,4vw,46px);line-height:1.1;letter-spacing
   .tick{padding-top:0}.tick::before{left:-28px;top:2px}
 }
 
+/* android */
+.android-band{position:relative}
+.android-band::before{content:"";position:absolute;inset:40px 0 auto;height:520px;pointer-events:none;background:radial-gradient(ellipse 45% 50% at 80% 30%,color-mix(in srgb,var(--accent) 10%,transparent),transparent 70%)}
+.android-band .wrap{position:relative}
+.android-band .phones.three{margin:0 0 72px}
+.android-band .phones-feature{margin-bottom:24px}
+
 /* phones */
 .phones{display:grid;grid-template-columns:repeat(2,minmax(0,280px));justify-content:center;gap:32px;align-items:start}
 .phones.three{grid-template-columns:repeat(3,minmax(0,260px))}
@@ -244,7 +251,7 @@ h2{margin:0 0 14px;font-size:clamp(30px,4vw,46px);line-height:1.1;letter-spacing
 @media (max-width:720px){.ports{grid-template-columns:1fr}}
 
 /* download */
-.dl{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.dl{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
 @media (max-width:900px){.dl{grid-template-columns:minmax(0,1fr)}}
 .plat{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);padding:24px;display:flex;flex-direction:column;gap:10px;min-width:0}
 .plat h3{display:flex;align-items:center;gap:10px;margin:0 0 6px;font-size:20px}

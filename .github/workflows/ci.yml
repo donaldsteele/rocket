@@ -28,7 +28,7 @@ jobs:
       - name: gofmt
         shell: bash
         run: |
-          out="$(gofmt -l cmd internal tools web tray)"
+          out="$(gofmt -l cmd internal tools web tray mobile)"
           [ -z "$out" ] || { echo "needs gofmt:"; echo "$out"; exit 1; }
 
       - name: build
@@ -103,4 +103,65 @@ jobs:
           path: |
             dist/*.zip
             dist/SHA256SUMS
+          retention-days: 7
+
+  # The Android app, debug build only. Release signing needs the keystore,
+  # which never goes into CI; the release APK is built locally by
+  # scripts/build.sh / build.ps1.
+  android:
+    name: android (debug APK)
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: '30.0.16248370'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          cache: true
+          cache-dependency-path: go.sum
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            android/gradle/libs.versions.toml
+            android/gradle/wrapper/gradle-wrapper.properties
+            android/**/*.gradle.kts
+
+      - name: Android SDK packages
+        shell: bash
+        run: |
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkmanager" --licenses > /dev/null
+          "$sdkmanager" --install "platforms;android-36" "build-tools;36.1.0" "ndk;$NDK_VERSION" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      # gomobile and gobind at the golang.org/x/mobile version pinned in go.mod.
+      - name: gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile golang.org/x/mobile/cmd/gobind
+          "$(go env GOPATH)/bin/gomobile" init
+
+      - name: Go core (rocketcore.aar)
+        run: bash scripts/build-android.sh --aar-only
+
+      - name: test, lint, assemble
+        working-directory: android
+        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
+
+      - name: upload debug APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: rocket-android-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 7
+
+      - name: upload lint report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rocket-android-lint
+          path: android/app/build/reports/
           retention-days: 7

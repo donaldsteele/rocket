@@ -32,6 +32,15 @@ from `ROCKET_KEYSTORE_PROPS`, else `~/.rocket-signing/keystore.properties`.
 Without that file the release APK is built unsigned. The keystore and its
 passwords never go into this repository or CI.
 
+For a release, `scripts/build.sh` / `scripts/build.ps1` (repository root) run
+`assembleRelease` through `scripts/build-android.*`, check the APK with
+`apksigner verify`, copy it to `dist/rocket-android.apk` (universal: arm64-v8a,
+armeabi-v7a and x86_64 in one APK) and list it in `dist/SHA256SUMS`. Without
+`ANDROID_HOME` or the properties file they warn and skip the APK; with
+`RELEASE=1` (PowerShell: `-Release`) they stop instead. CI
+(`.github/workflows/ci.yml`, job `android`) builds, tests and lints the debug
+APK only.
+
 ## Receiving
 
 The Receive tab turns the Go receiver on (`ReceiveService`, a

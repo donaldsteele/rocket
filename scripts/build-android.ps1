@@ -69,8 +69,9 @@ Invoke-Native gomobile @(
 )
 
 if ($AarOnly) { return }
-$gradlew = if ($IsWindows -or $env:OS -eq 'Windows_NT') { 'gradlew.bat' } else { './gradlew' }
-if (-not (Test-Path (Join-Path 'android' $gradlew.TrimStart('./')))) {
+# A full path: PowerShell does not run programs from the current directory by name.
+$gradlew = Join-Path (Resolve-Path 'android') $(if ($IsWindows -or $env:OS -eq 'Windows_NT') { 'gradlew.bat' } else { 'gradlew' })
+if (-not (Test-Path $gradlew -PathType Leaf)) {
     Write-Host 'android/ has no Gradle project yet; built the AAR only.'
     return
 }

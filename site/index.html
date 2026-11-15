@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>rocket · send files across your local network</title>
-<meta name="description" content="rocket sends files and folders straight from one computer to another on your local network, with a quick approval on the receiving end. One binary for Windows, macOS and Linux. No cloud, no account, no internet. Phones use a browser drop page, and Claude can send files over MCP.">
+<meta name="description" content="rocket sends files and folders straight from one computer to another on your local network, with a quick approval on the receiving end. One binary for Windows, macOS and Linux, and an Android app that sends and receives. No cloud, no account, no internet. Other phones use a browser drop page, and Claude can send files over MCP.">
 <meta name="color-scheme" content="dark light">
 <meta property="og:title" content="rocket: send files across your local network">
-<meta property="og:description" content="Files and folders straight from one computer to another on the LAN. Finds the other computers by itself, asks the receiver first, signs every offer. One binary, no cloud, no account.">
+<meta property="og:description" content="Files and folders straight from one computer or Android phone to another on the LAN. Finds the others by itself, asks the receiver first, signs every offer. One binary, no cloud, no account.">
 <meta property="og:image" content="https://donaldsteele.github.io/rocket/assets/shots/send-dark.png">
 <meta property="og:type" content="website">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
@@ -27,7 +27,8 @@
       <a href="#how">How it works</a>
       <a href="#features">Features</a>
       <a href="#tour">Tour</a>
-      <a href="#drop">Phones</a>
+      <a href="#android">Android</a>
+      <a href="#drop">Drop page</a>
       <a href="#claude">Claude</a>
       <a href="#security">Security</a>
       <a href="#download" class="persist">Download</a>
@@ -43,10 +44,10 @@
   <section class="hero" id="top">
     <div class="rings" aria-hidden="true"><span></span><span></span><span></span></div>
     <div class="wrap narrow">
-      <p class="pill"><span class="pulse" aria-hidden="true"></span> Open source · Windows, macOS &amp; Linux · one binary</p>
+      <p class="pill"><span class="pulse" aria-hidden="true"></span> Open source · Windows, macOS, Linux &amp; Android</p>
       <h1>Send files to the computer <em>across&nbsp;the&nbsp;room</em>.</h1>
       <p class="capability">Files and whole folders, straight from one computer to another on your local network. No cloud, no account, no internet.</p>
-      <p class="lede">Run rocket on each computer. It finds the others by itself, and the person receiving says yes before anything is saved. Phones and guests send from a page in their browser, and Claude can send files for you over MCP.</p>
+      <p class="lede">Run rocket on each computer. It finds the others by itself, and the person receiving says yes before anything is saved. The Android app sends and receives too, other phones and guests send from a page in their browser, and Claude can send files for you over MCP.</p>
       <div class="cta">
         <a class="button primary" href="#download"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-download"></use></svg>Download</a>
         <a class="button ghost" href="https://github.com/donaldsteele/rocket">View on GitHub<svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-external-link"></use></svg></a>
@@ -121,7 +122,7 @@
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-folder"></use></svg><h3>Files and whole folders</h3><p>Many files or a whole folder go as one transfer with one approval and per-file progress. Empty folders, unicode names and 0-byte files arrive intact.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-shield-check"></use></svg><h3>You say yes first</h3><p>The first transfer from a new sender asks you. Received files land in <code>Downloads/rocket</code>, or any folder you choose in Settings.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-fingerprint-pattern"></use></svg><h3>Signed offers</h3><p>Every offer is ed25519-signed, so another computer cannot pretend to be a sender you trust. A new name or IP address does not change who a computer is.</p></article>
-        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-smartphone"></use></svg><h3>Drop page for phones</h3><p>A phone or a guest without rocket opens the computer's address in a browser and uploads straight to it.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-smartphone"></use></svg><h3>Phones too</h3><p>The Android app sends and receives like a computer. Any other phone, or a guest without rocket, opens the computer's drop page in a browser and uploads straight to it.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-history"></use></svg><h3>History and cancel</h3><p>Either side can cancel, and partial files are removed. History keeps the last 1000 transfers and how each one ended.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-bell-dot"></use></svg><h3>Tray icon</h3><p>On Windows and Linux, <code>rocket-tray</code> shows whether rocket runs and how many peers it sees, and gets a red badge when someone is waiting for your answer.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-bot"></use></svg><h3>Claude can help</h3><p>Over MCP, Claude can list the computers on your network and send files. It can never accept a transfer: that stays with you.</p></article>
@@ -204,11 +205,61 @@
     </div>
   </section>
 
+  <section class="band android-band" id="android">
+    <div class="wrap">
+      <p class="eyebrow">Android</p>
+      <h2>rocket in your pocket.</h2>
+      <p class="sub">The Android app sends to and receives from every rocket computer and phone on the Wi-Fi, with the same signed offers and the same yes-first prompt. It runs the desktop's own protocol code, so a phone is just another peer. Android 8.0 or later.</p>
+
+      <div class="phones three">
+        <figure class="shot"><div class="window">
+          <button type="button" class="zoom" aria-label="Enlarge screenshot: the Send tab on Android">
+            <img class="t-dark" src="assets/shots/android-send-dark.png" width="720" height="1600" loading="lazy" alt="rocket on an Android phone, dark theme, Send tab: This phone: Pixel with its fingerprint, then three computers on the network, Laptop, Living-Room-PC and Studio-PC, each with Files and Folder buttons, and Send to an address below">
+            <img class="t-light" src="assets/shots/android-send-light.png" width="720" height="1600" loading="lazy" alt="The Android Send tab in the light theme with three computers on the network">
+          </button></div>
+          <figcaption><b>Send.</b> Pick a device, then files or a folder. Or share to rocket from any app.</figcaption></figure>
+        <figure class="shot"><div class="window">
+          <button type="button" class="zoom" aria-label="Enlarge screenshot: an incoming offer on Android">
+            <img class="t-dark" src="assets/shots/android-offer-dark.png" width="720" height="1600" loading="lazy" alt="An incoming offer sheet on the phone, dark theme: Laptop wants to send you 12 files (23.9 MB), the first names, its fingerprint, and the buttons Accept, Always accept from this device and Decline">
+            <img class="t-light" src="assets/shots/android-offer-light.png" width="720" height="1600" loading="lazy" alt="The incoming offer sheet on the phone in the light theme, from Living-Room-PC">
+          </button></div>
+          <figcaption><b>Accept.</b> A notification and a sheet, with the sender's fingerprint.</figcaption></figure>
+        <figure class="shot"><div class="window">
+          <button type="button" class="zoom" aria-label="Enlarge screenshot: transfers on Android">
+            <img class="t-dark" src="assets/shots/android-progress-dark.png" width="720" height="1600" loading="lazy" alt="The Android Transfers tab, dark theme: mix-final.wav from Studio-PC Receiving and VID_0412.mp4 to Laptop Sending, each with a progress bar and Cancel, and two finished sends marked Done">
+            <img class="t-light" src="assets/shots/android-progress-light.png" width="720" height="1600" loading="lazy" alt="The Android Transfers tab in the light theme">
+          </button></div>
+          <figcaption><b>Transfers.</b> Progress both ways; cancel from either end.</figcaption></figure>
+      </div>
+
+      <div class="phones-feature android-receive">
+        <div class="copy">
+          <p class="reading-label">Receive</p>
+          <h3>On when you want it, off when you don't.</h3>
+          <p>Turn on <b>Receive files</b> and the phone shows up on every computer under its own name. A notification says it is listening, offers pop up with Accept and Decline, and files land in <code>Download/rocket</code>. Turn it off and the phone stops listening.</p>
+          <p>History, the device name and your trusted senders with <b>Revoke</b> work just as on the desktop. Light and dark themes, TalkBack labels and text up to 200%.</p>
+          <ul class="readings"><li>share sheet</li><li>notifications</li><li>Download/rocket</li></ul>
+        </div>
+        <div class="phones">
+          <figure class="shot"><div class="window">
+            <button type="button" class="zoom" aria-label="Enlarge screenshot: the Receive tab on Android">
+              <img class="t-dark" src="assets/shots/android-receive-dark.png" width="720" height="1600" loading="lazy" alt="The Android Receive tab, dark theme: Receive files is on, visible as Pixel with its fingerprint, port 29005, files are saved in Download/rocket, and no offers right now">
+              <img class="t-light" src="assets/shots/android-receive-light.png" width="720" height="1600" loading="lazy" alt="The Android Receive tab in the light theme with receiving turned on"></button></div></figure>
+          <figure class="shot"><div class="window">
+            <button type="button" class="zoom" aria-label="Enlarge screenshot: history on Android">
+              <img class="t-dark" src="assets/shots/android-history-dark.png" width="720" height="1600" loading="lazy" alt="The Android History tab, dark theme: finished transfers to and from Laptop, Studio-PC and Living-Room-PC, marked Cancelled, Done or Declined, each with a size and a time">
+              <img class="t-light" src="assets/shots/android-history-light.png" width="720" height="1600" loading="lazy" alt="The Android History tab in the light theme"></button></div></figure>
+        </div>
+      </div>
+      <p class="note">Not in the Play Store: download <a href="https://github.com/donaldsteele/rocket/releases/latest/download/rocket-android.apk">rocket-android.apk</a> on the phone, allow installs from that source, and if Play Protect warns, choose More details, then Install anyway. Step by step in <a href="https://github.com/donaldsteele/rocket/blob/main/HOW-TO-OPEN.txt">HOW-TO-OPEN.txt</a>.</p>
+    </div>
+  </section>
+
   <section class="band drop-band" id="drop">
     <div class="wrap">
-      <p class="eyebrow">Phones and guests</p>
-      <h2>No app on the phone. Just a page.</h2>
-      <p class="sub">A phone, or a guest's laptop without rocket, opens the <b>drop page</b> address rocket prints, such as <code>http://192.168.1.20:29005/</code>, on the same Wi-Fi. They choose files, you accept on the computer, and the files land in your download folder.</p>
+      <p class="eyebrow">Other phones and guests</p>
+      <h2>No app? Just a page.</h2>
+      <p class="sub">An iPhone, a guest's phone or a laptop without rocket opens the <b>drop page</b> address rocket prints, such as <code>http://192.168.1.20:29005/</code>, on the same Wi-Fi. They choose files, you accept on the computer, and the files land in your download folder.</p>
 
       <ol class="timeline" aria-label="Sending from a phone, step by step">
         <li class="tick go"><span class="t">open</span><b>The address</b><span>The drop page says which computer it sends to.</span></li>
@@ -278,10 +329,11 @@
           <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-lock"></use></svg><span><b>Controls stay on this computer.</b> The full page and every control API answer only on loopback, with a Host header allowlist and an <code>X-Rocket-CSRF</code> header on every change. Other computers reach only the peer protocol and the drop page.</span></li>
           <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-folder"></use></svg><span><b>Safe on disk.</b> Paths that climb out of the download folder, symlinks, devices and Windows reserved names are refused or made safe. Files are written as <code>.rocket-part</code> and renamed when complete.</span></li>
           <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-list-checks"></use></svg><span><b>Limits.</b> An offer waits at most 2 minutes, at most 16 wait at once (4 per address), and a transfer is capped at 10,000 entries and 1 TiB.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-smartphone"></use></svg><span><b>Phones listen only when asked.</b> The Android app runs its receiver only while Receive files is on, with a notification that says so, and serves only the peer protocol: no drop page, no control API. Its key stays out of backups.</span></li>
         </ul>
       </div>
       <p class="honest warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-lock-open"></use></svg><span><b>Plain HTTP, honestly:</b> transfers are not encrypted. Someone who can watch your network can see what is sent and could change it in transit. Use rocket on networks you trust, such as home or the office, not public Wi-Fi. If you need confidentiality, encrypt the files first.</span></p>
-      <p class="honest"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-info"></use></svg><span><b>Also worth knowing:</b> an interrupted transfer starts again from the beginning, and the release binaries are not code-signed, so check them against <code>SHA256SUMS</code>. The full threat model is in <a href="https://github.com/donaldsteele/rocket/blob/main/docs/security.md">docs/security.md</a>.</span></p>
+      <p class="honest"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-info"></use></svg><span><b>Also worth knowing:</b> an interrupted transfer starts again from the beginning, and the desktop binaries are not code-signed, so check them against <code>SHA256SUMS</code>. The Android APK is signed with the project's release key, which never leaves the maintainer's machine. The full threat model is in <a href="https://github.com/donaldsteele/rocket/blob/main/docs/security.md">docs/security.md</a>.</span></p>
       <ul class="ports" aria-label="Firewall ports, private networks only">
         <li><b>TCP 29005</b>Transfers and the drop page (the page itself answers only on this computer)</li>
         <li><b>UDP 29006</b>The discovery beacon</li>
@@ -294,7 +346,7 @@
     <div class="wrap">
       <p class="eyebrow">Download</p>
       <h2>Unzip it, run it, send.</h2>
-      <p class="sub">One file per platform, no installer and no runtime to add. Put rocket on every computer you want to send between. The Windows and Linux zips include the tray app.</p>
+      <p class="sub">One file per platform, no installer and no runtime to add. Put rocket on every computer and Android phone you want to send between. The Windows and Linux zips include the tray app.</p>
       <div class="dl">
         <div class="plat">
           <h3><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-monitor"></use></svg>Windows</h3>
@@ -320,14 +372,21 @@
           </div>
           <p>Run <code>./rocket</code> (<code>chmod +x rocket rocket-tray</code> if needed). <code>./rocket recv</code> runs without a browser, for example on a Pi. With a firewall on, open TCP 29005 and UDP 29006 (and UDP 5353 for mDNS).</p>
         </div>
+        <div class="plat">
+          <h3><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-smartphone"></use></svg>Android</h3>
+          <div class="btns">
+            <a class="button primary" href="https://github.com/donaldsteele/rocket/releases/latest/download/rocket-android.apk">Android 8.0 or later <small>APK</small></a>
+          </div>
+          <p><b>Not in the Play Store.</b> Open the download on the phone, tap Settings and turn on <b>Allow from this source</b> when Android asks, then Install. If <b>Play Protect</b> warns about an unknown app, choose More details, then Install anyway. Turn on Receive files in the app to get files on the phone.</p>
+        </div>
       </div>
       <p class="sums"><a href="https://github.com/donaldsteele/rocket/releases/latest/download/SHA256SUMS"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-list-checks"></use></svg>SHA256SUMS</a><a href="https://github.com/donaldsteele/rocket/blob/main/HOW-TO-OPEN.txt"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-info"></use></svg>HOW-TO-OPEN.txt</a><a href="https://github.com/donaldsteele/rocket/releases/latest"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-external-link"></use></svg>Latest release</a></p>
       <ol class="steps">
-        <li><b>Download and check</b> the zip for each computer against <code>SHA256SUMS</code>, then unzip it.</li>
-        <li><b>Run rocket</b> on each one. Allow it on private networks; the page opens in your browser.</li>
+        <li><b>Download and check</b> the zip for each computer (or the APK for a phone) against <code>SHA256SUMS</code>, then unzip the zip or install the APK.</li>
+        <li><b>Run rocket</b> on each one. Allow it on private networks; the page opens in your browser. On a phone, open the app.</li>
         <li><b>Send.</b> Pick a computer, choose files or a folder, and accept on the other end.</li>
       </ol>
-      <p class="sub small">Ports: TCP <code>29005</code> and UDP <code>29006</code>, set with <code>--port</code> and <code>--beacon-port</code>; every computer must use the same beacon port. Received files go to <code>Downloads/rocket</code>. Build from source with Go 1.26: <code>go build ./cmd/rocket</code>. Guides: <a href="https://github.com/donaldsteele/rocket#readme">README</a>, <a href="https://github.com/donaldsteele/rocket/blob/main/docs/protocol.md">protocol</a>, <a href="https://github.com/donaldsteele/rocket/blob/main/CHANGELOG.md">changelog</a>.</p>
+      <p class="sub small">Ports: TCP <code>29005</code> and UDP <code>29006</code>, set with <code>--port</code> and <code>--beacon-port</code>; every computer must use the same beacon port. Received files go to <code>Downloads/rocket</code>. Build from source with Go 1.26: <code>go build ./cmd/rocket</code>; the Android app builds with gomobile and Gradle (<a href="https://github.com/donaldsteele/rocket/blob/main/android/README.md">android/README.md</a>). Guides: <a href="https://github.com/donaldsteele/rocket#readme">README</a>, <a href="https://github.com/donaldsteele/rocket/blob/main/docs/protocol.md">protocol</a>, <a href="https://github.com/donaldsteele/rocket/blob/main/CHANGELOG.md">changelog</a>.</p>
     </div>
   </section>
 </main>

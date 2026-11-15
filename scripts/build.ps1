@@ -2,16 +2,26 @@
 .SYNOPSIS
 Cross-compile rocket for Windows, macOS and Linux (amd64 + arm64) and the
 tray app for Windows and Linux (amd64 + arm64), zip each target with
-README.md, HOW-TO-OPEN.txt and the license files into dist/, and write
-dist/SHA256SUMS.
+README.md, HOW-TO-OPEN.txt and the license files into dist/, build the
+signed Android app as dist/rocket-android.apk, and write dist/SHA256SUMS.
+
+.DESCRIPTION
+The APK needs ANDROID_HOME (or ANDROID_SDK_ROOT), the gomobile toolchain (see
+scripts/build-android.ps1) and the release keystore properties file
+($env:ROCKET_KEYSTORE_PROPS, else ~/.rocket-signing/keystore.properties).
+Without the SDK or the keystore it is skipped with a warning; with -Release
+(or RELEASE=1) that is an error. Only Gradle reads the keystore; this script
+just checks that the properties file exists.
 
 .EXAMPLE
 pwsh scripts/build.ps1                  # version defaults to git describe
 pwsh scripts/build.ps1 -Version 1.2.0
+pwsh scripts/build.ps1 -Version 1.2.0 -Release   # the APK is required
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = $env:VERSION
+    [string]$Version = $env:VERSION,
+    [switch]$Release = ($env:RELEASE -eq '1')
 )
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
@@ -39,13 +49,61 @@ function Invoke-Native {
     if ($LASTEXITCODE -ne 0) { throw "$Exe $($Arguments -join ' ') failed (exit $LASTEXITCODE)" }
 }
 
+# The Android APK is built when the SDK and the keystore properties are there.
+# Decide up front, so -Release fails before the long desktop build.
+$AndroidSdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { $env:ANDROID_SDK_ROOT }
+$KeystoreProps = if ($env:ROCKET_KEYSTORE_PROPS) { $env:ROCKET_KEYSTORE_PROPS } else {
+    Join-Path $HOME '.rocket-signing/keystore.properties'
+}
+$ApkSkip = $null
+if (-not $AndroidSdk -or -not (Test-Path $AndroidSdk -PathType Container)) {
+    $ApkSkip = 'ANDROID_HOME is not set to an Android SDK'
+} elseif (-not (Test-Path $KeystoreProps -PathType Leaf)) {
+    $ApkSkip = 'no keystore properties file (set ROCKET_KEYSTORE_PROPS or create ~/.rocket-signing/keystore.properties)'
+}
+if ($ApkSkip -and $Release) { throw "-Release needs rocket-android.apk, but $ApkSkip" }
+
+# Build the signed release APK into $Dist/rocket-android.apk, or warn and skip
+# when the SDK or the keystore is missing.
+function Build-Apk {
+    if ($ApkSkip) {
+        Write-Warning "skipping rocket-android.apk: $ApkSkip."
+        return
+    }
+    $sdk = $AndroidSdk
+    $out = 'android/app/build/outputs/apk/release'
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $out
+    Write-Host 'building rocket-android.apk (signed release)'
+    # A child pwsh, so the SDK, NDK and PATH changes stay out of this session.
+    $pwsh = (Get-Process -Id $PID).Path
+    Invoke-Native $pwsh @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'build-android.ps1'),
+        '-GradleTasks', 'assembleRelease')
+    # Gradle names an APK it could not sign app-release-unsigned.apk.
+    $apk = Join-Path $out 'app-release.apk'
+    if (-not (Test-Path $apk -PathType Leaf)) { throw "no signed APK in $out" }
+    $bt = Get-ChildItem (Join-Path $sdk 'build-tools') -Directory -ErrorAction SilentlyContinue |
+        Sort-Object { try { [version]$_.Name } catch { [version]'0.0' } } | Select-Object -Last 1
+    $apksigner = $null
+    if ($bt) {
+        $apksigner = @('apksigner.bat', 'apksigner') | ForEach-Object { Join-Path $bt.FullName $_ } |
+            Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+    }
+    if ($apksigner) {
+        Invoke-Native $apksigner @('verify', $apk)
+    } else {
+        Write-Warning "apksigner not found under $sdk/build-tools; signature not verified."
+    }
+    Copy-Item $apk (Join-Path $Dist 'rocket-android.apk')
+    Write-Host "wrote $Dist/rocket-android.apk"
+}
+
 $stage = Join-Path ([IO.Path]::GetTempPath()) ("rocket-build-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $stage | Out-Null
 $saved = @{ CGO_ENABLED = $env:CGO_ENABLED; GOOS = $env:GOOS; GOARCH = $env:GOARCH }
 try {
     New-Item -ItemType Directory -Force -Path $Dist | Out-Null
     Get-ChildItem -Path $Dist -Filter 'rocket-*.zip' | Remove-Item -Force
-    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $Dist 'SHA256SUMS')
+    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $Dist 'SHA256SUMS'), (Join-Path $Dist 'rocket-android.apk')
 
     # The license file must list exactly the modules being shipped.
     $env:CGO_ENABLED = $null; $env:GOOS = $null; $env:GOARCH = $null
@@ -96,8 +154,13 @@ try {
         Remove-Item -Recurse -Force $pkg
     }
 
+    Build-Apk
+
     # Same format as sha256sum: "<lowercase hash>  <name>", LF line endings.
-    $sums = Get-ChildItem -Path $Dist -Filter 'rocket-*.zip' | Sort-Object Name | ForEach-Object {
+    # The zips first, then the APK when there is one (scripts/build.sh matches).
+    $sumFiles = @(Get-ChildItem -Path $Dist -Filter 'rocket-*.zip' | Sort-Object Name)
+    $sumFiles += @(Get-ChildItem -Path $Dist -Filter 'rocket-android.apk')
+    $sums = $sumFiles | ForEach-Object {
         (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant() + '  ' + $_.Name
     }
     $sumsPath = Join-Path (Resolve-Path $Dist) 'SHA256SUMS'

@@ -21,5 +21,11 @@ Thumbs.db
 /android/.kotlin/
 /android/**/build/
 /android/local.properties
+/android/.idea/
 *.apk
 *.aab
+
+# Signing material lives in ~/.rocket-signing, never here.
+*.jks
+*.keystore
+keystore.properties

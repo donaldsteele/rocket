@@ -41,9 +41,22 @@ The first release.
 - **Command line**: `rocket send <peer|host:port> <path>...`, `rocket recv`,
   and the flags `--port`, `--beacon-port`, `--data-dir`, `--download-dir`,
   `--name`, `--no-mdns` (with `ROCKET_*` environment overrides).
-- **Release zips** for Windows, macOS and Linux (amd64 and arm64) with
-  `SHA256SUMS`, third-party licenses, and an icon and version info on
-  `rocket.exe`.
+- **Android app** (`rocket-android.apk`, Android 8.0 and later), built on the
+  same Go protocol code as the desktop (`gomobile bind`):
+  - Send files or a folder to computers and phones it finds on the network
+    (UDP beacon and Android NSD), or to an address; share to rocket from any
+    app.
+  - Receive with the same signed offers and trust on first use: a
+    notification with Accept and Decline, an in-app sheet with **Always
+    accept from this device**, files saved to `Download/rocket`. Receiving
+    runs as a foreground service only while it is turned on, and the phone
+    serves only the peer protocol.
+  - Transfers with progress and cancel, history, device name, trusted senders
+    with revoke, auto-accept, light and dark themes, TalkBack labels and font
+    scaling to 200%.
+- **Release zips** for Windows, macOS and Linux (amd64 and arm64), and the
+  signed universal `rocket-android.apk`, with `SHA256SUMS`, third-party
+  licenses, and an icon and version info on `rocket.exe`.
 
 ### Security
 
@@ -63,6 +76,9 @@ The first release.
   announcing another peer's fingerprint as its name.
 - Quitting cancels transfers in flight cleanly (partials removed, history
   written).
+- The Android app keeps its key, trusted senders and history out of backups
+  and device-to-device transfers. Its release APK is signed with a key that
+  never enters the repository or CI; CI builds only a debug APK.
 - Traffic is plain HTTP; see `docs/security.md`.
 
 [1.0.0]: https://github.com/donaldsteele/rocket/releases/tag/v1.0.0

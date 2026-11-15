@@ -8,7 +8,8 @@ internet.
 It is a companion to [netdiag](https://github.com/donaldsteele/netdiag) and
 [bubbles](https://github.com/donaldsteele/bubbles) and shares their shape: one
 binary for Windows, macOS and Linux, a local browser UI in a warm theme, and an
-MCP server so an AI agent can help.
+MCP server so an AI agent can help. An Android app sends and receives with the
+same protocol.
 
 ## What it does
 
@@ -17,6 +18,9 @@ MCP server so an AI agent can help.
   choose files or a folder, send.
 - **Files and folders:** many files or a whole folder go as one transfer with
   one approval, with per-file progress. Either side can cancel.
+- **Android app:** send from the phone (or its share sheet) and receive on it,
+  with the same approval prompt and trusted senders. See
+  [Android app](#android-app).
 - **Drop page:** a phone or guest with no rocket opens the rocket address in a
   browser and uploads straight to that computer.
 - **Trust on first use:** the first transfer from a new sender asks the receiver
@@ -36,7 +40,7 @@ MCP server so an AI agent can help.
    [releases page](https://github.com/donaldsteele/rocket/releases), check it
    against `SHA256SUMS`, and unzip it.
 
-   | system                         | zip                        |
+   | system                         | download                   |
    |--------------------------------|----------------------------|
    | Windows PC (most laptops)      | `rocket-windows-amd64.zip` |
    | Windows on ARM                 | `rocket-windows-arm64.zip` |
@@ -44,9 +48,11 @@ MCP server so an AI agent can help.
    | Mac with Intel chip            | `rocket-darwin-amd64.zip`  |
    | Linux PC                       | `rocket-linux-amd64.zip`   |
    | Linux on ARM (Raspberry Pi 4/5)| `rocket-linux-arm64.zip`   |
+   | Android phone (8.0 or later)   | `rocket-android.apk`       |
 
    See `HOW-TO-OPEN.txt` for the SmartScreen (Windows) and Gatekeeper (macOS)
-   steps for unsigned programs, and for the firewall prompt.
+   steps for unsigned programs, the firewall prompt, and installing the APK on
+   Android.
 2. Run `rocket` on each computer. It prints the addresses to open and opens the
    local page in your browser.
 3. On the sending computer, the other computers appear under **Computers on
@@ -54,8 +60,52 @@ MCP server so an AI agent can help.
 4. On the receiving computer, **Accept** or **Decline** the offer. Tick
    **Always accept from this host** to skip the prompt next time.
 
-To receive from a phone, open the **drop page** address rocket prints (for
-example `http://192.168.1.20:29005/`) in the phone's browser and choose files.
+To send from a phone without the app (an iPhone, or a guest's phone), open the
+**drop page** address rocket prints (for example `http://192.168.1.20:29005/`)
+in the phone's browser and choose files.
+
+## Android app
+
+<p>
+<picture><source media="(prefers-color-scheme: light)" srcset="site/assets/shots/android-send-light.png"><img src="site/assets/shots/android-send-dark.png" width="200" alt="Send tab: three computers on the network, each with Files and Folder buttons"></picture>
+<picture><source media="(prefers-color-scheme: light)" srcset="site/assets/shots/android-offer-light.png"><img src="site/assets/shots/android-offer-dark.png" width="200" alt="Incoming offer sheet: a computer wants to send 12 files, with Accept, Always accept from this device and Decline"></picture>
+<picture><source media="(prefers-color-scheme: light)" srcset="site/assets/shots/android-progress-light.png"><img src="site/assets/shots/android-progress-dark.png" width="200" alt="Transfers tab: one file receiving and one sending, each with a progress bar and Cancel"></picture>
+<picture><source media="(prefers-color-scheme: light)" srcset="site/assets/shots/android-receive-light.png"><img src="site/assets/shots/android-receive-dark.png" width="200" alt="Receive tab: receiving is on, visible as Pixel with its fingerprint, port 29005, files saved in Download/rocket"></picture>
+</p>
+
+`rocket-android.apk` runs on Android 8.0 (API 26) and later. It is not in the
+Play Store: download the APK from the
+[releases page](https://github.com/donaldsteele/rocket/releases) on the phone,
+check it against `SHA256SUMS` if you like, and install it (`HOW-TO-OPEN.txt`
+has the steps for "install unknown apps" and the Play Protect warning).
+Updates install over the old version, because every release is signed with the
+same key.
+
+- **Send:** the **Send** tab lists rocket computers and phones on the Wi-Fi
+  (UDP beacon and Android's mDNS service discovery). Pick one, then **Files**
+  or **Folder**, or use **Send to an address**. From any other app, **Share**
+  to rocket and pick a device.
+- **Receive:** turn on **Receive files** in the **Receive** tab. The phone is
+  then visible under its device name and listens on TCP 29005 (another free
+  port if that is taken). Each offer shows a notification with Accept and
+  Decline, and a sheet in the app that adds **Always accept from this device**.
+  Files go to **Download/rocket**. Receiving runs as a foreground service with
+  an ongoing notification and stays on, also in the background, until you turn
+  it off.
+- **Transfers, History, Settings:** progress with cancel, the last 1000
+  transfers, the device name, trusted senders with revoke, and the auto-accept
+  switch, as on the desktop.
+- **Permissions:** network and Wi-Fi state, Wi-Fi multicast (to hear
+  discovery), foreground services (for long transfers and for receiving),
+  notifications (Android 13+ asks; without it offers show only in the app),
+  and storage on Android 8 and 9 only.
+- **Data:** the phone's key, trusted senders and history stay in the app's
+  private storage and are left out of backups and device-to-device transfers,
+  so a new phone gets a new identity.
+
+The phone serves only the peer protocol (`/api/hello`, `/api/offer`,
+`/api/recv`): no drop page, no control API. Traffic is plain HTTP, as on the
+desktop (see [Security](#security)).
 
 ## Command line
 
@@ -181,8 +231,9 @@ sent. Use rocket on networks you trust. The full threat model is in
 ## Status
 
 Version 1.0. Not included: encryption in transit (HTTPS), resuming an
-interrupted transfer, code signing, macOS tray binaries, and transfers over
-the internet. See [CHANGELOG.md](CHANGELOG.md).
+interrupted transfer, code signing of the desktop binaries, macOS tray
+binaries, an iPhone app, a Play Store listing, and transfers over the
+internet. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Building from source
 
@@ -196,7 +247,32 @@ go run ./tools/licenses                       # refresh THIRD_PARTY_LICENSES.txt
 ```
 
 The build script cross-compiles rocket for six targets and the tray for four,
-adds the icon and version info to `rocket.exe`, and writes `dist/SHA256SUMS`.
+adds the icon and version info to `rocket.exe`, builds the signed Android app
+as `dist/rocket-android.apk`, and writes `dist/SHA256SUMS`.
+
+The APK needs an Android SDK with platform 36, build-tools and an NDK
+(`ANDROID_HOME`, optionally `ANDROID_NDK_HOME`), JDK 17 or later, `gomobile`
+and `gobind` (`go install golang.org/x/mobile/cmd/gomobile
+golang.org/x/mobile/cmd/gobind` from this repository, then `gomobile init`),
+and the release key. Without the SDK or the key the script prints a warning
+and leaves the APK out; `RELEASE=1` (PowerShell: `-Release`) makes that an
+error. To build and test only the app (debug), see
+[android/README.md](android/README.md):
+
+```
+pwsh scripts/build-android.ps1 -AarOnly       # Go core -> android/app/libs/rocketcore.aar
+cd android && ./gradlew testDebugUnitTest lintDebug assembleDebug   # Windows: gradlew.bat
+```
+
+**Release signing key (maintainers).** `assembleRelease` reads
+`keystore.properties` (`storeFile`, `storePassword`, `keyAlias`,
+`keyPassword`) from `$ROCKET_KEYSTORE_PROPS`, else from
+`~/.rocket-signing/keystore.properties` (`%USERPROFILE%\.rocket-signing` on
+Windows). The keystore and its passwords never go into this repository, build
+logs or CI; CI builds only the debug APK. **Back up `~/.rocket-signing`**
+somewhere safe and offline: Android installs an update only when it is signed
+with the same key, so if the key is lost, users have to uninstall the app to
+get a new version.
 
 ## License
 

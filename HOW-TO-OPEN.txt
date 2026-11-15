@@ -9,6 +9,7 @@ Pick the right download
   Mac with Intel chip              rocket-darwin-amd64.zip
   Linux PC                         rocket-linux-amd64.zip
   Linux on ARM (Raspberry Pi 4/5)  rocket-linux-arm64.zip
+  Android phone (8.0 or later)     rocket-android.apk  (see ANDROID below)
 
 Not sure which Mac? Apple menu > About This Mac. "Chip: Apple M..." means
 arm64. "Processor: Intel ..." means amd64.
@@ -20,10 +21,10 @@ Check the download (optional): the release page has a SHA256SUMS file.
   Windows:  certutil -hashfile rocket-windows-amd64.zip SHA256
   Mac:      shasum -a 256 rocket-darwin-arm64.zip
   Linux:    sha256sum -c SHA256SUMS --ignore-missing
-The long number must match the line for your zip.
+The long number must match the line for your zip (or the APK).
 
-Run rocket on two or more computers on the same network to send files
-between them.
+Run rocket on two or more computers or Android phones on the same network
+to send files between them.
 
 
 WINDOWS
@@ -84,23 +85,63 @@ To run without a browser (for example on a Raspberry Pi), use:
   ./rocket recv
 
 
+ANDROID
+-------
+rocket for Android is not in the Play Store. You install the APK file
+yourself ("sideloading"). It needs Android 8.0 or later.
+
+1. On the phone, open the release page in the browser and tap
+   rocket-android.apk to download it.
+2. Open the download (tap the notification, or open Files > Downloads
+   and tap rocket-android.apk).
+3. Android says that for your security the phone is not allowed to
+   install unknown apps from this source. Tap Settings, turn on
+   "Allow from this source", then go back and tap Install.
+   (Android 8 to 14 call it "Install unknown apps"; you can turn it off
+   again afterwards in Settings > Apps > Special app access.)
+4. Google Play Protect may warn that it does not know the app, or offer
+   to scan it first. Scanning is fine: tap "Scan app", then Install. If it
+   says "Unsafe app blocked" or "Harmful app blocked", tap "More details"
+   and then "Install anyway". rocket is open source and the APK is signed
+   with the project's release key; check it against SHA256SUMS if you
+   want to be sure it is the real one.
+5. Open rocket. Allow notifications when Android 13 or later asks, so
+   incoming offers can pop up with Accept and Decline.
+
+To send, pick a computer or phone in the Send tab, then Files or Folder.
+You can also Share to rocket from the gallery or any other app.
+
+To receive, turn on "Receive files" in the Receive tab. While it is on, a
+notification shows that rocket is listening, also in the background. Turn
+it off in the same place.
+
+Files you receive are saved in Download/rocket on the phone.
+
+To update, install the new APK over the old one the same way; your
+trusted senders and history stay. Uninstalling removes them, and the
+phone gets a new fingerprint when you install again.
+
+
 WHERE DO FILES GO?
 ------------------
 Files other people send you, and files you accept, are saved to your
-Downloads/rocket folder. You can pick another folder in Settings.
+Downloads/rocket folder. You can pick another folder in Settings. On
+Android they go to Download/rocket.
 
 
-SENDING FROM A PHONE
---------------------
+SENDING FROM A PHONE WITHOUT THE APP
+------------------------------------
 rocket prints a "drop page" address such as http://192.168.1.20:29005/ .
 Open it in the phone's browser (same Wi-Fi), tap "Choose files", and
-accept the offer on the computer.
+accept the offer on the computer. This works on any phone, including an
+iPhone, and on a guest's laptop.
 
 
 IS IT SAFE?
 -----------
-rocket listens on your local network so other computers can send to it.
-The first transfer from a new computer asks you to approve it. Only
+rocket listens on your local network so other computers can send to it
+(on Android only while "Receive files" is on). The first transfer from a
+new computer or phone asks you to approve it. Only
 approve senders you recognise. Transfers are not encrypted, so use rocket
 on networks you trust (home, office), not public Wi-Fi. See the README
 and the security notes at
