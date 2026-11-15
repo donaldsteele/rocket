@@ -35,7 +35,7 @@ class Discovery(context: Context, private val node: Node, private val ownService
 
     private val _peers = MutableStateFlow<List<Peer>>(emptyList())
 
-    /** Live peers, freshest first. */
+    /** Live peers, sorted by name (a stable order while beacons arrive). */
     val peers: StateFlow<List<Peer>> = _peers.asStateFlow()
 
     private val _problem = MutableStateFlow<String?>(null)

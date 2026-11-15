@@ -31,6 +31,17 @@ type Ledger struct {
 	History *history.Store
 	// Events receives every event; nil drops them. It must not block.
 	Events func(Event)
+	// Here names this host in history messages ("cancelled on this
+	// computer"); empty means "this computer".
+	Here string
+}
+
+// here is l.Here, or "this computer" when it is not set.
+func (l *Ledger) here() string {
+	if l.Here == "" {
+		return "this computer"
+	}
+	return l.Here
 }
 
 // Publish sends ev to l.Events.
@@ -77,7 +88,7 @@ func (l *Ledger) Progress(transferID, name, dir string) transfer.ProgressFn {
 func (l *Ledger) End(id string, err error) (history.Result, error) {
 	info, here := l.Transfers.Finish(id)
 	if err != nil && here {
-		err = fmt.Errorf("%w on this computer", transfer.ErrCancelled)
+		err = fmt.Errorf("%w on %s", transfer.ErrCancelled, l.here())
 	}
 	res := transfer.Outcome(err)
 	e := history.Entry{

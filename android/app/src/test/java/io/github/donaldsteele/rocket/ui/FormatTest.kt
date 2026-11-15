@@ -18,6 +18,15 @@ class FormatTest {
     }
 
     @Test
+    fun navLabelsStopGrowingAtTheCap() {
+        assertEquals(1f, navLabelFactor(1f), 0f)
+        assertEquals(1f, navLabelFactor(0.85f), 0f)
+        assertEquals(1f, navLabelFactor(NAV_LABEL_MAX_SCALE), 0f)
+        assertEquals(NAV_LABEL_MAX_SCALE, 2f * navLabelFactor(2f), 1e-6f)
+        assertEquals(NAV_LABEL_MAX_SCALE, 1.5f * navLabelFactor(1.5f), 1e-6f)
+    }
+
+    @Test
     fun words() {
         assertEquals("photos (12 files)", countWhat("photos", 12))
         assertEquals("a.txt", countWhat("a.txt", 1))

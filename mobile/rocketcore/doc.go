@@ -28,7 +28,7 @@
 //	StopDiscovery()
 //	ObserveMDNS(name, fp, host, port, ver, os)  feed an NsdManager result in (merged by fp)
 //	ForgetMDNS(fp)
-//	PeersJSON() string                  [{name, fp, addr, os, version, via}]
+//	PeersJSON() string                  [{name, fp, addr, os, version, via}], by name
 //
 // # Sending
 //
@@ -38,6 +38,10 @@
 //	    manifest is built and checked before Send returns; the transfer runs in
 //	    the background and its events (progress, sent, error, cancelled) go to
 //	    the ProgressListener only.
+//	SendNamed(addr, fp, name, Source, ProgressListener) (transferID, error)
+//	    Send, recording name (the peer as the app showed it) in the history;
+//	    "" falls back to the discovered name, then to addr. Discovery may
+//	    have dropped the peer while the person was picking files.
 //	Cancel(transferID) bool             stop a send or receive, or decline a waiting offer
 //	TransfersJSON() string              transfers in flight
 //

@@ -41,11 +41,34 @@ taken), registers `<name>._rocket._tcp` with NSD (TXT `fp`, `ver`, `os`,
 `proto=1`) and announces on the UDP beacon. Only `GET /api/hello`,
 `POST /api/offer` and `POST /api/recv` are served. Offers show as a
 high-priority notification (Accept / Decline) and in the app (Accept /
-Always accept from this device / Decline). Files go to `Download/rocket`
+Always accept from this device / Decline); while the app is on screen the
+notification is posted silently, so it does not pop up over the sheet. Files go to `Download/rocket`
 through MediaStore on Android 10+, or through the file system with
 `WRITE_EXTERNAL_STORAGE` on Android 8 and 9. Trusted senders are listed in
 Settings, with revoke and the auto-accept switch. Receiving stays on until
 it is turned off; the choice is remembered and restored when the app opens.
+
+## Device test (emulator)
+
+Checked on an API 36 x86_64 emulator (AVD `rocket_api36`) against desktop
+rocket on the host, with SHA-256 compares of every file:
+
+- desktop -> phone: turn receiving on in the Receive tab, then
+  `adb forward tcp:29405 tcp:29005` and send to `127.0.0.1:29405` (offers
+  then show "from 127.0.0.1").
+- phone -> desktop: the host is `10.0.2.2` from the emulator. Beacon
+  broadcasts do not cross the emulator NAT; to list desktop hosts in the
+  Send tab, forward a host UDP port to the phone's beacon port
+  (`adb emu redir add udp:29450:29006`) and send each host's beacon JSON
+  (`{"name","fp","port","ver","os"}`, as in docs/protocol.md) to
+  `127.0.0.1:29450`; the phone then sees them at `10.0.2.2:<port>`.
+
+Covered: single file and folder both ways, the share sheet, decline,
+"Always accept" then auto-accept, a second `photos` saved as
+`photos (1)`, cancel on either side (partial files removed, including the
+pending MediaStore entry), the offer notification's Accept action, and
+200% font size. The site screenshots `site/assets/shots/android-*.png` come
+from this setup (720x1600 at 280 dpi, SystemUI demo mode).
 
 ## Resources
 

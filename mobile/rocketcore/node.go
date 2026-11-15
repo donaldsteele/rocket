@@ -86,7 +86,7 @@ func NewNode(dataDir, name, version string) (*Node, error) {
 		sends:      map[string]ProgressListener{},
 	}
 	n.id.Store(id)
-	n.ledger = &receiver.Ledger{Transfers: transfer.NewManager(), History: hist, Events: n.dispatch}
+	n.ledger = &receiver.Ledger{Transfers: transfer.NewManager(), History: hist, Events: n.dispatch, Here: "this device"}
 	return n, nil
 }
 

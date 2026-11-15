@@ -81,3 +81,15 @@ fun parseAddress(input: String, defaultPort: Int = 29005): String? {
     if (host.isEmpty() || port !in 1..65535) return null
     return "$host:$port"
 }
+
+/** How far the bottom bar's labels grow with the system font size. */
+const val NAV_LABEL_MAX_SCALE = 1.15f
+
+/**
+ * The factor for a bottom-bar label's font size at system font scale
+ * [fontScale]: five labels share the screen width, so past
+ * [NAV_LABEL_MAX_SCALE] they stop growing instead of breaking mid-word
+ * ("Trans-fers"). Everything else still follows the system size.
+ */
+fun navLabelFactor(fontScale: Float): Float =
+    if (fontScale > NAV_LABEL_MAX_SCALE) NAV_LABEL_MAX_SCALE / fontScale else 1f

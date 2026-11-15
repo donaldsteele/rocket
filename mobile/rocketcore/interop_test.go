@@ -148,12 +148,50 @@ func TestPhoneSendCancel(t *testing.T) {
 	if !phone.Cancel(tid) {
 		t.Fatal("Cancel did not know the send")
 	}
-	if c := ev.wait("cancelled"); c.Data["by"] != "local" || c.Data["dir"] != "out" {
+	c := ev.wait("cancelled")
+	if c.Data["by"] != "local" || c.Data["dir"] != "out" {
 		t.Fatalf("cancelled event %v", c.Data)
+	}
+	if e, _ := c.Data["error"].(string); e != "transfer cancelled on this device" {
+		t.Fatalf("cancelled error %q, want it to say this device", e)
 	}
 	waitEmpty(t, desk.cfg.DownloadDir)
 	if phone.TransfersJSON() != "[]" {
 		t.Fatalf("still in flight: %s", phone.TransfersJSON())
+	}
+}
+
+// A peer picked from the list keeps its name in the history even when
+// discovery no longer knows it by the time the send starts.
+func TestPhoneSendNamedRecordsShownName(t *testing.T) {
+	phone, desk := newPhone(t, "pixel"), newDesktop(t, "desk")
+	if err := desk.trust.Approve(phone.Fingerprint(), "pixel", phone.PublicKey()); err != nil {
+		t.Fatal(err)
+	}
+	send := func(name string) {
+		t.Helper()
+		ev := newEvents(t)
+		if _, err := phone.SendNamed(desk.addr(), desk.id.Fingerprint(), name, &testSource{t: t, items: []item{
+			{path: "n.txt", data: []byte("n")},
+		}}, ev); err != nil {
+			t.Fatal(err)
+		}
+		ev.wait("sent")
+	}
+	send(" desk\u200b ")
+	send("")
+	h, err := phone.HistoryJSON(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []struct {
+		PeerName string `json:"peer_name"`
+	}
+	if err := json.Unmarshal([]byte(h), &list); err != nil || len(list) != 2 {
+		t.Fatalf("history %s (%v)", h, err)
+	}
+	if list[0].PeerName != desk.addr() || list[1].PeerName != "desk" {
+		t.Fatalf("peer names %+v, want %q then desk", list, desk.addr())
 	}
 }
 

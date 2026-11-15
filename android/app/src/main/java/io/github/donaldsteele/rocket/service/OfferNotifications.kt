@@ -49,7 +49,13 @@ object OfferNotifications {
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
-    fun showOffer(context: Context, offer: IncomingOffer) {
+    /**
+     * Posts the offer's notification. While MainActivity is on screen it shows
+     * the offer itself (sheet or Receive tab), so the notification is posted
+     * silently: no heads-up on top of the sheet, but still in the shade if
+     * the person leaves the app before answering.
+     */
+    fun showOffer(context: Context, offer: IncomingOffer, appVisible: Boolean = MainActivity.onScreen) {
         ensureChannels(context)
         val what = offerWhat(offer)
         val size = if (offer.size > 0) " (${formatSize(offer.size)})" else ""
@@ -70,6 +76,7 @@ object OfferNotifications {
             .setTimeoutAfter(OFFER_WAIT_MS)
             .addAction(0, "Accept", answer(context, offer.id, OfferActionReceiver.ACTION_ACCEPT))
             .addAction(0, "Decline", answer(context, offer.id, OfferActionReceiver.ACTION_DECLINE))
+            .setSilent(appVisible)
         post(context, offerNotificationId(offer.id), b.build())
     }
 

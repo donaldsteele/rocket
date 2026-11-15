@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -33,8 +34,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.donaldsteele.rocket.core
 import io.github.donaldsteele.rocket.core.ReceiverState
@@ -60,11 +63,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        onScreen = true
         // Receiving was on when the system stopped the app: turn it back on.
         val c = core
         if (c.receiveWanted && c.receiver.state.value == ReceiverState.Off) {
             runCatching { c.startReceiving(this) }
         }
+    }
+
+    override fun onStop() {
+        onScreen = false
+        super.onStop()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -81,6 +90,14 @@ class MainActivity : ComponentActivity() {
         const val TAB_TRANSFERS = 2
         const val TAB_HISTORY = 3
         const val TAB_SETTINGS = 4
+
+        /**
+         * True while this activity is started, so it shows offers itself
+         * (sheet or Receive tab). Main thread writes, Go threads read.
+         */
+        @Volatile
+        var onScreen = false
+            private set
     }
 }
 
@@ -96,6 +113,20 @@ fun ComponentActivity.SystemBars(dark: Boolean) {
         enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
         onDispose { }
     }
+}
+
+/** A bottom-bar label: one line, grown at most to [NAV_LABEL_MAX_SCALE]. */
+@Composable
+private fun NavLabel(text: String) {
+    val base = MaterialTheme.typography.labelMedium.fontSize
+    val factor = navLabelFactor(LocalDensity.current.fontScale)
+    Text(
+        text,
+        fontSize = if (base.isSp) base * factor else base,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Ellipsis,
+    )
 }
 
 private data class Tab(val title: String, val icon: ImageVector)
@@ -161,7 +192,7 @@ private fun AppShell(requestedTab: Int, onTabShown: () -> Unit) {
                                 Icon(t.icon, contentDescription = null)
                             }
                         },
-                        label = { Text(t.title) },
+                        label = { NavLabel(t.title) },
                         modifier = if (badge) {
                             Modifier.semantics { contentDescription = "${t.title}, $count $badgeWhat" }
                         } else {

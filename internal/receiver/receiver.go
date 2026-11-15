@@ -268,7 +268,7 @@ func (rx *Receiver) Wait(ctx context.Context, p *Pending) (d Decision, ok, timed
 	l.Publish(Event{Type: "offer_gone", Data: map[string]any{"transfer_id": p.View.TransferID, "reason": reason}})
 	switch {
 	case ok && !d.Accept:
-		l.RecordOffer(p.View, history.ResultDeclined, "declined on this computer")
+		l.RecordOffer(p.View, history.ResultDeclined, "declined on "+l.here())
 	case timedOut:
 		l.RecordOffer(p.View, history.ResultTimeout, "no answer within "+protocol.OfferWait.String())
 	case !ok:

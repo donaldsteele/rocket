@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/donaldsteele/rocket/internal/discovery"
@@ -13,7 +15,7 @@ import (
 // PeerListener hears about discovered peers.
 type PeerListener interface {
 	// OnPeers gets the full peer list ([{name, fp, addr, os, version, via}],
-	// freshest first) whenever it changes.
+	// sorted by name) whenever it changes.
 	OnPeers(peersJSON string)
 }
 
@@ -97,7 +99,7 @@ func (n *Node) ObserveMDNS(name, fp, host string, port int, version, osName stri
 // ForgetMDNS drops the mDNS sighting of peer fp (service lost).
 func (n *Node) ForgetMDNS(fp string) { n.registry().Forget(discovery.ViaMDNS, fp) }
 
-// PeersJSON returns the live peers, freshest first.
+// PeersJSON returns the live peers, sorted by name (see peersJSON).
 func (n *Node) PeersJSON() string { return peersJSON(n.registry()) }
 
 func (n *Node) registry() *discovery.Registry {
@@ -127,8 +129,21 @@ type peerView struct {
 	Via     []string `json:"via"`
 }
 
+// peersJSON lists the live peers by name, then fingerprint. The registry
+// lists them freshest first, which reorders hosts on every beacon (each
+// announces on its own 2-second beat): on a phone the rows would keep
+// swapping under a finger about to tap Files, sending to the wrong host.
 func peersJSON(reg *discovery.Registry) string {
 	ps := reg.Peers()
+	slices.SortStableFunc(ps, func(a, b discovery.Peer) int {
+		if c := strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Fingerprint, b.Fingerprint)
+	})
 	out := make([]peerView, 0, len(ps))
 	for _, p := range ps {
 		out = append(out, peerView{Name: p.Name, FP: p.Fingerprint, Addr: p.Addr, OS: p.OS, Version: p.Version, Via: p.Via})

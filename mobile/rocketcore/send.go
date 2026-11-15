@@ -52,6 +52,14 @@ const chunkSize = 256 << 10
 // then runs the transfer in the background and returns its ID; l gets the
 // transfer's events. Cancel(id) stops it.
 func (n *Node) Send(addr, fp string, src Source, l ProgressListener) (string, error) {
+	return n.SendNamed(addr, fp, "", src, l)
+}
+
+// SendNamed is Send with the name the app shows for the peer (shown), which
+// the history records. The peer list can go stale while the person picks files
+// (discovery pauses and sightings expire), so the app passes the name it
+// showed; "" falls back to the discovered name, then to the address.
+func (n *Node) SendNamed(addr, fp, shown string, src Source, l ProgressListener) (string, error) {
 	if src == nil || l == nil {
 		return "", errors.New("nothing to send or no listener")
 	}
@@ -65,6 +73,9 @@ func (n *Node) Send(addr, fp string, src Source, l ProgressListener) (string, er
 		if target.Addr == "" {
 			target.Addr = p.Addr
 		}
+	}
+	if s := receiver.CleanLabel(shown, ""); s != "" {
+		peerName = s
 	}
 	if !transfer.IsHostPort(target.Addr) {
 		if addr == "" {

@@ -163,7 +163,9 @@ class Transfers(private val node: Node, private val opener: ItemOpener) {
             val source = GoSource(job.items, opener)
             val listener = Listener(job.target, summarize(job.items), source)
             try {
-                val tid = node.send(job.target.addr, job.target.fp, source, listener)
+                // The name shown when the peer was picked: discovery may have
+                // dropped the peer while the picker was open.
+                val tid = node.sendNamed(job.target.addr, job.target.fp, job.target.name, source, listener)
                 listener.started(tid)
             } catch (e: Exception) {
                 source.close()
