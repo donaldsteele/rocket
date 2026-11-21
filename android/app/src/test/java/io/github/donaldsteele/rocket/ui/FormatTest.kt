@@ -100,4 +100,21 @@ class FormatTest {
         val s = InterruptedSend("t", "clip.mp4", "desk", "", 1, 2048, "", 0)
         assertEquals("2.0 KB", interruptedMeta(s))
     }
+
+    @Test
+    fun pairingCountdown() {
+        assertEquals("5:00", countdownText(300))
+        assertEquals("4:32", countdownText(272))
+        assertEquals("0:07", countdownText(7))
+        assertEquals("0:00", countdownText(-3))
+        assertEquals("60:00", countdownText(3600))
+        assertEquals(300, secondsLeft(1_300_000, 1_000_000))
+        assertEquals(272, secondsLeft(1_272_000, 1_000_001))
+        assertEquals(1, secondsLeft(1_000_001, 1_000_000))
+        assertEquals(0, secondsLeft(1_000_000, 1_000_000))
+        assertEquals(0, secondsLeft(0, 1_000_000))
+        assertEquals("5 minutes", durationWords(300))
+        assertEquals("1 minute", durationWords(60))
+        assertEquals("90 seconds", durationWords(90))
+    }
 }

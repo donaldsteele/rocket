@@ -109,7 +109,23 @@
                 </li>
               </template>
             </ul>
-            <p class="empty" x-show="!peers.length">No other computers yet. Start rocket on another computer on this network; it shows up here within a few seconds.</p>
+            <p class="empty" x-show="!peers.length">No other computers yet. Start rocket on another computer on this network; it shows up here within a few seconds. For one on another network or a VPN such as Tailscale, send to its address below.</p>
+            <details class="addrsend" :open="addrOpen" @toggle="addrOpen = $el.open">
+              <summary><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-network"></use></svg>Send to an address</summary>
+              <form @submit.prevent="pickForAddr(false)">
+                <label for="addr-in">Host or IP address, and port</label>
+                <div class="addrrow">
+                  <input type="text" id="addr-in" class="mono" x-model="addr" list="addr-recent" placeholder="100.101.102.103 or home-pc:29005"
+                         autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="addr-hint" :aria-invalid="addrBad() ? 'true' : 'false'">
+                  <datalist id="addr-recent"><template x-for="a in recentAddrs" :key="a"><option :value="a"></option></template></datalist>
+                  <button type="submit" class="primary" :disabled="stopped || !parseAddr(addr)">
+                    <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-file"></use></svg>Send files</button>
+                  <button type="button" :disabled="stopped || !parseAddr(addr)" @click="pickForAddr(true)">
+                    <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-folder"></use></svg>Send folder</button>
+                </div>
+                <p class="hint" id="addr-hint" x-text="addrBad() ? 'Not a host or IP address. Add :port after a host name or IP if it is not 29005.' : 'For a computer or phone that discovery does not find: another subnet, or a VPN such as Tailscale (its 100.x address or MagicDNS name). Port 29005 if left out. The other side is not checked against a fingerprint, so make sure the address is right.'"></p>
+              </form>
+            </details>
             <input type="file" x-ref="file" class="sr" multiple tabindex="-1" aria-hidden="true" @change="onPicked('file')" @cancel="repick = null">
             <input type="file" x-ref="folder" class="sr" webkitdirectory multiple tabindex="-1" aria-hidden="true" @change="onPicked('folder')" @cancel="repick = null">
           </section>
@@ -126,6 +142,28 @@
               <input type="file" x-ref="drop" class="sr" multiple tabindex="-1" aria-hidden="true" @change="onDropPick()">
             </div>
             <p class="sub">Phones and computers without rocket can send to this one too: open this computer's address in a web browser, port <span class="mono" x-text="self.port || 29005"></span>. Uploads from a browser are not encrypted.</p>
+            <div class="pairbox" :class="{on: pair.open}" aria-live="polite">
+              <template x-if="!pair.open">
+                <div>
+                  <button type="button" :disabled="stopped" @click="setPairing(300)">
+                    <svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-fingerprint"></use></svg>Pair new devices</button>
+                  <p class="hint">For 5 minutes, rocket devices that send to this computer are trusted without asking, as if you ticked Always accept. For setting up your own devices.</p>
+                </div>
+              </template>
+              <template x-if="pair.open">
+                <div>
+                  <p class="pairnow"><svg class="ico s-warn" aria-hidden="true" focusable="false"><use href="icons.svg#i-fingerprint"></use></svg>
+                    <span>Pairing: <b class="mono" x-text="pairLeft"></b> left</span>
+                    <button type="button" @click="setPairing(0)"><svg class="ico" aria-hidden="true" focusable="false"><use href="icons.svg#i-x"></use></svg>Stop</button></p>
+                  <p class="hint">Send from each of your devices now. They are trusted without asking; anyone else on the network who sends now is trusted too.</p>
+                  <ul class="plain paired" x-show="paired.length" aria-label="Devices paired">
+                    <template x-for="p in paired" :key="p.fingerprint">
+                      <li><svg class="ico s-ok" aria-hidden="true" focusable="false"><use href="icons.svg#i-circle-check"></use></svg><span x-text="p.name"></span> <span class="mono meta" x-text="p.fingerprint"></span></li>
+                    </template>
+                  </ul>
+                </div>
+              </template>
+            </div>
           </section>
         </div>
       </section>

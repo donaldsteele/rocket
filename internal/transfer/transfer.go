@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -607,6 +608,25 @@ func writeSealed(w io.Writer, key []byte, m protocol.Manifest, start Start, open
 		return err
 	}
 	return sw.Close()
+}
+
+// Address returns the host:port to send to when s names an address rather
+// than a discovered peer: a literal host:port (numeric port), or a bare IP
+// address (IPv4, or IPv6 with or without brackets), which gets defaultPort.
+// A bare host name is not an address here, since it could be a peer name;
+// a host name needs its port.
+func Address(s string, defaultPort int) (string, bool) {
+	if IsHostPort(s) {
+		return s, true
+	}
+	ip := strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")
+	if strings.Contains(ip, "%") { // a zone (fe80::1%eth0) is not supported
+		return "", false
+	}
+	if net.ParseIP(ip) == nil || defaultPort <= 0 || defaultPort > 65535 {
+		return "", false
+	}
+	return net.JoinHostPort(ip, strconv.Itoa(defaultPort)), true
 }
 
 // IsHostPort reports whether s is a literal host:port (numeric port), as

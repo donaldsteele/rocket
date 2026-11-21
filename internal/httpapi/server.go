@@ -65,7 +65,10 @@ type Server struct {
 	mu       sync.Mutex
 	dlDir    string // live download folder (flag/env/settings at start, PUT /api/settings after)
 	quitOnce sync.Once
-	quit     chan struct{}
+	// pairing is the window in which new senders are accepted and trusted
+	// (POST /api/pair, rocket pair, --pair).
+	pairing *receiver.Pairing
+	quit    chan struct{}
 }
 
 // IncomingOffer is what the UI sees of an offer waiting for a decision (the
@@ -117,6 +120,7 @@ func New(cfg *config.Config, id *node.Identity, trust *peers.Store, reg *discove
 		quit:     make(chan struct{}),
 		relays:   map[string]*relaySession{},
 	}
+	s.pairing = &receiver.Pairing{OnChange: func(time.Time, bool) { s.hub.publish(Event{Type: "pairing", Data: s.pairing.State()}) }}
 	s.ledger = &receiver.Ledger{Transfers: s.xfers, History: hist, Events: s.hub.publish}
 	sink := receiver.FSSink{Dir: s.downloadDir}
 	if s.kept, err = receiver.OpenKept(cfg.DataDir, sink); err != nil {
@@ -138,10 +142,14 @@ func New(cfg *config.Config, id *node.Identity, trust *peers.Store, reg *discove
 		AllowOffer:       func(ip string) bool { return s.offers.Allow(ip) },
 		OfferReadTimeout: offerReadTimeout,
 		Kept:             s.kept,
+		Pairing:          s.pairing,
 	})
 	s.sweep() // what expired while rocket was not running
 	return s, nil
 }
+
+// Pairing is the window in which new senders are accepted and trusted.
+func (s *Server) Pairing() *receiver.Pairing { return s.pairing }
 
 // Quit returns a channel closed when the UI requests shutdown.
 func (s *Server) Quit() <-chan struct{} { return s.quit }
@@ -204,6 +212,8 @@ func (s *Server) routes() []route {
 		{"PUT /api/settings", surfaceLocal, s.handlePutSettings},
 		{"GET /api/trusted", surfaceLocal, s.handleTrusted},
 		{"POST /api/trusted/revoke", surfaceLocal, s.handleRevoke},
+		{"GET /api/pair", surfaceLocal, s.handleGetPair},
+		{"POST /api/pair", surfaceLocal, s.handlePair},
 		{"POST /api/quit", surfaceLocal, s.handleQuit},
 
 		// Static files: full UI on loopback, drop page elsewhere.

@@ -17,6 +17,10 @@ type View struct {
 	CanOpen  bool   // Open rocket
 	CanStart bool   // Start rocket
 	CanQuit  bool   // Quit rocket
+	// Pair is the pairing item: "Pair new devices (5 min)" or "Stop pairing
+	// (4:59 left)"; empty hides it (rocket not running, or too old to pair).
+	Pair     string
+	PairOpen bool // the window is open, so clicking Pair closes it
 }
 
 // viewFor maps a poll result to the menu. starting is true while a rocket the
@@ -49,6 +53,7 @@ func viewFor(st Status, starting bool, startErr string) View {
 			v.Tooltip = "rocket: " + v.Offers + " waiting"
 			v.Pending = true
 		}
+		v.Pair, v.PairOpen = pairLabel(st.Pair)
 		return v
 	}
 	if starting {
@@ -59,6 +64,22 @@ func viewFor(st Status, starting bool, startErr string) View {
 		v.Status = "Not running (" + startErr + ")"
 	}
 	return v
+}
+
+// pairLabel is the pairing item's title and whether the window is open. The
+// countdown moves on every poll (pollEvery), so it steps by a couple of
+// seconds; rocket rounds the seconds left up.
+func pairLabel(p PairState) (string, bool) {
+	switch {
+	case !p.Supported:
+		return "", false
+	case !p.Open:
+		return fmt.Sprintf("Pair new devices (%d min)", pairSeconds/60), false
+	case p.Seconds <= 0:
+		return "Stop pairing", true
+	default:
+		return fmt.Sprintf("Stop pairing (%d:%02d left)", p.Seconds/60, p.Seconds%60), true
+	}
 }
 
 func plural(n int, one, many string) string {

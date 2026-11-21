@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -142,6 +144,147 @@ func TestQuitReportsRefusal(t *testing.T) {
 	}
 }
 
+// fakePairRocket serves the reads Status needs plus GET and POST /api/pair,
+// checking the POST the way rocket's guard does and recording the seconds
+// each POST asked for.
+func fakePairRocket(t *testing.T) (*httptest.Server, func() []int) {
+	t.Helper()
+	var (
+		mu    sync.Mutex
+		left  int
+		posts []int
+	)
+	state := func(w http.ResponseWriter) {
+		if left > 0 {
+			fmt.Fprintf(w, `{"open":true,"until":"2026-11-21T12:05:00Z","seconds":%d}`, left)
+		} else {
+			fmt.Fprint(w, `{"open":false,"seconds":0}`)
+		}
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/self", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"name":"desk","fingerprint":"0123456789abcdef","version":"1.2.0"}`)
+	})
+	mux.HandleFunc("GET /api/peers", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "[]") })
+	mux.HandleFunc("GET /api/incoming", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "[]") })
+	mux.HandleFunc("GET /api/pair", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		state(w)
+	})
+	mux.HandleFunc("POST /api/pair", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Rocket-CSRF") != "1" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		var body struct {
+			Seconds *int `json:"seconds"`
+		}
+		if json.NewDecoder(r.Body).Decode(&body) != nil || body.Seconds == nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		posts = append(posts, *body.Seconds)
+		left = *body.Seconds
+		state(w)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, func() []int { mu.Lock(); defer mu.Unlock(); return append([]int(nil), posts...) }
+}
+
+func TestPairOpenAndClose(t *testing.T) {
+	srv, posts := fakePairRocket(t)
+	c := testClient(srv)
+	ctx := context.Background()
+
+	if st := c.Status(ctx); !st.Running || st.Pair != (PairState{Supported: true}) {
+		t.Fatalf("closed: status = %+v", st)
+	}
+	p, err := c.SetPair(ctx, pairSeconds)
+	if err != nil || p != (PairState{Supported: true, Open: true, Seconds: 300}) {
+		t.Fatalf("SetPair(300) = %+v, %v", p, err)
+	}
+	if st := c.Status(ctx); st.Pair != (PairState{Supported: true, Open: true, Seconds: 300}) {
+		t.Fatalf("open: status = %+v", st)
+	}
+	if p, err := c.SetPair(ctx, 0); err != nil || p != (PairState{Supported: true}) {
+		t.Fatalf("SetPair(0) = %+v, %v", p, err)
+	}
+	if got := posts(); !reflect.DeepEqual(got, []int{300, 0}) {
+		t.Fatalf("POSTed seconds = %v, want [300 0]", got)
+	}
+}
+
+// TestPairOlderRocket: a rocket without /api/pair (404, 405, or a page that
+// is not JSON) still counts as running, with pairing unsupported.
+func TestPairOlderRocket(t *testing.T) {
+	cases := map[string]http.HandlerFunc{
+		"404":  http.NotFound,
+		"405":  func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "no", http.StatusMethodNotAllowed) },
+		"html": func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "<html></html>") },
+	}
+	for name, h := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv, _ := fakeRocket(t, 1, 0)
+			mux := http.NewServeMux()
+			mux.Handle("/", srv.Config.Handler)
+			mux.HandleFunc("/api/pair", h)
+			old := httptest.NewServer(mux)
+			defer old.Close()
+			c := testClient(old)
+			st := c.Status(context.Background())
+			if !st.Running || st.Pair.Supported {
+				t.Fatalf("status = %+v, want running without pairing", st)
+			}
+			_, err := c.Pair(context.Background())
+			_, perr := c.SetPair(context.Background(), pairSeconds)
+			if name != "html" && (!errors.Is(err, errPairUnsupported) || !errors.Is(perr, errPairUnsupported)) {
+				t.Fatalf("Pair err = %v, SetPair err = %v, want errPairUnsupported", err, perr)
+			}
+		})
+	}
+}
+
+func TestPairLabel(t *testing.T) {
+	cases := []struct {
+		name     string
+		st       Status
+		wantPair string
+		wantOpen bool
+	}{
+		{name: "not running", st: Status{Err: errors.New("refused"), Pair: PairState{Supported: true, Open: true, Seconds: 60}}},
+		{name: "older rocket", st: Status{Running: true, Peers: 1}},
+		{name: "closed", st: Status{Running: true, Pair: PairState{Supported: true}}, wantPair: "Pair new devices (5 min)"},
+		{
+			name: "open with time left", st: Status{Running: true, Pair: PairState{Supported: true, Open: true, Seconds: 299}},
+			wantPair: "Stop pairing (4:59 left)", wantOpen: true,
+		},
+		{
+			name: "open, under a minute", st: Status{Running: true, Pair: PairState{Supported: true, Open: true, Seconds: 7}},
+			wantPair: "Stop pairing (0:07 left)", wantOpen: true,
+		},
+		{
+			name: "open, no time reported", st: Status{Running: true, Pair: PairState{Supported: true, Open: true}},
+			wantPair: "Stop pairing", wantOpen: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := viewFor(tc.st, false, "")
+			if v.Pair != tc.wantPair || v.PairOpen != tc.wantOpen {
+				t.Fatalf("Pair = %q, PairOpen = %v; want %q, %v", v.Pair, v.PairOpen, tc.wantPair, tc.wantOpen)
+			}
+		})
+	}
+	// Starting (not running yet) hides it too.
+	if v := viewFor(Status{Err: errors.New("refused")}, true, ""); v.Pair != "" {
+		t.Fatalf("starting: Pair = %q", v.Pair)
+	}
+}
+
 func TestViewFor(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -207,6 +350,14 @@ func TestViewFor(t *testing.T) {
 			want: View{
 				Status: "Running, 1 peer", Offers: "1 incoming offer", Activity: "1 interrupted transfer",
 				Tooltip: "rocket: 1 incoming offer waiting", Pending: true, CanOpen: true, CanQuit: true,
+			},
+		},
+		{
+			name: "pairing open",
+			st:   Status{Running: true, Peers: 1, Pair: PairState{Supported: true, Open: true, Seconds: 61}},
+			want: View{
+				Status: "Running, 1 peer", Tooltip: "rocket: running, 1 peer", CanOpen: true, CanQuit: true,
+				Pair: "Stop pairing (1:01 left)", PairOpen: true,
 			},
 		},
 		{

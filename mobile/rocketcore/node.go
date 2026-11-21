@@ -51,6 +51,7 @@ type Node struct {
 	settings *config.SettingsStore
 	ledger   *receiver.Ledger
 	outbox   *resume.Outbox // sends that gave up after their retries
+	pairing  *receiver.Pairing
 
 	mu          sync.Mutex
 	retryDelays []time.Duration // nil: transfer.RetryDelays (tests shorten them)
@@ -104,6 +105,9 @@ func NewNode(dataDir, name, version string) (*Node, error) {
 	}
 	n.id.Store(id)
 	n.ledger = &receiver.Ledger{Transfers: transfer.NewManager(), History: hist, Events: n.dispatch, Here: "this device"}
+	n.pairing = &receiver.Pairing{OnChange: func(time.Time, bool) {
+		n.dispatch(receiver.Event{Type: "pairing", Data: n.pairing.State()})
+	}}
 	return n, nil
 }
 

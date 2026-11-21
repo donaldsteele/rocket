@@ -121,4 +121,31 @@ class ReceiveTest {
         assertEquals("a".repeat(61), cut)
         assertEquals("rocket", nsdName(""))
     }
+
+    @Test
+    fun pairingParses() {
+        val now = 1_700_000_000_000L
+        val until = parseTime("2023-11-14T22:18:20Z")
+        val open = parsePairing("""{"open":true,"until":"2023-11-14T22:18:20Z","seconds":300}""", now)
+        assertTrue(open.open)
+        assertEquals(until, open.endsAt)
+        // As a "pairing" event, and without until: seconds from now.
+        assertEquals(open, parsePairing("""{"type":"pairing","data":{"open":true,"until":"2023-11-14T22:18:20Z","seconds":300}}""", now))
+        assertEquals(PairingWindow(true, now + 90_000), parsePairing("""{"open":true,"seconds":90}""", now))
+        assertEquals(PairingWindow.Closed, parsePairing("""{"open":false,"seconds":0}""", now))
+        assertEquals(PairingWindow.Closed, parsePairing("""{"type":"pairing","data":{"open":false,"seconds":0}}""", now))
+        assertEquals(PairingWindow.Closed, parsePairing("""{"type":"progress","data":{"open":true,"seconds":5}}""", now))
+        assertEquals(PairingWindow.Closed, parsePairing("""{"open":true,"until":"2023-11-14T22:13:19Z","seconds":0}""", now))
+        assertEquals(PairingWindow.Closed, parsePairing("not json", now))
+        assertTrue(isPairingEvent("""{"type":"pairing","data":{"open":false,"seconds":0}}"""))
+        assertFalse(isPairingEvent("""{"type":"paired","data":{}}"""))
+
+        val p = parsePaired("""{"type":"paired","data":{"fingerprint":"0123456789abcdef","name":"desk","addr":"192.168.1.20"}}""")!!
+        assertEquals(PairedDevice("0123456789abcdef", "desk", "192.168.1.20"), p)
+        assertEquals("Unknown device", parsePaired("""{"type":"paired","data":{"fingerprint":"ab","name":""}}""")!!.name)
+        assertNull(parsePaired("""{"type":"paired","data":{"name":"desk"}}"""))
+        assertNull(parsePaired("""{"type":"pairing","data":{"open":true}}"""))
+        // Neither is a transfer event.
+        assertNull(parseTransferEvent("""{"type":"paired","data":{"fingerprint":"ab","name":"desk"}}"""))
+    }
 }

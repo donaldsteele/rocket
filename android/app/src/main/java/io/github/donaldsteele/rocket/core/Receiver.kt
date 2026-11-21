@@ -68,6 +68,16 @@ class Receiver(
     /** Bumps when an answer pinned a sender, so the trusted list can reload. */
     val trustChanged: StateFlow<Int> = _trustChanged.asStateFlow()
 
+    private val _pairing = MutableStateFlow(PairingWindow.Closed)
+
+    /** The pairing window ([startPairing]); closed while receiving is off. */
+    val pairing: StateFlow<PairingWindow> = _pairing.asStateFlow()
+
+    private val _paired = MutableStateFlow<List<PairedDevice>>(emptyList())
+
+    /** Senders paired in the current (or last) pairing window, oldest first. */
+    val paired: StateFlow<List<PairedDevice>> = _paired.asStateFlow()
+
     /** Offers seen recently, to describe their receives (by transfer ID). */
     private val seen = object : LinkedHashMap<String, IncomingOffer>() {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, IncomingOffer>?) = size > 64
@@ -122,10 +132,12 @@ class Receiver(
         if (_state.value == ReceiverState.Off || _state.value == ReceiverState.Stopping) return
         wanted = false
         _state.value = ReceiverState.Stopping
+        pairingEnded()
         main.post { unadvertise() }
         worker.execute {
             node.stopReceiver()
             dropAllOffers()
+            pairingEnded()
             _port.value = 0
             // A start asked for meanwhile runs next and sets the state.
             if (!wanted) _state.value = ReceiverState.Off
@@ -140,10 +152,12 @@ class Receiver(
         if (_state.value != ReceiverState.On) return false
         if (_offers.value.isNotEmpty() || transfers.receiving()) return false
         _state.value = ReceiverState.Starting
+        pairingEnded()
         main.post { unadvertise() }
         worker.execute {
             node.stopReceiver()
             dropAllOffers()
+            pairingEnded()
             if (!wanted) return@execute
             try {
                 val port = node.startReceiver(Rocketcore.DefaultPort, this, sink ?: makeSink().also { sink = it }, this).toInt()
@@ -172,6 +186,36 @@ class Receiver(
         return ok
     }
 
+    /**
+     * Opens the pairing window for the default five minutes: rocket senders
+     * not yet trusted are accepted without asking and trusted from then on.
+     * Returns null, or what went wrong (receiving is off, for one).
+     */
+    fun startPairing(): String? {
+        if (_state.value != ReceiverState.On) return "Turn on Receive files first."
+        // Cleared first: a "paired" event can arrive as soon as it opens.
+        _paired.value = emptyList()
+        return try {
+            val json = node.startPairing(Rocketcore.DefaultPairingSeconds)
+            _pairing.value = parsePairing(json)
+            null
+        } catch (e: Exception) {
+            e.message ?: e.toString()
+        }
+    }
+
+    /** Closes the pairing window. */
+    fun stopPairing() {
+        node.stopPairing()
+        _pairing.value = PairingWindow.Closed
+    }
+
+    /** Forgets the pairing window: receiving stopped, which closes it. */
+    private fun pairingEnded() {
+        _pairing.value = PairingWindow.Closed
+        _paired.value = emptyList()
+    }
+
     /** Where received files go, for display. */
     val where: String get() = sink?.where ?: "${Environment.DIRECTORY_DOWNLOADS}/$DOWNLOAD_FOLDER"
 
@@ -190,6 +234,15 @@ class Receiver(
     override fun onEvent(eventJSON: String) = goCallback("receive event", Unit) { handleEvent(eventJSON) }
 
     private fun handleEvent(eventJSON: String) {
+        if (isPairingEvent(eventJSON)) {
+            _pairing.value = parsePairing(eventJSON)
+            return
+        }
+        parsePaired(eventJSON)?.let { p ->
+            _paired.update { l -> l.filterNot { it.fingerprint == p.fingerprint } + p }
+            _trustChanged.update { it + 1 }
+            return
+        }
         parseOfferGone(eventJSON)?.let { gone ->
             removeOffer(gone.transferId)
             return

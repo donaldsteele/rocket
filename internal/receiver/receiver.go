@@ -132,6 +132,10 @@ type Config struct {
 	// TokenTTL is how long an upload token stays good; 0 means
 	// protocol.TokenTTL (tests shorten it).
 	TokenTTL time.Duration
+	// Pairing, while open, accepts and trusts offers from senders not yet
+	// trusted (see Pairing); nil never pairs. Each sender paired is
+	// reported as a "paired" event {fingerprint, name, addr}.
+	Pairing *Pairing
 }
 
 // Receiver holds the receive state: offers waiting for a decision and
@@ -578,7 +582,11 @@ func (rx *Receiver) HandleOffer(w http.ResponseWriter, r *http.Request) {
 	resumable := rx.cfg.Kept != nil && mh != "" &&
 		(rx.activeFor(o.SenderPub, mh) != nil || rx.cfg.Kept.Find(o.SenderFP, o.SenderPub, mh) != nil)
 	trusted := rx.cfg.AutoAccept() && rx.cfg.Trust.IsTrusted(o.SenderFP, o.SenderPub)
-	if !resumable && !continued && !trusted {
+	// The person opened a pairing window: a sender not yet trusted is
+	// accepted and trusted (once Verify below proves its key).
+	_, pairOpen := rx.cfg.Pairing.Open()
+	pairing := pairOpen && !trusted && !resumable && !continued && !rx.cfg.Trust.IsTrusted(o.SenderFP, o.SenderPub)
+	if !resumable && !continued && !trusted && !pairing {
 		if err := rx.PendingRoom(ip); err != nil {
 			http.Error(w, err.Error(), http.StatusTooManyRequests)
 			return
@@ -644,7 +652,22 @@ func (rx *Receiver) HandleOffer(w http.ResponseWriter, r *http.Request) {
 		answer(protocol.OfferReply{Accepted: true, Resume: &p})
 		return
 	}
+	if pairing {
+		if err := rx.cfg.Trust.Approve(o.SenderFP, name, o.SenderPub); err != nil {
+			rx.cfg.Ledger.Error(tid, transfer.Label(o.Manifest), fmt.Errorf("could not save trusted sender: %w", err))
+		}
+		rx.cfg.Ledger.Publish(Event{Type: "paired", Data: map[string]any{"fingerprint": o.SenderFP, "name": name, "addr": ip}})
+		answer(protocol.OfferReply{Accepted: true})
+		return
+	}
 	if trusted || continued {
+		if trusted {
+			// A sender approved ahead of time by fingerprint alone: its
+			// key, now proven by the verified offer, is pinned.
+			if err := rx.cfg.Trust.Pin(o.SenderFP, name, o.SenderPub); err != nil {
+				rx.cfg.Ledger.Error(tid, transfer.Label(o.Manifest), fmt.Errorf("could not save trusted sender: %w", err))
+			}
+		}
 		answer(protocol.OfferReply{Accepted: true})
 		return
 	}

@@ -58,6 +58,10 @@ through MediaStore on Android 10+, or through the file system with
 `WRITE_EXTERNAL_STORAGE` on Android 8 and 9. Trusted senders are listed in
 Settings, with revoke and the auto-accept switch. Receiving stays on until
 it is turned off; the choice is remembered and restored when the app opens.
+**Pair new devices** (shown while receiving) opens a 5-minute pairing window
+(`Node.StartPairing`): offers from rocket senders not yet trusted are
+accepted without asking and trusted, each listed as it is paired; Stop, the
+countdown running out or turning receiving off closes it.
 
 ## Device test (emulator)
 

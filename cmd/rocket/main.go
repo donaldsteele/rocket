@@ -12,13 +12,16 @@ import (
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rocket [ui | send <peer|host:port> <path>... | recv | mcp | version] [flags]")
+	fmt.Fprintln(os.Stderr, "usage: rocket [ui | send <peer|host:port|ip> <path>... | recv | pair | trust | id | mcp | version] [flags]")
 	fmt.Fprintln(os.Stderr, "  ui       start the web UI (default) and announce this host")
-	fmt.Fprintln(os.Stderr, "  send     send files and folders to a peer by name, fingerprint or host:port")
+	fmt.Fprintln(os.Stderr, "  send     send files and folders to a peer by name, fingerprint, host:port or IP")
 	fmt.Fprintln(os.Stderr, "  recv     run headless: announce and accept, no browser")
+	fmt.Fprintln(os.Stderr, "  pair     open a pairing window on the running rocket: new senders are trusted (default 5m; stop, status)")
+	fmt.Fprintln(os.Stderr, "  trust    list, add or remove senders whose files arrive without asking")
+	fmt.Fprintln(os.Stderr, "  id       print this device's name, fingerprint and public key")
 	fmt.Fprintln(os.Stderr, "  mcp      serve the MCP interface for an AI agent over stdio")
 	fmt.Fprintln(os.Stderr, "  version  print the version")
-	fmt.Fprintln(os.Stderr, "flags (ui, send, recv, mcp): --port, --beacon-port, --data-dir, --download-dir, --name, --no-mdns")
+	fmt.Fprintln(os.Stderr, "flags (ui, send, recv, mcp): --port, --beacon-port, --data-dir, --download-dir, --name, --no-mdns; ui and recv also --trust and --pair")
 	fmt.Fprintln(os.Stderr, "run 'rocket <command> -h' for the flags of one command")
 }
 
@@ -35,6 +38,12 @@ func run(args []string) int {
 		return runSend(args[1:])
 	case "recv":
 		return runRecv(args[1:])
+	case "pair":
+		return runPair(args[1:])
+	case "trust":
+		return runTrust(args[1:])
+	case "id":
+		return runID(args[1:])
 	case "mcp":
 		return runMCP(args[1:])
 	case "version":

@@ -160,3 +160,20 @@ fun keptMeta(k: KeptReceive, now: Long = System.currentTimeMillis()): String =
         "${formatSize(k.done)} of ${formatSize(k.total)}",
         untilText(k.expires, now).takeIf { it.isNotEmpty() }?.let { "kept until $it" },
     ).joinToString(" · ")
+
+/** Whole seconds left until [endsAt] (epoch ms), rounded up as the core does; 0 once past. */
+fun secondsLeft(endsAt: Long, now: Long = System.currentTimeMillis()): Int =
+    if (endsAt <= now) 0 else ((endsAt - now + 999) / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+/** A countdown as m:ss: "4:32", "0:07", "60:00". */
+fun countdownText(seconds: Int): String {
+    val s = seconds.coerceAtLeast(0)
+    return String.format(Locale.ROOT, "%d:%02d", s / 60, s % 60)
+}
+
+/** "5 minutes", "1 minute" or "45 seconds", for the pairing explanation. */
+fun durationWords(seconds: Int): String = when {
+    seconds >= 60 && seconds % 60 == 0 -> (seconds / 60).let { if (it == 1) "1 minute" else "$it minutes" }
+    seconds == 1 -> "1 second"
+    else -> "$seconds seconds"
+}

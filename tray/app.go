@@ -28,7 +28,7 @@ type app struct {
 	shown         View
 	shownOnce     bool
 
-	status, offers, activity, open, start, quit, exit *systray.MenuItem
+	status, offers, activity, open, pair, start, quit, exit *systray.MenuItem
 }
 
 func newApp(client *Client, port int) *app {
@@ -53,6 +53,8 @@ func (a *app) onReady(ctx context.Context) {
 	a.activity.Hide()
 	systray.AddSeparator()
 	a.open = systray.AddMenuItem("Open rocket", "Open the rocket window in your browser")
+	a.pair = systray.AddMenuItem("", "For a few minutes, accept files from your own devices without asking and trust them from then on")
+	a.pair.Hide()
 	a.start = systray.AddMenuItem("Start rocket", "Start rocket in the background")
 	a.quit = systray.AddMenuItem("Quit rocket", "Stop rocket on this computer")
 	systray.AddSeparator()
@@ -132,6 +134,14 @@ func (a *app) apply(v View) {
 			a.activity.Show()
 		}
 	}
+	if first || v.Pair != old.Pair {
+		if v.Pair == "" {
+			a.pair.Hide()
+		} else {
+			a.pair.SetTitle(v.Pair)
+			a.pair.Show()
+		}
+	}
 	setEnabled(a.open, v.CanOpen)
 	setEnabled(a.start, v.CanStart)
 	setEnabled(a.quit, v.CanQuit)
@@ -159,6 +169,8 @@ func (a *app) handleClicks(ctx context.Context) {
 			openInBrowser(a.client.UIURL())
 		case <-a.open.ClickedCh:
 			openInBrowser(a.client.UIURL())
+		case <-a.pair.ClickedCh:
+			a.togglePair(ctx)
 		case <-a.start.ClickedCh:
 			a.startRocket()
 		case <-a.quit.ClickedCh:
@@ -171,6 +183,22 @@ func (a *app) handleClicks(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// togglePair opens the pairing window for pairSeconds, or closes it when the
+// menu showed it open. The next poll shows the result either way.
+func (a *app) togglePair(ctx context.Context) {
+	a.mu.Lock()
+	open := a.shown.PairOpen
+	a.mu.Unlock()
+	seconds := pairSeconds
+	if open {
+		seconds = 0
+	}
+	pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	_, _ = a.client.SetPair(pctx, seconds)
+	cancel()
+	a.pollSoon()
 }
 
 func (a *app) startRocket() {

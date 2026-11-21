@@ -37,6 +37,8 @@ const VIEWS = ['send', 'transfers', 'history', 'settings'];
 // PROTO is the wire protocol this UI's rocket speaks; peers that announce
 // another one show as needing an update and cannot be sent to.
 const PROTO = 2;
+// DEFAULT_PORT is rocket's HTTP port, used for a typed address without one.
+const DEFAULT_PORT = 29005;
 
 // HELD keeps the picked files (File objects) of this tab's sends by
 // transfer_id, so a send that broke can be offered again, and an
@@ -81,6 +83,14 @@ function app() {
     announce: '',
     dragOver: false,
     target: null, // peer chosen for "Send files" / "Send folder"
+    addr: '', // "Send to an address": what is typed
+    addrOpen: false,
+    recentAddrs: [], // the last addresses sent to, newest first (this browser only)
+    // Pairing window (POST /api/pair): new rocket senders are trusted without asking.
+    pair: { open: false, ends: 0 }, // ends: Date.now() ms when it closes
+    pairLeft: '',
+    paired: [], // senders paired in the current window: {name, fingerprint, addr}
+    pairTimer: null,
     stopped: false, // Quit was pressed
     offline: false, // the server stopped answering
     // Settings view
@@ -93,6 +103,10 @@ function app() {
     settingsMsg: '',
 
     init() {
+      try {
+        const saved = JSON.parse(localStorage.getItem('rocket.addrs') || '[]');
+        if (Array.isArray(saved)) this.recentAddrs = saved.filter((a) => typeof a === 'string' && this.parseAddr(a) === a).slice(0, 5);
+      } catch (e) { /* storage blocked or garbled */ }
       this.loadSelf();
       this.pollPeers();
       this.loadIncoming();
@@ -100,6 +114,7 @@ function app() {
       this.loadHistory();
       this.loadResumable();
       this.loadSettings();
+      this.loadPair();
       setInterval(() => {
         if (this.stopped) return;
         this.pollPeers();
@@ -397,6 +412,16 @@ function app() {
           this.removeOffer(d.transfer_id);
           if (d.reason !== 'accepted') this.loadHistory();
           break;
+        case 'pairing':
+          this.setPair(d);
+          this.log(d.open ? `pairing open for ${this.pairLeft}: new rocket senders are trusted without asking` : 'pairing closed');
+          break;
+        case 'paired':
+          this.paired = [...this.paired.filter((x) => x.fingerprint !== d.fingerprint), d];
+          this.log(`paired ${d.name} (${d.fingerprint}): now trusted`);
+          this.say(`Paired ${d.name}. It is now a trusted sender.`);
+          this.loadTrusted();
+          break;
         case 'offer':
           this.addOffer(d);
           this.log(`incoming offer: ${this.offerWhat(d)} from ${d.sender_name}`);
@@ -502,10 +527,48 @@ function app() {
     // so no local file path is needed. Names keep their folder-relative
     // paths, in the order the browser lists them.
     pickFor(p, folder) {
-      if (!this.peerOK(p)) return;
+      if (!p.typed && !this.peerOK(p)) return;
       this.target = p;
       this.repick = null;
       (folder ? this.$refs.folder : this.$refs.file).click();
+    },
+    // Send to a typed address, for a host discovery does not reach (another
+    // subnet, a VPN such as Tailscale). The server takes host:port as the
+    // peer; the receiver is whoever answers there.
+    pickForAddr(folder) {
+      const a = this.parseAddr(this.addr);
+      if (!a) return;
+      this.addr = a;
+      this.recentAddrs = [a, ...this.recentAddrs.filter((x) => x !== a)].slice(0, 5);
+      try { localStorage.setItem('rocket.addrs', JSON.stringify(this.recentAddrs)); } catch (e) { /* storage blocked */ }
+      this.pickFor({ name: a, fp: a, typed: true }, folder);
+    },
+    // parseAddr cleans up a typed address like the Android app does: an IPv6
+    // address gets brackets and a missing port means 29005. '' if it cannot
+    // be a host:port.
+    parseAddr(input) {
+      const s = (input || '').trim();
+      if (!s || /[\s/?#@]/.test(s)) return '';
+      let host = s;
+      let port = String(DEFAULT_PORT);
+      if (s.startsWith('[')) {
+        const end = s.indexOf(']');
+        if (end < 2) return '';
+        host = s.slice(0, end + 1);
+        const rest = s.slice(end + 1);
+        if (rest.startsWith(':')) port = rest.slice(1);
+        else if (rest) return '';
+      } else if ((s.match(/:/g) || []).length > 1) {
+        host = `[${s}]`; // a bare IPv6 address
+      } else if (s.includes(':')) {
+        [host, port] = s.split(':');
+      }
+      const n = /^\d{1,5}$/.test(port) ? Number(port) : 0;
+      if (!host || host === '[]' || n < 1 || n > 65535) return '';
+      return `${host}:${n}`;
+    },
+    addrBad() {
+      return this.addr.trim() !== '' && !this.parseAddr(this.addr);
     },
     async onPicked(ref) {
       const input = this.$refs[ref];
@@ -646,6 +709,38 @@ function app() {
       } catch (e) { this.settingsError = `Could not load settings: ${e.message || e}`; }
       this.loadTrusted();
     },
+    // ---- pairing ----
+    async loadPair() {
+      try { this.setPair(await this.get('api/pair')); } catch (e) { /* an older server, or transient */ }
+    },
+    // setPair takes a state {open, seconds} from GET/POST /api/pair or a
+    // "pairing" event and runs the countdown.
+    setPair(st) {
+      const open = !!(st && st.open && st.seconds > 0);
+      if (open && !this.pair.open) this.paired = [];
+      this.pair = { open, ends: open ? Date.now() + st.seconds * 1000 : 0 };
+      clearInterval(this.pairTimer);
+      this.pairTimer = null;
+      this.tickPair();
+      if (open) this.pairTimer = setInterval(() => this.tickPair(), 1000);
+    },
+    tickPair() {
+      if (!this.pair.open) { this.pairLeft = ''; return; }
+      const left = Math.max(0, Math.ceil((this.pair.ends - Date.now()) / 1000));
+      this.pairLeft = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+      if (left === 0) this.setPair({ open: false });
+    },
+    async setPairing(seconds) {
+      try {
+        const r = await api('api/pair', jsonBody('POST', { seconds }));
+        if (!r.ok) throw new Error(await errText(r));
+        this.setPair(await r.json());
+      } catch (e) {
+        this.log(`could not ${seconds ? 'start' : 'stop'} pairing: ${e.message || e}`);
+        this.say(`Could not ${seconds ? 'start' : 'stop'} pairing: ${e.message || e}`);
+      }
+    },
+
     async loadTrusted() {
       try {
         const list = await this.get('api/trusted');

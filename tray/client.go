@@ -51,8 +51,29 @@ type Status struct {
 	// resume. Both are 0 when rocket cannot tell (an older rocket).
 	Reconnecting int
 	Interrupted  int
-	Err          error // why Running is false
+	// Pair is rocket's pairing window (GET /api/pair).
+	Pair PairState
+	Err  error // why Running is false
 }
+
+// PairState is rocket's pairing window as the tray knows it. While it is
+// open, rocket accepts files from rocket senders it does not trust yet
+// without asking, and trusts their keys from then on.
+type PairState struct {
+	// Supported is true when rocket answered /api/pair. An older rocket
+	// (404/405) or a failed read leaves it false and the menu item hidden.
+	Supported bool
+	Open      bool
+	Seconds   int // seconds left while Open, rounded up by rocket
+}
+
+// pairSeconds is how long "Pair new devices" opens the window for; every
+// rocket UI uses the same 5 minutes.
+const pairSeconds = 300
+
+// errPairUnsupported means rocket has no /api/pair (it is older than the
+// pairing window).
+var errPairUnsupported = errors.New("this rocket has no pairing window")
 
 // proto is the wire protocol this tray's rocket speaks.
 const proto = 2
@@ -60,7 +81,8 @@ const proto = 2
 // Status reads /api/self, /api/peers and /api/incoming. Any failure, or an
 // answer that does not look like rocket, reports Running false with Err set.
 // /api/transfers and /api/resumable add the reconnecting and interrupted
-// counts; a failure there leaves them 0.
+// counts; a failure there leaves them 0. /api/pair adds the pairing window;
+// a failure there (or an older rocket without it) leaves Pair unsupported.
 func (c *Client) Status(ctx context.Context) Status {
 	var self struct {
 		Name        string `json:"name"`
@@ -112,43 +134,109 @@ func (c *Client) Status(ctx context.Context) Status {
 	if c.getJSON(ctx, "/api/resumable", &res) == nil {
 		st.Interrupted = len(res.Outgoing) + len(res.Incoming)
 	}
+	if p, err := c.Pair(ctx); err == nil {
+		st.Pair = p
+	}
 	return st
+}
+
+// pairWire is what GET and POST /api/pair answer.
+type pairWire struct {
+	Open    bool `json:"open"`
+	Seconds int  `json:"seconds"`
+}
+
+func (w pairWire) state() PairState {
+	p := PairState{Supported: true, Open: w.Open, Seconds: w.Seconds}
+	if !p.Open {
+		p.Seconds = 0
+	}
+	return p
+}
+
+// Pair reads the pairing window (GET /api/pair). An older rocket answers
+// 404 or 405 there, which is errPairUnsupported.
+func (c *Client) Pair(ctx context.Context) (PairState, error) {
+	var w pairWire
+	if err := c.getJSON(ctx, "/api/pair", &w); err != nil {
+		return PairState{}, pairErr(err)
+	}
+	return w.state(), nil
+}
+
+// SetPair opens the pairing window for seconds, or closes it when seconds
+// is 0 (POST /api/pair with the CSRF header), and returns the new state.
+func (c *Client) SetPair(ctx context.Context, seconds int) (PairState, error) {
+	var w pairWire
+	body := fmt.Sprintf(`{"seconds":%d}`, seconds)
+	if err := c.postJSON(ctx, "/api/pair", body, &w); err != nil {
+		return PairState{}, pairErr(err)
+	}
+	return w.state(), nil
+}
+
+func pairErr(err error) error {
+	var se *statusError
+	if errors.As(err, &se) && (se.Code == http.StatusNotFound || se.Code == http.StatusMethodNotAllowed) {
+		return errPairUnsupported
+	}
+	return err
 }
 
 // Quit asks rocket to shut down (POST /api/quit with the CSRF header).
 func (c *Client) Quit(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Base+"/api/quit", strings.NewReader("{}"))
-	if err != nil {
+	if err := c.postJSON(ctx, "/api/quit", "{}", nil); err != nil {
+		var se *statusError
+		if errors.As(err, &se) {
+			return fmt.Errorf("quit: %s", se.Status)
+		}
 		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(csrfHeader, "1")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody))
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("quit: %s", resp.Status)
 	}
 	return nil
 }
+
+// statusError is a non-200 answer from rocket.
+type statusError struct {
+	Path   string
+	Code   int
+	Status string
+}
+
+func (e *statusError) Error() string { return e.Path + ": " + e.Status }
 
 func (c *Client) getJSON(ctx context.Context, path string, v any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Base+path, nil)
 	if err != nil {
 		return err
 	}
+	return c.do(req, path, v)
+}
+
+// postJSON sends body to path with the CSRF header rocket requires on every
+// non-GET call, and decodes the answer into v unless v is nil.
+func (c *Client) postJSON(ctx context.Context, path, body string, v any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Base+path, strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(csrfHeader, "1")
+	return c.do(req, path, v)
+}
+
+func (c *Client) do(req *http.Request, path string, v any) error {
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK || v == nil {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody))
-		return fmt.Errorf("%s: %s", path, resp.Status)
+		if resp.StatusCode != http.StatusOK {
+			return &statusError{Path: path, Code: resp.StatusCode, Status: resp.Status}
+		}
+		return nil
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(v); err != nil {
 		return fmt.Errorf("%s: %w", path, err)

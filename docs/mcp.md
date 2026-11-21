@@ -81,7 +81,7 @@ prompt on the receiving computer.
 
 | input   | type     | meaning |
 |---------|----------|---------|
-| `peer`  | string   | full fingerprint (safest), or a name or fingerprint prefix that matches exactly one peer, from `list_peers` |
+| `peer`  | string   | full fingerprint (safest), or a name or fingerprint prefix that matches exactly one peer, from `list_peers`; or a private IP address with an optional `:port` (default 29005), for a host discovery does not reach |
 | `paths` | string[] | absolute paths of local files and folders; folders are sent recursively, symlinks skipped |
 
 ```json

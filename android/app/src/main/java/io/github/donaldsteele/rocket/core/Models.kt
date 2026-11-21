@@ -369,6 +369,58 @@ fun parseTrusted(json: String): List<TrustedSender> {
     }
 }
 
+/**
+ * The pairing window (PairingJSON, or a "pairing" event's data): while it
+ * is open, rocket senders not yet trusted are accepted without asking and
+ * trusted from then on.
+ */
+data class PairingWindow(
+    val open: Boolean,
+    /** When it closes, epoch milliseconds; 0 while closed. */
+    val endsAt: Long,
+) {
+    companion object {
+        val Closed = PairingWindow(false, 0)
+    }
+}
+
+/**
+ * Parses the pairing state {open, until, seconds}, bare or as a "pairing"
+ * event; Closed for anything else. Without a usable until, the end is
+ * seconds from now.
+ */
+fun parsePairing(json: String, now: Long = System.currentTimeMillis()): PairingWindow {
+    val o = runCatching { JSONObject(json) }.getOrNull() ?: return PairingWindow.Closed
+    val d = if (o.has("type")) {
+        if (o.optString("type") != "pairing") return PairingWindow.Closed
+        o.optJSONObject("data") ?: return PairingWindow.Closed
+    } else {
+        o
+    }
+    if (!d.optBoolean("open")) return PairingWindow.Closed
+    val until = parseTime(d.optString("until"))
+    val seconds = d.optLong("seconds")
+    val endsAt = if (until > 0) until else now + seconds * 1000
+    return if (endsAt > now) PairingWindow(true, endsAt) else PairingWindow.Closed
+}
+
+/** Whether an event is a "pairing" event (the window opened or closed). */
+fun isPairingEvent(json: String): Boolean =
+    runCatching { JSONObject(json).optString("type") == "pairing" }.getOrDefault(false)
+
+/** A sender paired (accepted and trusted) while the pairing window was open. */
+data class PairedDevice(val fingerprint: String, val name: String, val addr: String)
+
+/** Parses a "paired" event {fingerprint, name, addr}; null for any other event. */
+fun parsePaired(json: String): PairedDevice? {
+    val o = runCatching { JSONObject(json) }.getOrNull() ?: return null
+    if (o.optString("type") != "paired") return null
+    val d = o.optJSONObject("data") ?: return null
+    val fp = d.optString("fingerprint")
+    if (fp.isEmpty()) return null
+    return PairedDevice(fp, d.optString("name").ifEmpty { "Unknown device" }, d.optString("addr"))
+}
+
 /** Go's time.Time JSON (RFC 3339 with nanoseconds) to epoch ms; 0 if absent. */
 internal fun parseTime(s: String): Long {
     if (s.isEmpty() || s.startsWith("0001-01-01")) return 0

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/donaldsteele/rocket/internal/config"
 	"github.com/donaldsteele/rocket/internal/discovery"
 	"github.com/donaldsteele/rocket/internal/history"
 	"github.com/donaldsteele/rocket/internal/protocol"
@@ -22,8 +23,8 @@ import (
 )
 
 // runSend sends files and folders to a peer named on the command line, all
-// in one transfer: a host:port, or a discovered peer's name or fingerprint
-// prefix (it briefly listens for beacons and mDNS to resolve those). When
+// in one transfer: a host:port or a bare IP address (port 29005), or a
+// discovered peer's name or fingerprint prefix (it briefly listens for beacons and mDNS to resolve those). When
 // the connection breaks after the receiver accepted, it reconnects and
 // continues where it stopped (up to 5 retries, shown as they happen); a send
 // that gives up is kept for 24 hours like one from the UI, so the same
@@ -36,7 +37,7 @@ func runSend(args []string) int {
 		return 2
 	}
 	if fs.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "usage: rocket send [flags] <peer|host:port> <file|folder>...")
+		fmt.Fprintln(os.Stderr, "usage: rocket send [flags] <peer|host:port|ip> <file|folder>...")
 		return 2
 	}
 	target := fs.Arg(0)
@@ -60,8 +61,9 @@ func runSend(args []string) int {
 
 	var t transfer.Target
 	label, peerName := target, target
-	if transfer.IsHostPort(target) {
-		t = transfer.Target{Addr: target}
+	if addr, ok := transfer.Address(target, config.DefaultHTTPPort); ok {
+		t = transfer.Target{Addr: addr}
+		label, peerName = addr, addr
 	} else {
 		go func() { _ = rs.reg.Run(ctx) }()
 		defer rs.startMDNS(ctx, false, io.Discard)()

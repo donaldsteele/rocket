@@ -28,6 +28,27 @@ type runtimeState struct {
 	trust  *peers.Store
 	reg    *discovery.Registry
 	noMDNS bool
+	// pair opens the pairing window for this long once serving (--pair).
+	pair time.Duration
+}
+
+// printPairing prints the pairing window opening and closing, and each
+// sender it paired, on the console (rocket recv has no other screen).
+func printPairing(events <-chan httpapi.Event) {
+	for ev := range events {
+		switch ev.Type {
+		case "pairing":
+			if st, ok := ev.Data.(httpapi.PairingState); ok && st.Open {
+				fmt.Printf("pairing open until %s: new rocket senders are accepted and trusted (rocket pair stop ends it)\n", st.Until.Local().Format("15:04:05"))
+			} else {
+				fmt.Println("pairing closed")
+			}
+		case "paired":
+			if d, ok := ev.Data.(map[string]any); ok {
+				fmt.Printf("paired %v (%v) from %v: now trusted\n", d["name"], d["fingerprint"], d["addr"])
+			}
+		}
+	}
 }
 
 // setup loads config (with flag overrides), identity, trust store and the
@@ -144,6 +165,10 @@ func (rs *runtimeState) serve(openBrowser bool) int {
 	fmt.Printf("  open:        http://127.0.0.1:%d/\n", rs.cfg.HTTPPort)
 	for _, u := range lanURLs(rs.cfg.HTTPPort) {
 		fmt.Printf("  drop page:   %s\n", u)
+	}
+	go printPairing(srv.Subscribe(ctx)) // subscribed before --pair opens it
+	if rs.pair > 0 {
+		srv.Pairing().Start(rs.pair)
 	}
 
 	go func() {

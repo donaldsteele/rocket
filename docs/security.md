@@ -147,9 +147,43 @@ Every peer offer is signed with the sender's ed25519 key. The receiver checks:
   host cannot be redirected here),
 - the signature covers the receiver, sender, timestamp, nonce, the sender's
   ephemeral encryption key and a hash of the full file list,
-- the key matches the key pinned when you chose "Always accept from this host".
+- the key matches the key pinned when you chose "Always accept from this host"
+  or added the sender with `rocket trust add <public-key>`.
 
 A trusted fingerprint presented with a different key gets a normal prompt.
+
+`rocket trust add <fingerprint>` (or `--trust <fingerprint>`) trusts a sender
+before rocket has seen its key: the first verified offer whose key derives
+to that fingerprint is accepted, and that key is pinned from then on (the
+entry is marked `by_fingerprint` in `trusted.json` until then). The
+fingerprint is the first 64 bits of the key's SHA-256, so someone who wants
+in before the real sender's first offer would need a key whose hash starts
+with those 64 bits: a second-preimage search of about 2^64 tries. That is
+out of reach for someone on your Wi-Fi, but much weaker than a full key pin,
+so adding the public key from `rocket id` is the recommended way. There is
+no option to accept every sender.
+
+### Someone sends while a pairing window is open
+
+A pairing window (Pair new devices in the desktop page, tray and Android app;
+`rocket pair`; `--pair`) accepts, for a limited time, every verified offer
+from a rocket sender this device does not trust yet, and pins that sender's
+key, as if the person had ticked Always accept. Anyone on the network who
+sends during the window is paired too: that is the price of not needing
+anyone at the screen. To keep it small:
+
+- the window opens only by a local action (the loopback API with its CSRF
+  header, the app, or the command line on this computer); peers cannot open
+  it, and the MCP server has no tool for it,
+- it lasts 5 minutes by default and at most an hour, closes when Stop is
+  pressed, and on Android when Receive files is turned off,
+- every UI shows that it is open with a countdown, and lists (desktop,
+  Android) or prints (`rocket ui`, `rocket recv`) each device it paired, so a
+  stranger shows up at once and can be revoked,
+- an offer is still verified first (signature, receiver, timestamp, nonce),
+  and a sender that is already trusted, or pinned to another key, is not
+  re-paired,
+- browser drops are never paired.
 Changing the name or IP address of a host does not change its fingerprint.
 Names come from unauthenticated announcements, so a full fingerprint never
 matches a name, and a name or fingerprint prefix that matches more than one

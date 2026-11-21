@@ -34,9 +34,12 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,10 +59,14 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.donaldsteele.rocket.core
 import io.github.donaldsteele.rocket.core.IncomingOffer
+import io.github.donaldsteele.rocket.core.PairedDevice
+import io.github.donaldsteele.rocket.core.PairingWindow
 import io.github.donaldsteele.rocket.core.ReceiverState
+import io.github.donaldsteele.rocket.core.rocketcore.Rocketcore
 import io.github.donaldsteele.rocket.service.OfferNotifications
 import io.github.donaldsteele.rocket.ui.theme.Mono
 import io.github.donaldsteele.rocket.ui.theme.Rocket
+import kotlinx.coroutines.delay
 
 /** Receiving on or off, how others see this phone, and the offers waiting. */
 @Composable
@@ -72,7 +79,18 @@ fun ReceiveScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
     val offers by receiver.offers.collectAsStateWithLifecycle()
     val problem by receiver.problem.collectAsStateWithLifecycle()
     val name by core.name.collectAsStateWithLifecycle()
+    val pairing by receiver.pairing.collectAsStateWithLifecycle()
+    val paired by receiver.paired.collectAsStateWithLifecycle()
     val c = Rocket.colors
+
+    // A short message for each device paired while this screen shows (the
+    // count is saved, so a rotation does not say it again).
+    var announced by rememberSaveable { mutableIntStateOf(paired.size) }
+    LaunchedEffect(paired) {
+        if (paired.size < announced) announced = 0
+        paired.drop(announced).forEach { onMessage("Paired with ${it.name}. It is now trusted. Progress is in Transfers.") }
+        announced = paired.size
+    }
 
     // Re-read the notification permission whenever the screen comes back.
     var resumed by remember { mutableIntStateOf(0) }
@@ -169,6 +187,13 @@ fun ReceiveScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
                             style = MaterialTheme.typography.bodySmall,
                             color = c.fgMuted,
                         )
+                        Spacer(Modifier.height(12.dp))
+                        PairingSection(
+                            window = pairing,
+                            paired = paired,
+                            onStart = { receiver.startPairing()?.let { onMessage("Pairing could not start: $it") } },
+                            onStop = { receiver.stopPairing() },
+                        )
                     } else {
                         Text(
                             "Turn on to let other rocket devices on this Wi-Fi network find this phone and offer it files. " +
@@ -200,6 +225,73 @@ fun ReceiveScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
         }
         if (state == ReceiverState.On && offers.isEmpty()) {
             item { EmptyBox("No offers right now. Others see this phone as $name.") }
+        }
+    }
+}
+
+/**
+ * "Pair new devices": a button, or while the window is open a countdown,
+ * what it means, Stop, and the devices paired so far.
+ */
+@Composable
+fun PairingSection(window: PairingWindow, paired: List<PairedDevice>, onStart: () -> Unit, onStop: () -> Unit) {
+    val c = Rocket.colors
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(window) {
+        while (window.open) {
+            now = System.currentTimeMillis()
+            val left = window.endsAt - now
+            if (left <= 0) break
+            // Wake when the seconds shown change.
+            delay(left % 1000 + 1)
+        }
+    }
+    val left = if (window.open) secondsLeft(window.endsAt, now) else 0
+    if (left <= 0) {
+        SecondaryAction("Pair new devices", Lucide.ShieldCheck, onClick = onStart)
+        return
+    }
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Lucide.Clock, contentDescription = null, tint = c.warn, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "Pairing: ${countdownText(left)} left",
+                style = MaterialTheme.typography.titleSmall,
+                color = c.fg,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            SecondaryAction(
+                "Stop",
+                Lucide.X,
+                onClick = onStop,
+                modifier = Modifier.semantics { this.contentDescription = "Stop pairing" },
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "For the next ${durationWords(Rocketcore.DefaultPairingSeconds.toInt())}, rocket devices that send to this phone " +
+                "are trusted without asking. Only use it when you are pairing your own devices.",
+            style = MaterialTheme.typography.bodySmall,
+            color = c.fgMuted,
+        )
+        Spacer(Modifier.height(8.dp))
+        if (paired.isEmpty()) {
+            Text("Nothing paired yet. Send a file from your other device to this phone.", fontFamily = Mono, fontSize = 12.sp, color = c.fgMuted)
+        }
+        paired.forEach { p ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(vertical = 4.dp).semantics(mergeDescendants = true) {},
+            ) {
+                Icon(Lucide.ShieldCheck, contentDescription = null, tint = c.ok, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Column {
+                    Text("Paired: ${p.name}", style = MaterialTheme.typography.bodyMedium, color = c.fg)
+                    Text(p.fingerprint, fontFamily = Mono, fontSize = 12.sp, color = c.fgMuted)
+                }
+            }
         }
     }
 }

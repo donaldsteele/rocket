@@ -147,6 +147,7 @@ func (n *Node) StartReceiver(port int, d Decider, s Sink, l EventListener) (int,
 		Hello:      func() (string, string) { return n.version, OS },
 		AutoAccept: n.AutoAccept,
 		Kept:       kept,
+		Pairing:    n.pairing,
 	})
 	hs := &http.Server{
 		Handler:           rx.Handler(),
@@ -197,6 +198,7 @@ func (n *Node) StopReceiver() {
 	if r == nil {
 		return
 	}
+	n.pairing.Stop() // nothing to pair while not receiving
 	r.cancel()
 	for _, o := range r.rx.PendingOffers() {
 		r.rx.Answer(o.ID, false, false)
@@ -226,6 +228,33 @@ func (n *Node) StopReceiver() {
 	}
 	n.mu.Unlock()
 }
+
+// DefaultPairingSeconds is the pairing window the app opens.
+const DefaultPairingSeconds = int(receiver.DefaultPairing / time.Second)
+
+// StartPairing opens the pairing window for seconds (at most an hour;
+// 0 closes it) and returns its state as JSON {open, until, seconds}.
+// While it is open, an offer from a rocket sender not yet trusted is
+// accepted without asking and its key trusted from then on, reported to
+// the EventListener as a "paired" event {fingerprint, name, addr}; the
+// window opening and closing (also by running out) is a "pairing" event
+// with the state. The receiver must be running; StopReceiver closes it.
+func (n *Node) StartPairing(seconds int) (string, error) {
+	if seconds < 0 {
+		return "", errors.New("seconds cannot be negative")
+	}
+	if seconds > 0 && n.ReceiverPort() == 0 {
+		return "", errors.New("turn on Receive files first")
+	}
+	n.pairing.Start(time.Duration(seconds) * time.Second)
+	return n.PairingJSON(), nil
+}
+
+// StopPairing closes the pairing window.
+func (n *Node) StopPairing() { n.pairing.Stop() }
+
+// PairingJSON is the pairing window's state: {open, until, seconds}.
+func (n *Node) PairingJSON() string { return toJSON(n.pairing.State()) }
 
 // ReceiverPort is the port the receiver listens on, or 0 when it is off.
 func (n *Node) ReceiverPort() int {
