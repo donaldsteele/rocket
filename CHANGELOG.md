@@ -4,6 +4,51 @@ All notable changes to rocket are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and rocket uses
 [semantic versioning](https://semver.org/).
 
+## [1.2.0] - 2026-11-21
+
+Send to an address, trust from the command line, and pairing. Works with
+rocket 1.1 (same protocol); rocket 1.0 still needs updating.
+
+### Added
+
+- **Send to an address** in the desktop page: under the peer list, type a
+  host or IP address (port 29005 if left out) and send files or a folder to a
+  computer or phone that discovery does not find, such as one on another
+  subnet or a Tailscale tailnet. The page remembers the last five addresses.
+- `rocket send` takes a bare IP address (`rocket send 100.101.102.103 ./photos`),
+  with port 29005.
+- MCP `send_file` takes a private IP address (RFC 1918, Tailscale's
+  100.64.0.0/10, IPv6 ULA and link-local) as `peer`. Host names and public
+  addresses are refused, so an agent cannot be talked into sending files to a
+  host on the internet.
+- **Trust senders from the command line**, for headless receivers and
+  setting devices up ahead of time: `rocket trust list`,
+  `rocket trust add <public-key|fingerprint> [--name NAME]`,
+  `rocket trust remove <fingerprint>`, and `--trust` on `rocket recv` and
+  `rocket ui`. `rocket id` prints this device's name, fingerprint and public
+  key with the command that trusts it. A sender added by public key is pinned
+  to that key; one added by fingerprint is accepted when its first verified
+  offer's key matches, and that key is pinned from then on. A rocket running
+  on the same data folder picks up the change without a restart (the trust
+  store now rereads `trusted.json` when it changes and before every write,
+  so the UI and the command line do not overwrite each other).
+- **Pair new devices**: a pairing window (5 minutes by default, at most an
+  hour) in which every rocket device that sends is accepted without asking
+  and trusted, for setting up your own devices quickly. In the desktop page
+  (Receive card, with countdown, Stop and the devices paired), the tray menu,
+  the Android app (Receive tab), and the command line: `rocket pair [5m|stop|status]`
+  for a running rocket, and `--pair 5m` on `rocket ui` and `rocket recv`.
+  Local API `GET/POST /api/pair` and the events `pairing` and `paired`.
+  Browser drops are never paired, and MCP agents cannot open a window.
+- README and site: using rocket over Tailscale, and use cases.
+
+### Fixed
+
+- A file that cannot be read on the sending side is reported as a local read
+  error, instead of as the receiver giving up (410).
+- A cancel notice that arrived while a broken upload was ending could leave
+  its kept part on the receiver for 24 hours; it is now discarded.
+
 ## [1.1.0] - 2026-11-15
 
 Encrypted transfers and resume.
@@ -163,5 +208,6 @@ The first release.
   never enters the repository or CI; CI builds only a debug APK.
 - Traffic is plain HTTP; see `docs/security.md`.
 
+[1.2.0]: https://github.com/donaldsteele/rocket/releases/tag/v1.2.0
 [1.1.0]: https://github.com/donaldsteele/rocket/releases/tag/v1.1.0
 [1.0.0]: https://github.com/donaldsteele/rocket/releases/tag/v1.0.0

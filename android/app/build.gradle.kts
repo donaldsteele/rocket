@@ -27,8 +27,8 @@ android {
         applicationId = "io.github.donaldsteele.rocket"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
         // The ABIs the Go core is built for (scripts/build-android.*). Without
         // this, a library's 32-bit x86 .so would make the APK installable
         // on x86 devices that have no libgojni.so, where it would crash.
