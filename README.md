@@ -234,7 +234,9 @@ Always accept. Open it with:
 
 - **Desktop page:** **Pair new devices** in the Receive card (5 minutes),
   with a countdown, **Stop**, and the devices paired so far.
-- **Tray:** **Pair new devices (5 min)** in the menu.
+- **Tray:** **Pair new devices (5 min)** in the menu. While a window is open
+  the icon gets an amber badge and its tooltip says "pairing open" with the
+  time left.
 - **Android:** **Pair new devices** on the Receive tab, while Receive files
   is on.
 - **Command line:** `rocket pair` (5 minutes; `rocket pair 10m`, at most an
@@ -273,6 +275,9 @@ together) and run it. Its menu shows:
 - whether rocket is running and how many peers it sees,
 - how many incoming offers are waiting (the icon gets a red badge; click the
   line to open rocket and answer),
+- **Pair new devices (5 min)**, or **Stop pairing** with the time left while
+  a pairing window is open; the icon then gets an amber badge (red wins when
+  offers are waiting too),
 - **Open rocket**, **Start rocket** (runs `rocket ui --no-browser` in the
   background when it is not running), **Quit rocket**, and **Exit tray**
   (closes only the icon; rocket keeps running).

@@ -13,6 +13,10 @@ func TestRenderDeterministic(t *testing.T) {
 	if !bytes.Equal(a, b) {
 		t.Fatal("two renders differ")
 	}
+	pairing := encodePNG(renderLayer(32, design, layerPairing))
+	if bytes.Equal(a, pairing) || bytes.Equal(pairing, encodePNG(render(32, true))) {
+		t.Fatal("the pairing icon looks the same as the plain or the pending one")
+	}
 	if bytes.Equal(a, encodePNG(render(32, true))) {
 		t.Fatal("pending icon looks the same as the plain one")
 	}

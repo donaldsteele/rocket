@@ -42,7 +42,7 @@ func runTray(a *app) {
 }
 
 func (a *app) onReady(ctx context.Context) {
-	systray.SetIcon(iconBytes(runtime.GOOS, false))
+	systray.SetIcon(iconBytes(runtime.GOOS, IconPlain))
 	systray.SetTooltip("rocket")
 
 	a.status = systray.AddMenuItem("Checking rocket...", "")
@@ -109,8 +109,8 @@ func (a *app) apply(v View) {
 	a.shown, a.shownOnce = v, true
 	a.mu.Unlock()
 
-	if first || v.Pending != old.Pending {
-		systray.SetIcon(iconBytes(runtime.GOOS, v.Pending))
+	if first || v.Icon != old.Icon {
+		systray.SetIcon(iconBytes(runtime.GOOS, v.Icon))
 	}
 	if first || v.Tooltip != old.Tooltip {
 		systray.SetTooltip(v.Tooltip)

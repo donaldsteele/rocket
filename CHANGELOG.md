@@ -4,6 +4,16 @@ All notable changes to rocket are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and rocket uses
 [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The tray icon shows an open pairing window: an amber badge, and a tooltip
+  that says pairing is open and how long is left. The red badge for waiting
+  offers still wins, with the pairing note added to its tooltip.
+- `tools/icongen` documents running with the release toolchain (Go 1.26.9):
+  Go 1.27 draws the same pixels but compresses the PNGs differently.
+
 ## [1.2.0] - 2026-11-21
 
 Send to an address, trust from the command line, and pairing. Works with

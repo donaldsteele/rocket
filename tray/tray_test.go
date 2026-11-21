@@ -303,7 +303,7 @@ func TestViewFor(t *testing.T) {
 			st:   Status{Running: true, Peers: 0, Incoming: 2},
 			want: View{
 				Status: "Running, 0 peers", Offers: "2 incoming offers", Tooltip: "rocket: 2 incoming offers waiting",
-				Pending: true, CanOpen: true, CanQuit: true,
+				Pending: true, Icon: IconPending, CanOpen: true, CanQuit: true,
 			},
 		},
 		{
@@ -311,7 +311,7 @@ func TestViewFor(t *testing.T) {
 			st:   Status{Running: true, Peers: 4, Incoming: 1},
 			want: View{
 				Status: "Running, 4 peers", Offers: "1 incoming offer", Tooltip: "rocket: 1 incoming offer waiting",
-				Pending: true, CanOpen: true, CanQuit: true,
+				Pending: true, Icon: IconPending, CanOpen: true, CanQuit: true,
 			},
 		},
 		{
@@ -349,15 +349,15 @@ func TestViewFor(t *testing.T) {
 			st:   Status{Running: true, Peers: 1, Incoming: 1, Interrupted: 1},
 			want: View{
 				Status: "Running, 1 peer", Offers: "1 incoming offer", Activity: "1 interrupted transfer",
-				Tooltip: "rocket: 1 incoming offer waiting", Pending: true, CanOpen: true, CanQuit: true,
+				Tooltip: "rocket: 1 incoming offer waiting", Pending: true, Icon: IconPending, CanOpen: true, CanQuit: true,
 			},
 		},
 		{
 			name: "pairing open",
 			st:   Status{Running: true, Peers: 1, Pair: PairState{Supported: true, Open: true, Seconds: 61}},
 			want: View{
-				Status: "Running, 1 peer", Tooltip: "rocket: running, 1 peer", CanOpen: true, CanQuit: true,
-				Pair: "Stop pairing (1:01 left)", PairOpen: true,
+				Status: "Running, 1 peer", Tooltip: "rocket: pairing open (1:01 left), new devices are trusted", Icon: IconPairing,
+				CanOpen: true, CanQuit: true, Pair: "Stop pairing (1:01 left)", PairOpen: true,
 			},
 		},
 		{
@@ -420,18 +420,21 @@ func TestRocketArgs(t *testing.T) {
 func TestIconBytes(t *testing.T) {
 	ico := []byte{0, 0, 1, 0}
 	png := []byte("\x89PNG\r\n\x1a\n")
-	for _, pending := range []bool{false, true} {
-		if b := iconBytes("windows", pending); !bytes.HasPrefix(b, ico) {
-			t.Errorf("windows pending=%v: not an ICO", pending)
+	for _, icon := range []Icon{IconPlain, IconPending, IconPairing} {
+		if b := iconBytes("windows", icon); !bytes.HasPrefix(b, ico) {
+			t.Errorf("windows icon=%v: not an ICO", icon)
 		}
 		for _, goos := range []string{"linux", "darwin"} {
-			if b := iconBytes(goos, pending); !bytes.HasPrefix(b, png) {
-				t.Errorf("%s pending=%v: not a PNG", goos, pending)
+			if b := iconBytes(goos, icon); !bytes.HasPrefix(b, png) {
+				t.Errorf("%s icon=%v: not a PNG", goos, icon)
 			}
 		}
 	}
-	if bytes.Equal(iconBytes("windows", false), iconBytes("windows", true)) {
-		t.Error("pending icon is the same as the normal one")
+	for _, goos := range []string{"windows", "linux"} {
+		plain, pending, pairing := iconBytes(goos, IconPlain), iconBytes(goos, IconPending), iconBytes(goos, IconPairing)
+		if bytes.Equal(plain, pending) || bytes.Equal(plain, pairing) || bytes.Equal(pending, pairing) {
+			t.Errorf("%s: two of the three icons are the same", goos)
+		}
 	}
 }
 
@@ -472,5 +475,32 @@ func TestRunStatusAndFlags(t *testing.T) {
 	out.Reset()
 	if code := run([]string{"--version"}, &out, &errOut); code != 0 || !strings.HasPrefix(out.String(), "rocket-tray ") {
 		t.Fatalf("--version: exit %d, out %q", code, out.String())
+	}
+}
+
+// TestPairingIconAndTooltip: an open pairing window shows the amber icon
+// and says so in the tooltip; offers waiting keep the red icon, with the
+// pairing note added to their tooltip.
+func TestPairingIconAndTooltip(t *testing.T) {
+	open := PairState{Supported: true, Open: true, Seconds: 299}
+	v := viewFor(Status{Running: true, Peers: 2, Pair: open}, false, "")
+	if v.Icon != IconPairing || v.Tooltip != "rocket: pairing open (4:59 left), new devices are trusted" || !v.PairOpen {
+		t.Fatalf("pairing open: icon %v tooltip %q", v.Icon, v.Tooltip)
+	}
+	v = viewFor(Status{Running: true, Peers: 2, Incoming: 1, Pair: open}, false, "")
+	if v.Icon != IconPending || v.Tooltip != "rocket: 1 incoming offer waiting; pairing open (4:59 left), new devices are trusted" {
+		t.Fatalf("offers and pairing: icon %v tooltip %q", v.Icon, v.Tooltip)
+	}
+	v = viewFor(Status{Running: true, Peers: 2, Pair: PairState{Supported: true, Open: true}}, false, "")
+	if v.Icon != IconPairing || v.Tooltip != "rocket: pairing open, new devices are trusted" {
+		t.Fatalf("pairing open, no time reported: icon %v tooltip %q", v.Icon, v.Tooltip)
+	}
+	for _, p := range []PairState{{Supported: true}, {}} {
+		if v := viewFor(Status{Running: true, Peers: 2, Pair: p}, false, ""); v.Icon != IconPlain || strings.Contains(v.Tooltip, "pairing") {
+			t.Fatalf("pairing closed or unsupported %+v: icon %v tooltip %q", p, v.Icon, v.Tooltip)
+		}
+	}
+	if v := viewFor(Status{}, false, ""); v.Icon != IconPlain {
+		t.Fatalf("not running: icon %v", v.Icon)
 	}
 }

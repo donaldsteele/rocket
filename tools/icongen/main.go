@@ -7,6 +7,8 @@
 //	tray/assets/icon.png             tray icon for Linux (64 px)
 //	tray/assets/icon-pending.ico     the same with a badge: offers are waiting
 //	tray/assets/icon-pending.png
+//	tray/assets/icon-pairing.ico     the same with an amber badge: a pairing
+//	tray/assets/icon-pairing.png     window is open (new senders are trusted)
 //	android/app/src/main/res/mipmap-<density>/
 //	    ic_launcher_foreground.png   adaptive launcher icon: the rocket alone
 //	                                 on the 108 dp canvas (the background
@@ -16,7 +18,12 @@
 //	android/app/src/main/res/drawable-<density>/
 //	    ic_stat_rocket.png           24 dp white silhouette for notifications
 //
-// Run it from the repository root: go run ./tools/icongen
+// Run it from the repository root with the release toolchain:
+//
+//	GOTOOLCHAIN=go1.26.9 go run ./tools/icongen
+//
+// A newer Go draws the same pixels but compresses the PNGs differently (Go
+// 1.27 does), which would rewrite every committed icon.
 //
 // The drawing uses integer arithmetic only (supersampled point-in-shape
 // tests), so the output is byte-identical on every platform and every run.
@@ -45,6 +52,7 @@ var (
 	colCore   = color.NRGBA{0xfd, 0xe6, 0x8a, 0xff} // --focus
 	colGlass  = color.NRGBA{0xf5, 0xf0, 0xe8, 0xff} // --fg
 	colBadge  = color.NRGBA{0xf8, 0x71, 0x71, 0xff} // --bad
+	colPair   = color.NRGBA{0xfa, 0xcc, 0x15, 0xff} // --warn: the pairing badge
 	transpare = color.NRGBA{}
 )
 
@@ -81,6 +89,7 @@ type layer int
 const (
 	layerTile       layer = iota // the full rounded tile (favicon, exe, tray)
 	layerPending                 // the tile with the "offers waiting" badge
+	layerPairing                 // the tile with the "pairing open" badge
 	layerForeground              // the rocket alone, transparent around it
 	layerMonochrome              // the rocket's silhouette in white
 )
@@ -108,17 +117,16 @@ func main() {
 	for _, n := range winresSizes {
 		out(fmt.Sprintf("cmd/rocket/winres/icon-%d.png", n), encodePNG(render(n, false)))
 	}
-	for _, pending := range []bool{false, true} {
-		name := "icon"
-		if pending {
-			name = "icon-pending"
-		}
+	for _, v := range []struct {
+		name string
+		l    layer
+	}{{"icon", layerTile}, {"icon-pending", layerPending}, {"icon-pairing", layerPairing}} {
 		imgs := make([]*image.NRGBA, 0, len(icoSizes))
 		for _, n := range icoSizes {
-			imgs = append(imgs, render(n, pending))
+			imgs = append(imgs, renderLayer(n, design, v.l))
 		}
-		out("tray/assets/"+name+".ico", encodeICO(imgs))
-		out("tray/assets/"+name+".png", encodePNG(render(64, pending)))
+		out("tray/assets/"+v.name+".ico", encodeICO(imgs))
+		out("tray/assets/"+v.name+".png", encodePNG(renderLayer(64, design, v.l)))
 	}
 	const res = "android/app/src/main/res/"
 	for _, d := range androidDensities {
@@ -218,20 +226,25 @@ func (s sampler) layerAt(x, y int64, l layer) color.NRGBA {
 			return colWhite
 		}
 		return transpare
+	case layerPending:
+		return s.colourAt(x, y, colBadge)
+	case layerPairing:
+		return s.colourAt(x, y, colPair)
 	default:
-		return s.colourAt(x, y, l == layerPending)
+		return s.colourAt(x, y, transpare)
 	}
 }
 
-// colourAt returns the colour at sample point (x, y), topmost shape first.
-func (s sampler) colourAt(x, y int64, pending bool) color.NRGBA {
+// colourAt returns the colour at sample point (x, y), topmost shape first;
+// badge is the colour of the top-left badge, or transparent for none.
+func (s sampler) colourAt(x, y int64, badge color.NRGBA) color.NRGBA {
 	if !s.roundedSquare(x, y, 0, 196) {
 		return transpare
 	}
-	if pending {
+	if badge.A != 0 {
 		// Badge top left: a dark ring cut out of everything, then the dot.
 		if s.disc(x, y, 236, 236, 176) {
-			return colBadge
+			return badge
 		}
 		if s.disc(x, y, 236, 236, 214) {
 			return colBG

@@ -13,10 +13,13 @@ type View struct {
 	Offers   string // "2 incoming offers"; empty hides the item
 	Activity string // "1 transfer reconnecting, 2 interrupted transfers"; empty hides the item
 	Tooltip  string // icon tooltip
-	Pending  bool   // use the badged icon
-	CanOpen  bool   // Open rocket
-	CanStart bool   // Start rocket
-	CanQuit  bool   // Quit rocket
+	Pending  bool   // incoming offers are waiting
+	// Icon is the tray icon: the red offers badge wins over the amber
+	// pairing one, since an offer waits for an answer.
+	Icon     Icon
+	CanOpen  bool // Open rocket
+	CanStart bool // Start rocket
+	CanQuit  bool // Quit rocket
 	// Pair is the pairing item: "Pair new devices (5 min)" or "Stop pairing
 	// (4:59 left)"; empty hides it (rocket not running, or too old to pair).
 	Pair     string
@@ -54,6 +57,24 @@ func viewFor(st Status, starting bool, startErr string) View {
 			v.Pending = true
 		}
 		v.Pair, v.PairOpen = pairLabel(st.Pair)
+		if v.PairOpen {
+			// While pairing is open new senders are trusted without a
+			// prompt, so the icon and tooltip say so at a glance.
+			left := ""
+			if st.Pair.Seconds > 0 {
+				left = fmt.Sprintf(" (%d:%02d left)", st.Pair.Seconds/60, st.Pair.Seconds%60)
+			}
+			pairing := "pairing open" + left + ", new devices are trusted"
+			if v.Pending {
+				v.Tooltip += "; " + pairing
+			} else {
+				v.Tooltip = "rocket: " + pairing
+				v.Icon = IconPairing
+			}
+		}
+		if v.Pending {
+			v.Icon = IconPending
+		}
 		return v
 	}
 	if starting {
