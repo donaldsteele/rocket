@@ -297,3 +297,29 @@ footer nav a{color:var(--dim);font-size:14px}
   .rings span{display:none}
   .shot:hover .window,.shot:focus-within .window,.card:hover,.button:hover{transform:none}
 }
+
+/* tailscale band */
+.tailnet-band{position:relative}
+.tailnet-band::before{content:"";position:absolute;inset:40px 0 auto;height:520px;pointer-events:none;background:radial-gradient(ellipse 45% 50% at 20% 30%,color-mix(in srgb,var(--accent) 10%,transparent),transparent 70%)}
+.tailnet-band .wrap{position:relative}
+.tailnet-cards{margin-top:40px}
+.plays small{margin-left:auto;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);border-radius:999px;padding:1px 8px}
+.tailnet-band .plays li>span{flex:1 1 200px;min-width:0}
+.tailnet-band .plays li>span code{min-width:0;font-size:12.5px;overflow-wrap:anywhere}
+.tailnet-band .plays li>span b{color:var(--fg);font-weight:600}
+
+/* use cases */
+.uses{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.use{display:flex;gap:16px;align-items:flex-start;border:1px solid var(--line);border-radius:var(--radius);background:linear-gradient(180deg,var(--panel),color-mix(in srgb,var(--panel) 60%,var(--bg)));padding:22px;transition:border-color .2s}
+.use:hover{border-color:var(--line-strong)}
+.use>div{min-width:0}
+.use>.ico{flex:none;width:22px;height:22px;color:var(--accent);padding:9px;box-sizing:content-box;border-radius:10px;background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 25%,transparent)}
+.use h3{margin:4px 0 6px;font-size:16.5px;letter-spacing:-.01em}
+.use p{margin:0;color:var(--dim);font-size:14.5px;line-height:1.55}
+.use p b{color:var(--fg);font-weight:600}
+.use p.how{margin-top:12px;padding-top:10px;border-top:1px dashed var(--line);font-size:13px;color:var(--fg);overflow-wrap:anywhere}
+.use.wide{grid-column:1/-1;background:linear-gradient(120deg,color-mix(in srgb,var(--accent) 10%,var(--panel)),var(--panel) 60%)}
+.use.wide h3{font-size:20px}
+.use.wide p{max-width:78ch}
+@media (max-width:760px){.uses{grid-template-columns:1fr}.use{padding:18px;gap:12px}}
+.use .soon{display:inline-block;margin-left:6px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);border-radius:999px;padding:0 8px;vertical-align:1px}

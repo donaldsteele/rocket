@@ -26,10 +26,12 @@
     <nav aria-label="Sections">
       <a href="#how">How it works</a>
       <a href="#features">Features</a>
+      <a href="#uses">Use cases</a>
       <a href="#tour">Tour</a>
       <a href="#android">Android</a>
       <a href="#drop">Drop page</a>
       <a href="#claude">Claude</a>
+      <a href="#tailscale">Tailscale</a>
       <a href="#security">Security</a>
       <a href="#download" class="persist">Download</a>
       <a href="https://github.com/donaldsteele/rocket" class="persist">GitHub</a>
@@ -86,7 +88,7 @@
       </ol>
       <div class="term console">
         <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">rocket</span></div>
-        <div class="out" tabindex="0" role="region" aria-label="What rocket prints when it starts"><code><span class="hl">rocket 1.1.0</span>
+        <div class="out" tabindex="0" role="region" aria-label="What rocket prints when it starts"><code><span class="hl">rocket 1.2.0</span>
   name:        <span class="hl">Studio-PC</span>
   fingerprint: <span class="ok">cfe4dd4a4437c183</span>
   received to: C:\Users\you\Downloads\rocket
@@ -133,12 +135,78 @@
       <div class="cards">
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-radar"></use></svg><h3>Finds the others</h3><p>A UDP beacon and mDNS (<code>_rocket._tcp.local</code>) announce each computer. Both feed one list keyed by fingerprint, and computers that go quiet drop off.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-folder"></use></svg><h3>Files and whole folders</h3><p>Many files or a whole folder go as one transfer with one approval and per-file progress. Empty folders, unicode names and 0-byte files arrive intact.</p></article>
-        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-shield-check"></use></svg><h3>You say yes first</h3><p>The first transfer from a new sender asks you. Received files land in <code>Downloads/rocket</code>, or any folder you choose in Settings.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-shield-check"></use></svg><h3>You say yes first</h3><p>The first transfer from a new sender asks you. Setting up several devices? <b>Pair new devices</b> trusts the ones that send in the next five minutes, and <code>rocket trust add</code> trusts one by its key. Files land in <code>Downloads/rocket</code> or a folder you choose.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-lock"></use></svg><h3>Encrypted on the way</h3><p>File contents between rocket apps are encrypted with keys made fresh for every transfer, and a change in transit is caught. Offers and replies are signed, so nobody can pose as a sender you trust. Names and sizes are not encrypted.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-smartphone"></use></svg><h3>Phones too</h3><p>The Android app sends and receives like a computer. Any other phone, or a guest without rocket, opens the computer's drop page in a browser and uploads straight to it.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-refresh-cw"></use></svg><h3>Picks up where it stopped</h3><p>When the connection drops, the sender reconnects by itself and sends only what is missing, without a second prompt, whether you sent from the desktop page, the phone, the command line or Claude. Either side can still cancel, and History keeps the last 1000 transfers.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-bell-dot"></use></svg><h3>Tray icon</h3><p>On Windows and Linux, <code>rocket-tray</code> shows whether rocket runs and how many peers it sees, and gets a red badge when someone is waiting for your answer.</p></article>
         <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-bot"></use></svg><h3>Claude can help</h3><p>Over MCP, Claude can list the computers on your network and send files. It can never accept a transfer: that stays with you.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section class="band uses-band" id="uses">
+    <div class="wrap">
+      <p class="eyebrow">Use cases</p>
+      <h2>Where rocket earns its place.</h2>
+      <p class="sub">A few of the jobs people reach for a USB stick, a cloud folder or an email to themselves for, done straight from one device to the other.</p>
+      <div class="uses">
+        <article class="use wide">
+          <svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-smartphone"></use></svg>
+          <div>
+            <h3>Phone photos home, from anywhere</h3>
+            <p>Share photos or videos from the gallery to rocket and pick your PC. At home it finds the PC on the Wi-Fi; away from home, with <a href="#tailscale">Tailscale</a> on both, use <b>Send to an address</b> and they go over mobile data. Full-resolution originals, no cloud upload, no storage plan to outgrow.</p>
+            <p class="how">Share → rocket → <code>home-pc</code> or <code>100.x</code> address</p>
+          </div>
+        </article>
+        <article class="use">
+          <svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-hard-drive-download"></use></svg>
+          <div>
+            <h3>A drop box on a Raspberry Pi</h3>
+            <p><code>rocket recv</code> runs without a screen on a Pi 4 or 5, or any Linux box. Start it with a five-minute pairing window and send something from each of your devices: they are trusted from then on, and their files just arrive with no prompt to answer. Or trust each one by the key <code>rocket id</code> prints. Guests use its drop page.</p>
+            <p class="how"><code>./rocket recv --pair 5m --download-dir /srv/inbox</code></p>
+          </div>
+        </article>
+        <article class="use">
+          <svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-file-stack"></use></svg>
+          <div>
+            <h3>Big files between workstations</h3>
+            <p>Footage, design files, disk images and datasets that are too big for email or chat go straight from disk to disk at the speed of your network, written as they arrive. Up to 1 TiB per transfer, and a dropped connection picks up where it stopped.</p>
+            <p class="how">Send folder → one approval → done</p>
+          </div>
+        </article>
+        <article class="use">
+          <svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-laptop"></use></svg>
+          <div>
+            <h3>Moving to a new computer</h3>
+            <p>Run rocket on the old and the new one and send your folders across: Documents, Pictures, projects. Folder layout, empty folders, unicode names and 0-byte files arrive intact. One transfer holds up to 10,000 files, so send a very large tree in parts.</p>
+            <p class="how">Interrupted? <b>Resume</b> for 24 hours</p>
+          </div>
+        </article>
+        <article class="use">
+          <svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-globe"></use></svg>
+          <div>
+            <h3>Guests and iPhones</h3>
+            <p>Nothing to install: they open your computer's drop page in a browser, choose files, and you accept. Good for party photos and a visitor's slides. Browser uploads cross the Wi-Fi unencrypted, so private files go app to app.</p>
+            <p class="how"><code>http://192.168.1.20:29005/</code></p>
+          </div>
+        </article>
+        <article class="use">
+          <svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-wifi"></use></svg>
+          <div>
+            <h3>Places with no internet</h3>
+            <p>A job site, a workshop, an event booth, a cabin: rocket needs a shared network, not the internet. Bring a travel router and discovery, encryption and resume all work between the devices on it. Guest Wi-Fi that keeps devices apart, as many hotels do, blocks it.</p>
+            <p class="how">Any router · no internet needed</p>
+          </div>
+        </article>
+        <article class="use">
+          <svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-bot"></use></svg>
+          <div>
+            <h3>Hand it to Claude</h3>
+            <p>“Send the build output to the test box.” “Copy today's logs to Laptop.” Claude lists the rocket computers, sends the files and waits for the answer. The person on the other end still decides; Claude can never accept for them.</p>
+            <p class="how"><a href="#claude">Connect Claude</a> · <code>rocket mcp</code></p>
+          </div>
+        </article>
       </div>
     </div>
   </section>
@@ -331,6 +399,47 @@
     </div>
   </section>
 
+  <section class="band tailnet-band" id="tailscale">
+    <div class="wrap">
+      <p class="eyebrow">Beyond the room</p>
+      <h2>Your tailnet is your LAN.</h2>
+      <p class="sub">With <a href="https://tailscale.com/">Tailscale</a> (or another WireGuard mesh), your devices reach each other from anywhere as if they shared one network. rocket works on top of it unchanged: send from the office to the PC at home, from your phone on mobile data to your laptop, or to a friend's machine you shared. No port forwarding, no cloud storage, no file size limit.</p>
+      <div class="split">
+        <div>
+          <div class="term">
+            <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">Terminal · send over Tailscale</span></div>
+            <div class="out ask"><code><span class="cmt"># MagicDNS name or the 100.x address, plus the port</span></code></div>
+            <div class="cmd"><code><span class="prompt">$</span>rocket send home-pc:29005 ./renders</code><button type="button" class="copybtn" data-copy="rocket send home-pc:29005 ./renders" aria-label="Copy the send command">Copy</button></div>
+            <div class="out"><code>sending renders (412 files, 10412300288 bytes) to home-pc:29005, encrypted; waiting for the receiver to accept...
+connection lost (...); reconnecting 1/5 in 2s...
+reconnected; continuing where it stopped
+<span class="ok">done</span></code></div>
+            <div class="out ask"><code><span class="cmt"># on a home server or Pi: receive without a browser</span></code></div>
+            <div class="cmd"><code><span class="prompt">$</span>rocket recv</code><button type="button" class="copybtn" data-copy="rocket recv" aria-label="Copy the receive command">Copy</button></div>
+          </div>
+          <p class="note">Each device needs rocket and Tailscale, signed in to the same tailnet (or the device shared with you). If nothing answers, check that the receiving device's firewall lets TCP 29005 in on the Tailscale network and that your tailnet's access rules allow it.</p>
+        </div>
+        <div>
+          <h3 class="minor">What works across the tailnet</h3>
+          <ul class="plays">
+            <li><code>rocket send</code><span>To <code>name:29005</code> or a <code>100.x</code> address, with resume when the link drops</span></li>
+            <li><code>Android</code><span><b>Send to an address</b> on the Send tab, and Receive files like on Wi-Fi</span></li>
+            <li><code>drop page</code><span>Open <code>http://home-pc:29005/</code> in any browser on the tailnet, iPhone included</span></li>
+            <li><code>desktop page</code><span><b>Send to an address</b> under the peer list</span></li>
+            <li><code>Claude</code><span><code>send_file</code> to a private or tailnet IP address you give it</span></li>
+            <li class="never"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-radar"></use></svg><span><b>Not automatic:</b> Tailscale does not carry broadcast or multicast, so the beacon and mDNS do not cross it. Tailnet devices do not show up in the peer list; type the address instead.</span></li>
+          </ul>
+        </div>
+      </div>
+      <div class="cards tailnet-cards">
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-lock"></use></svg><h3>Two layers of encryption</h3><p>WireGuard wraps everything between tailnet devices, and rocket still encrypts the file contents inside it. File names, sizes and device names, which rocket leaves visible on a LAN, are hidden from the networks in between.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-globe"></use></svg><h3>The drop page, private</h3><p>Uploads from a browser are plain HTTP on Wi-Fi. Over Tailscale they travel inside WireGuard, so a phone with the Tailscale app can drop files to your PC from anywhere without anyone on the way reading them.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-fingerprint-pattern"></use></svg><h3>Addresses you can trust</h3><p>On a LAN a typed address encrypts to whoever answers there. A tailnet address belongs to one device signed in to your tailnet, and rocket's fingerprint and prompt still apply on top.</p></article>
+        <article class="card"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-refresh-cw"></use></svg><h3>Made for flaky links</h3><p>Hotel Wi-Fi, a train, a phone switching towers: a send that loses its connection reconnects by itself and sends only what is missing. Run the same command within 24 hours to finish one that gave up.</p></article>
+      </div>
+    </div>
+  </section>
+
   <section class="band" id="security">
     <div class="wrap">
       <p class="eyebrow">Security</p>
@@ -366,7 +475,7 @@
       <p class="eyebrow">Download</p>
       <h2>Unzip it, run it, send.</h2>
       <p class="sub">One file per platform, no installer and no runtime to add. Put rocket on every computer and Android phone you want to send between. The Windows and Linux zips include the tray app.</p>
-      <p class="honest warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-triangle-alert"></use></svg><span><b>Update every device to 1.1.</b> rocket 1.1 encrypts transfers with a new protocol and cannot send to or receive from rocket 1.0, in either direction. Older devices show as <b>Needs update</b>, and an old sender is told to update. Install 1.1 over 1.0: settings, trusted senders, history and the phone's fingerprint stay.</span></p>
+      <p class="honest warn"><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-triangle-alert"></use></svg><span><b>Still on 1.0? Update every device.</b> rocket 1.1 and later encrypt transfers with a new protocol and cannot send to or receive from rocket 1.0, in either direction; 1.2 and 1.1 work together. Older devices show as <b>Needs update</b>, and an old sender is told to update. Install the new version over the old one: settings, trusted senders, history and the phone's fingerprint stay.</span></p>
       <div class="dl">
         <div class="plat">
           <h3><svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-monitor"></use></svg>Windows</h3>

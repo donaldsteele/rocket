@@ -1,5 +1,9 @@
 # rocket
 
+**Website: [donaldsteele.github.io/rocket](https://donaldsteele.github.io/rocket/)** ·
+[Download](https://github.com/donaldsteele/rocket/releases/latest) ·
+[Use it over Tailscale](#over-tailscale)
+
 rocket is a single-binary file transfer tool for a local network. Run it on two
 or more computers on the same network and send files and folders between them
 directly, with a quick approval on the receiving end. No cloud, no account, no
@@ -139,10 +143,21 @@ transport is plain HTTP, as on the desktop, with the file contents encrypted
 ```
 rocket                     start the web UI and announce this host (default)
 rocket ui                  same; --no-browser skips opening a window
-rocket send <peer|host:port> <path>...
+rocket send <peer|host:port|ip> <path>...
                            send files and folders to a peer by name,
-                           fingerprint prefix, or address
+                           fingerprint prefix, or address (a bare IP
+                           address means port 29005)
 rocket recv                run headless: announce and receive, no browser
+rocket pair [5m|stop|status]
+                           open a pairing window on the rocket running on
+                           this computer: new senders are trusted
+rocket trust [list]        the senders whose files arrive without asking
+rocket trust add <public-key|fingerprint> [--name NAME]
+                           trust a sender ahead of time
+rocket trust remove <fingerprint>
+                           forget a trusted sender
+rocket id                  print this device's name, fingerprint and public
+                           key, and the command that trusts it
 rocket mcp                 serve the MCP interface for an AI agent over stdio
 rocket version             print the version
 ```
@@ -158,6 +173,11 @@ Flags for `ui`, `send`, `recv` and `mcp`:
 | `--name`         | the computer's host name | `ROCKET_NAME`        |
 | `--no-mdns`      | mDNS on                  |                      |
 
+`ui` and `recv` also take `--trust <public-key|fingerprint>` (repeatable),
+which does `rocket trust add` before starting, and `--pair 5m`, which opens a
+pairing window as they start. `trust` and `id` take only
+`--data-dir` (and `--name`, which for `trust add` names the sender).
+
 A flag wins over the environment, which wins over Settings, which wins over the
 default. Every host on a network must use the same beacon port to see each
 other by beacon.
@@ -167,6 +187,65 @@ receiver accepted: it prints `connection lost (...); reconnecting 1/5 in 2s...`
 and then `reconnected; continuing where it stopped`. If it gives up after 5
 tries, run the same command again within 24 hours and the send continues
 where it stopped.
+
+### Trust senders from the command line
+
+Ticking **Always accept** in a prompt needs someone at the receiving screen.
+For a headless receiver (`rocket recv` on a Raspberry Pi or a server), or to
+set up devices ahead of time, trust senders from the command line instead:
+
+```
+# on the sending device: print its key and a ready-made command
+rocket id
+#   name:        Laptop
+#   fingerprint: 9bf1bd9dc2f309f2
+#   public key:  7wTVIpUnN18LOcJx3EDrt/kQZt+uNM5mq2Px000xBYY=
+#   ...
+#     rocket trust add 7wTVIpUnN18LOcJx3EDrt/kQZt+uNM5mq2Px000xBYY= --name Laptop
+
+# on the receiving device: paste it, or trust it as the receiver starts
+rocket trust add 7wTVIpUnN18LOcJx3EDrt/kQZt+uNM5mq2Px000xBYY= --name Laptop
+rocket recv --trust 7wTVIpUnN18LOcJx3EDrt/kQZt+uNM5mq2Px000xBYY=
+```
+
+- **By public key** (what `rocket id` prints): the strongest. Only the device
+  holding that key gets in, exactly as if you had ticked Always accept.
+- **By fingerprint** (16 hex characters, shown in every rocket screen,
+  including the Android app's Receive tab): the first offer whose key matches
+  that fingerprint is accepted and its key is pinned from then on. A
+  fingerprint is 64 bits of the key's hash, so this is weaker than adding the
+  key: use the key when you can.
+
+`rocket trust list` shows who is trusted and whether by key or (until the
+first offer) by fingerprint; `rocket trust remove <fingerprint>` makes that
+sender's next offer ask again. A rocket already running on the same data
+folder picks up changes on its next offer, no restart needed. Trusted
+senders skip the prompt only while **Accept files from trusted senders
+without asking** is on in Settings (the default); `trust add` warns when it
+is off. There is no switch to accept everyone: anyone on the network could
+then write files to your disk.
+
+### Pair new devices
+
+When you set up several devices at once, a **pairing window** is quicker than
+adding keys: for a few minutes, every rocket device that sends to this one is
+accepted without asking and trusted from then on, as if you had ticked
+Always accept. Open it with:
+
+- **Desktop page:** **Pair new devices** in the Receive card (5 minutes),
+  with a countdown, **Stop**, and the devices paired so far.
+- **Tray:** **Pair new devices (5 min)** in the menu.
+- **Android:** **Pair new devices** on the Receive tab, while Receive files
+  is on.
+- **Command line:** `rocket pair` (5 minutes; `rocket pair 10m`, at most an
+  hour) on the computer running rocket, `rocket pair stop` to close it early,
+  `rocket pair status`; or `rocket recv --pair 5m` to open it as a headless
+  receiver starts. The console prints each device it pairs.
+
+Then send something from each of your devices. Anyone else on the network who
+sends while the window is open is trusted too, so open it only while you are
+pairing, and check `rocket trust list` (or Settings, Trusted senders)
+afterwards. Browser drops are never paired, and Claude cannot open a window.
 
 ## Where the data is kept
 
@@ -220,8 +299,40 @@ claude mcp add rocket -- /path/to/rocket mcp              # macOS / Linux
 ```
 
 Claude can then use `list_peers`, `send_file`, `get_status` and
-`list_history`. It cannot accept an incoming transfer, trust or revoke a
+`list_history`. `send_file` also takes a private IP address (LAN or VPN such
+as Tailscale) for a host discovery does not reach. It cannot accept an incoming transfer, trust or revoke a
 sender, change settings, or quit rocket. See [docs/mcp.md](docs/mcp.md).
+
+## Over Tailscale
+
+rocket finds peers with a UDP broadcast beacon and mDNS, which stay on one
+network. A VPN such as [Tailscale](https://tailscale.com/) carries neither,
+so devices on your tailnet do not show up in the peer list, but rocket works
+across it by address:
+
+- **Desktop page:** open **Send to an address** under the peer list, type the
+  device's Tailscale address (`100.101.102.103`) or MagicDNS name
+  (`home-pc`), and pick files or a folder. Port 29005 if left out. The page
+  remembers the last five addresses in that browser.
+- **Command line:** `rocket send 100.101.102.103 ./photos` or
+  `rocket send home-pc:29005 ./photos` (a host name needs its port, since a
+  bare name is looked up as a peer name).
+- **Android:** **Send to an address** on the Send tab. Turn on **Receive
+  files** to receive over the tailnet as on Wi-Fi.
+- **Claude (MCP):** `send_file` takes a private IP address, Tailscale's
+  included, when you give it one. It does not take host names or public
+  addresses.
+- **Drop page:** open `http://home-pc:29005/` in a browser on any device in
+  the tailnet.
+
+Tailscale encrypts everything between tailnet devices with WireGuard, so over
+a tailnet the names, sizes and device names that rocket leaves visible on a
+LAN, and uploads from the browser drop page, are hidden from the networks in
+between too. rocket still encrypts file contents inside it. A send to a typed
+address is not pinned to a fingerprint, so check the fingerprint in the
+receiver's prompt when it matters. If nothing answers, let TCP 29005 in on the
+Tailscale network in the receiver's firewall, and check that your tailnet's
+access rules allow it.
 
 ## Firewall
 
